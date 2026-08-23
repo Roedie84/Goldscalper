@@ -19,8 +19,10 @@ from homeassistant.helpers.selector import (
 
 from .broker.adapter import VenueError
 from .broker.oanda import OandaVenue
+from .broker.public_data import PublicDataVenue
 from .const import (
-    CONF_ACCOUNT_ID, CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
+    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, DEFAULT_ASSUMED_SPREAD,
+    PUBLIC_SYMBOLS, VENUE_PUBLIC, CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
     DEFAULT_SIM_SEED, DEFAULT_SIM_SPREAD, DEFAULT_VENUE, VENUES,
     VENUE_OANDA, VENUE_SIMULATOR, CONF_ENTRY_THRESHOLD, CONF_ENVIRONMENT, CONF_EQUITY_FLOOR_PCT,
     CONF_MAX_CONSECUTIVE_LOSSES, CONF_MAX_DAILY_LOSS_PCT, CONF_MAX_SPREAD,
@@ -53,7 +55,10 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Kies de databron. De simulator vraagt niets en werkt meteen."""
         if user_input is not None:
-            if user_input[CONF_VENUE] == VENUE_SIMULATOR:
+            venue = user_input[CONF_VENUE]
+            if venue == VENUE_PUBLIC:
+                return await self.async_step_public()
+            if venue == VENUE_SIMULATOR:
                 return await self.async_step_simulator()
             return await self.async_step_oanda()
 
@@ -67,6 +72,68 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
                 ),
             }),
+        )
+
+    async def async_step_public(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Echte goudkoersen, papierhandel, geen account."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            venue = PublicDataVenue(
+                session=async_get_clientsession(self.hass),
+                symbol=user_input[CONF_SYMBOL],
+                assumed_spread=user_input[CONF_ASSUMED_SPREAD],
+            )
+            # Eén echte call, zodat je hier faalt en niet pas over een kwartier.
+            try:
+                candles = await venue.candles(
+                    user_input[CONF_SYMBOL], user_input[CONF_TIMEFRAME], 120
+                )
+                if len(candles) < 60:
+                    errors["base"] = "insufficient_history"
+            except VenueError as err:
+                _LOGGER.debug("Publieke databron faalde: %s", err)
+                errors["base"] = "cannot_connect"
+
+            if not errors:
+                await self.async_set_unique_id(f"public_{user_input[CONF_SYMBOL]}")
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=f"{user_input[CONF_SYMBOL]} (marktdata)",
+                    data={**user_input, CONF_VENUE: VENUE_PUBLIC, CONF_MODE: "paper"},
+                )
+
+        return self.async_show_form(
+            step_id="public",
+            data_schema=vol.Schema({
+                vol.Required(CONF_SYMBOL, default="GC=F"): SelectSelector(
+                    SelectSelectorConfig(options=PUBLIC_SYMBOLS,
+                                         mode=SelectSelectorMode.DROPDOWN)
+                ),
+                vol.Required(CONF_TIMEFRAME, default=DEFAULT_TIMEFRAME): SelectSelector(
+                    SelectSelectorConfig(options=["1m", "5m", "15m", "30m", "1h", "1d"],
+                                         mode=SelectSelectorMode.DROPDOWN)
+                ),
+                vol.Required(
+                    CONF_ASSUMED_SPREAD, default=DEFAULT_ASSUMED_SPREAD
+                ): NumberSelector(
+                    NumberSelectorConfig(min=0.0, max=1.0, step=0.01,
+                                         unit_of_measurement="USD",
+                                         mode=NumberSelectorMode.SLIDER)
+                ),
+            }),
+            errors=errors,
+            description_placeholders={
+                "note": (
+                    "Echte goudkoersen van Yahoo Finance, uitvoering volledig op "
+                    "papier. Let op: publieke bronnen leveren geen bied- en "
+                    "laatprijs, dus de spread is een aanname. Op nul zetten "
+                    "schakelt de transactiekosten uit; het resultaat is dan "
+                    "fictief en live handel blijft vergrendeld."
+                )
+            },
         )
 
     async def async_step_simulator(

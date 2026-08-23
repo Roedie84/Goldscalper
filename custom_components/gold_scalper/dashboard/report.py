@@ -259,6 +259,45 @@ def _empty_chart(width: int, height: int, message: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
+def _cost_projection_block(stats: dict) -> str:
+    """Toon wat hetzelfde tradepatroon zou opleveren bij echte spreads.
+
+    Staat bovenaan wanneer er zonder kosten gedraaid is, want dan is het
+    winstcijfer erboven fictief en moet die context niet onderaan de pagina
+    verstopt zitten.
+    """
+    rows = stats.get("cost_projection") or []
+    if not rows:
+        return ""
+
+    disabled = bool(stats.get("costs_disabled"))
+    body = ""
+    for row in rows:
+        cls = "pos" if row["profitable"] else "neg"
+        body += (
+            f"<tr><td>{_esc(row['label'])}</td>"
+            f"<td class='num'>{_fmt(row['costs'])}</td>"
+            f"<td class='num {cls}'>{_fmt(row['net_pnl'])}</td></tr>"
+        )
+
+    banner = (
+        '<p class="note" style="color:%s"><strong>Deze run draaide zonder '
+        'transactiekosten.</strong> Het resultaat hierboven is fictief; in de '
+        'echte markt betaal je bij elke trade de spread.</p>' % TOKENS["reject"]
+        if disabled else
+        '<p class="note">Wat hetzelfde tradepatroon zou opleveren bij andere '
+        'spreads. Optimistisch: een bredere spread zou ook minder trades '
+        'doorlaten.</p>'
+    )
+
+    return f"""<section>
+  <h3>Kostenprojectie</h3>
+  {banner}
+  <table><thead><tr><th>Scenario</th><th class="num">Kosten</th>
+    <th class="num">Netto</th></tr></thead><tbody>{body}</tbody></table>
+</section>"""
+
+
 def _fineness(stats: dict) -> int:
     """Duizendsten van de bruto beweging die de kosten overleven.
 
@@ -487,6 +526,8 @@ def build_report(
     <span>duizendsten van de gevangen beweging die de kosten overleven</span>
   </div>
 </div>
+
+{_cost_projection_block(stats)}
 
 <section>
   <h3>Equity en kosten</h3>

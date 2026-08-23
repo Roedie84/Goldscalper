@@ -29,10 +29,19 @@
           "timeframe": "Tijdsframe",
           "mode": "Modus"
         }
+      },
+      "public": {
+        "title": "Echte goudkoersen, papierhandel",
+        "description": "{note}",
+        "data": {
+          "symbol": "Instrument",
+          "timeframe": "Tijdsframe",
+          "assumed_spread": "Aangenomen spread (0 = kosten uit)"
+        }
       }
     },
     "error": {
-      "cannot_connect": "Kan OANDA niet bereiken. Controleer je internetverbinding.",
+      "cannot_connect": "Kan de databron niet bereiken.",
       "invalid_token": "Het API-token wordt geweigerd.",
       "invalid_account": "Account-ID onbekend, of het hoort bij de andere omgeving (practice tegenover live).",
       "insufficient_history": "Te weinig historie voor een zinnige analyse; minimaal 60 candles nodig."
@@ -90,8 +99,9 @@
   "selector": {
     "venue": {
       "options": {
-        "simulator": "Simulator (geen account nodig)",
-        "oanda": "OANDA (echte marktdata)"
+        "public_data": "Echte goudkoersen, papierhandel (geen account)",
+        "simulator": "Simulator, verzonnen koersen (geen account)",
+        "oanda": "OANDA (account nodig, kan echt handelen)"
       }
     }
   }

@@ -61,10 +61,12 @@ def test_translations_cover_every_config_step():
         assert "options" in data
 
 
-def test_simulator_is_the_default_venue():
-    """Je moet de integratie kunnen installeren zonder ergens een account te hebben."""
+def test_default_venue_needs_no_account():
+    """De echte eis: installeerbaar zonder ergens een account te hebben.
+    Welke van de accountloze bronnen standaard is, mag veranderen."""
     from gold_scalper import const
-    assert const.DEFAULT_VENUE == const.VENUE_SIMULATOR
+    assert const.DEFAULT_VENUE in (const.VENUE_PUBLIC, const.VENUE_SIMULATOR)
+    assert const.DEFAULT_VENUE != const.VENUE_OANDA
 
 
 def test_all_modules_parse():

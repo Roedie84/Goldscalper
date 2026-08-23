@@ -83,7 +83,8 @@ def test_simulator_reports_it_is_simulated(venue):
 
 def test_gate_blocks_simulated_run_even_when_profitable():
     """De kern: een geslaagde simulatie mag nooit echt geld vrijgeven."""
-    stats = dict(trades=5000, ready_for_live=True, blocking_reasons=[], net_pnl=9999.0)
+    stats = dict(trades=5000, ready_for_live=True, blocking_reasons=[],
+                 net_pnl=9999.0, total_costs=2000.0)
     run = {
         "started_at": "2026-01-01T00:00:00+00:00",
         "config_json": json.dumps({"venue": "simulator", "simulated": True}),
@@ -96,7 +97,8 @@ def test_gate_blocks_simulated_run_even_when_profitable():
 
 
 def test_gate_allows_real_data_run():
-    stats = dict(trades=600, ready_for_live=True, blocking_reasons=[], net_pnl=1000.0)
+    stats = dict(trades=600, ready_for_live=True, blocking_reasons=[],
+                 net_pnl=1000.0, total_costs=450.0)
     run = {
         "started_at": "2026-01-01T00:00:00+00:00",
         "config_json": json.dumps({"venue": "oanda", "simulated": False}),
@@ -107,6 +109,7 @@ def test_gate_allows_real_data_run():
 
 def test_gate_blocks_when_config_unparseable_but_mentions_simulator():
     run = {"started_at": "2026-01-01T00:00:00+00:00", "config_json": "venue=SIMULATOR"}
-    stats = dict(trades=600, ready_for_live=True, blocking_reasons=[], net_pnl=100.0)
+    stats = dict(trades=600, ready_for_live=True, blocking_reasons=[],
+                 net_pnl=100.0, total_costs=80.0)
     daily = [{"date": f"2026-06-{i+1:02d}", "trades": 30, "net_pnl": 5.0} for i in range(20)]
     assert not LiveGate().evaluate(stats, run, daily).unlocked

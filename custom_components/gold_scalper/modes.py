@@ -119,6 +119,19 @@ class LiveGate:
                 "strategie niet bewijzen, hoe goed het resultaat er ook uitziet"
             )
 
+        # Een run zonder transactiekosten kan niets bewijzen. De spread is bij
+        # scalping de dominante kostenpost; hem op nul zetten draait het teken
+        # van vrijwel elk resultaat om.
+        costs_disabled = bool(stats.get("costs_disabled"))
+        if not costs_disabled and stats.get("trades"):
+            costs_disabled = (stats.get("total_costs") or 0) <= 0
+        checks["kosten_meegerekend"] = not costs_disabled
+        if costs_disabled:
+            reasons.append(
+                "deze run draaide zonder transactiekosten; zonder spread is elk "
+                "resultaat fictief"
+            )
+
         trades = stats.get("trades", 0)
         checks["genoeg_trades"] = trades >= self.min_trades
         if not checks["genoeg_trades"]:

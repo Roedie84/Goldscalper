@@ -27,12 +27,14 @@ from .analysis.signals import Candles
 from .broker.adapter import ExecutionVenue, VenueError, VenueQuote
 from .broker.exits import ExitConfig, ExitManager
 from .broker.oanda import OandaVenue
+from .broker.public_data import PublicDataVenue
 from .broker.simulator import SimulatorVenue
 from .broker.paper import CONTRACT_SIZE, BrokerCosts, PaperBroker
 from .broker.paper import Quote as PaperQuote
 from .broker.risk import RiskLimits, RiskManager, TradingState
 from .const import (
-    CONF_ACCOUNT_ID, CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
+    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, DEFAULT_ASSUMED_SPREAD, VENUE_PUBLIC,
+    CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
     DEFAULT_SIM_SEED, DEFAULT_SIM_SPREAD, DEFAULT_VENUE, VENUE_SIMULATOR, CONF_ENTRY_THRESHOLD, CONF_ENVIRONMENT, CONF_EQUITY_FLOOR_PCT,
     CONF_MAX_CONSECUTIVE_LOSSES, CONF_MAX_DAILY_LOSS_PCT, CONF_MAX_SPREAD,
     CONF_MAX_TRADES_PER_DAY, CONF_MAX_UNITS, CONF_MIN_EDGE_MULTIPLE, CONF_MODE,
@@ -94,8 +96,19 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             CONF_STARTING_BALANCE, DEFAULT_STARTING_BALANCE
         )
 
-        if options.get(CONF_VENUE, DEFAULT_VENUE) == VENUE_SIMULATOR:
-            self.venue: ExecutionVenue = SimulatorVenue(
+        venue_name = options.get(CONF_VENUE, DEFAULT_VENUE)
+        if venue_name == VENUE_PUBLIC:
+            self.venue: ExecutionVenue = PublicDataVenue(
+                session=async_get_clientsession(hass),
+                symbol=self.symbol,
+                assumed_spread=options.get(
+                    CONF_ASSUMED_SPREAD, DEFAULT_ASSUMED_SPREAD
+                ),
+            )
+            # Publieke data kan niet uitvoeren; altijd papierhandel.
+            self.mode = TradingMode.PAPER
+        elif venue_name == VENUE_SIMULATOR:
+            self.venue = SimulatorVenue(
                 seed=_as_int(options.get(CONF_SIM_SEED), DEFAULT_SIM_SEED),
                 spread=options.get(CONF_SIM_SPREAD, DEFAULT_SIM_SPREAD),
                 balance=self.starting_balance,
@@ -186,6 +199,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             # Wordt door LiveGate gelezen. Zonder dit merkteken zou een
             # geslaagde simulatie de poort kunnen openen.
             "simulated": getattr(self.venue, "is_simulated", False),
+            "assumed_spread": getattr(self.venue, "assumed_spread", None),
+            "costs_disabled": getattr(self.venue, "costs_disabled", False),
         }
         self.run_id = await self.hass.async_add_executor_job(
             self.db.start_run, self.mode.value, STRATEGY_VERSION,
@@ -193,9 +208,17 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         )
 
         if self.mode is not TradingMode.LIVE:
+            # Slippage volgt de aangenomen spread: staat die op nul, dan is de
+            # hele kostenkant uitgeschakeld en moet dat consistent zijn.
+            spread = getattr(self.venue, "assumed_spread", 0.0)
             self.paper = PaperBroker(
                 self.db, self.run_id, self.symbol, self.starting_balance,
-                BrokerCosts(commission_per_lot_per_side=0.0),
+                BrokerCosts(
+                    commission_per_lot_per_side=0.0,
+                    base_slippage=0.0 if spread <= 0 else 0.02,
+                    volatility_slippage_factor=0.0 if spread <= 0 else 0.05,
+                    size_slippage_per_lot=0.0,
+                ),
             )
 
         # Historie opwarmen. Zonder dit begint elke herstart met een blinde

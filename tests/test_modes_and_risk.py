@@ -14,7 +14,8 @@ NOW = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
 
 
 def good_stats(**over):
-    base = dict(trades=600, ready_for_live=True, blocking_reasons=[], net_pnl=1000.0)
+    base = dict(trades=600, ready_for_live=True, blocking_reasons=[],
+                net_pnl=1000.0, total_costs=450.0)
     base.update(over); return base
 
 

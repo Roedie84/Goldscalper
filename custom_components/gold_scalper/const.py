@@ -39,8 +39,15 @@ CONF_STARTING_BALANCE: Final = "starting_balance"
 # -- standaardwaarden ------------------------------------------------------- #
 
 VENUE_SIMULATOR: Final = "simulator"
+VENUE_PUBLIC: Final = "public_data"
 VENUE_OANDA: Final = "oanda"
-VENUES: Final = [VENUE_SIMULATOR, VENUE_OANDA]
+VENUES: Final = [VENUE_PUBLIC, VENUE_SIMULATOR, VENUE_OANDA]
+
+CONF_ASSUMED_SPREAD: Final = "assumed_spread"
+#: Nul betekent: transactiekosten uitgeschakeld. Handig om de machinerie te
+#: zien draaien, maar het resultaat is dan fictief en de poort blijft dicht.
+DEFAULT_ASSUMED_SPREAD: Final = 0.0
+PUBLIC_SYMBOLS: Final = ["GC=F", "XAUUSD=X"]
 
 CONF_SIM_SEED: Final = "sim_seed"
 CONF_SIM_SPREAD: Final = "sim_spread"
@@ -49,7 +56,8 @@ DEFAULT_SIM_SPREAD: Final = 0.20
 
 #: Simulator als standaard: je kunt de integratie zo installeren en zien of
 #: alles werkt, zonder je ergens aan te melden.
-DEFAULT_VENUE: Final = VENUE_SIMULATOR
+#: Echte goudkoersen met papierhandel: geen account nodig, wél echte data.
+DEFAULT_VENUE: Final = VENUE_PUBLIC
 DEFAULT_ENVIRONMENT: Final = "practice"
 DEFAULT_SYMBOL: Final = "XAU_USD"
 DEFAULT_TIMEFRAME: Final = "1m"

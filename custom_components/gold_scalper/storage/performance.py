@@ -206,6 +206,49 @@ def verdict(stats: dict) -> dict:
     }
 
 
+def cost_projection(
+    trades: Sequence[Trade], spreads: Sequence[float] = (0.12, 0.25, 0.35, 0.50)
+) -> list[dict]:
+    """Wat zou het resultaat zijn geweest bij deze spreads?
+
+    Bestaat omdat een run met kosten uitgeschakeld anders een winstcijfer
+    oplevert dat nergens op slaat. Door hetzelfde tradepatroon door te rekenen
+    bij realistische spreads blijft zichtbaar hoeveel van die winst zou
+    overleven - en meestal is dat weinig.
+
+    De aanname is dat de trades identiek zouden zijn geweest. In werkelijkheid
+    zou een hogere spread ook de kostenpoort strenger maken en dus minder
+    trades opleveren, dus dit is een *optimistische* schatting. De echte
+    uitkomst valt slechter uit, niet beter.
+    """
+    closed = [t for t in trades if t.gross_pnl is not None]
+    if not closed:
+        return []
+
+    ounces = sum((t.volume or 0) * 100.0 for t in closed)
+    gross = sum(t.gross_pnl or 0.0 for t in closed)
+    actual_costs = sum(t.total_cost or 0.0 for t in closed)
+
+    out = [{
+        "spread": None,
+        "label": "zoals gedraaid",
+        "costs": round(actual_costs, 2),
+        "net_pnl": round(gross - actual_costs, 2),
+        "profitable": (gross - actual_costs) > 0,
+    }]
+    for spread in spreads:
+        # Spread wordt één keer per round trip betaald, over het aantal ounces.
+        costs = spread * ounces
+        out.append({
+            "spread": spread,
+            "label": f"bij spread {spread:.2f}",
+            "costs": round(costs, 2),
+            "net_pnl": round(gross - costs, 2),
+            "profitable": (gross - costs) > 0,
+        })
+    return out
+
+
 def compute_for_run(db: TradeDatabase, run_id: int) -> dict:
     """Metrieken voor één run, inclusief de signaalstatistiek."""
     run = db.get_run(run_id)
@@ -217,6 +260,19 @@ def compute_for_run(db: TradeDatabase, run_id: int) -> dict:
     stats["strategy_version"] = run["strategy_version"]
     stats["started_at"] = run["started_at"]
     stats["signals"] = db.signal_stats(run_id)
+
+    trades = db.closed_trades(run_id)
+    stats["cost_projection"] = cost_projection(trades)
+
+    # Markeer expliciet als er zonder kosten gedraaid is. Zonder dit ziet een
+    # nulkosten-run er in het rapport uit als een gewone winstgevende run.
+    if stats.get("trades") and (stats.get("total_costs") or 0) <= 0:
+        stats["costs_disabled"] = True
+        stats["verdict_text"] = (
+            "Deze run draaide zonder transactiekosten. Het resultaat is "
+            "daardoor fictief: in de echte markt betaal je bij elke trade de "
+            "spread. Zie de kostenprojectie voor wat er zou overblijven."
+        )
     return stats
 
 
