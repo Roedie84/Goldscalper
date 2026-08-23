@@ -51,8 +51,12 @@ def _hash01(n: int, seed: int) -> float:
     Een eigen hash in plaats van ``random``, omdat er geen toestand mag zijn:
     dezelfde index moet altijd dezelfde waarde geven, ongeacht de volgorde
     waarin er gevraagd wordt.
+
+    De ``int()``-conversies zijn geen overbodige voorzichtigheid: Home Assistant
+    geeft elke NumberSelector-waarde terug als float, dus een zaad uit de
+    config flow arriveert als 20260823.0 en dan faalt de bitwise operatie.
     """
-    x = (n * 0x9E3779B1 + seed * 0x85EBCA77) & 0xFFFFFFFF
+    x = (int(n) * 0x9E3779B1 + int(seed) * 0x85EBCA77) & 0xFFFFFFFF
     x ^= x >> 15
     x = (x * 0x2545F491) & 0xFFFFFFFF
     x ^= x >> 13
@@ -118,17 +122,20 @@ class SimulatorVenue(ExecutionVenue):
         m1_atr: float = 0.35,
         balance: float = 10_000.0,
     ) -> None:
-        self.seed = seed
-        self.base_price = base_price
-        self.spread = spread
+        # Alle numerieke instellingen komen mogelijk als float uit de config
+        # flow. Coërceren gebeurt hier, op de grens, in plaats van verspreid
+        # door de rekenkern.
+        self.seed = int(seed)
+        self.base_price = float(base_price)
+        self.spread = float(spread)
         #: Typische afstand tussen dagelijkse high en low, in USD per ounce.
         #: Goud rond de 3300 doet doorgaans 25 tot 40 dollar op een dag.
-        self.daily_range = daily_range
+        self.daily_range = float(daily_range)
         #: Doel-ATR op de minuutgrafiek. Dit is het getal dat bepaalt of de
         #: strategie überhaupt trades kan vinden, want de kostenpoort vergelijkt
         #: het winstdoel (een veelvoud van de ATR) met de spread.
-        self.m1_atr = m1_atr
-        self.balance = balance
+        self.m1_atr = float(m1_atr)
+        self.balance = float(balance)
 
     # -- prijsmodel --------------------------------------------------------- #
 

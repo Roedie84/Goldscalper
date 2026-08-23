@@ -162,3 +162,21 @@ data heeft geen marktstructuur. Winst hier is een eigenschap van de
 ruisgenerator, niet van goud. `LiveGate` weigert een simulatorrun daarom
 categorisch vrij te geven — ook bij duizenden winstgevende trades. Zie
 `tests/test_simulator.py::test_gate_blocks_simulated_run_even_when_profitable`.
+
+---
+
+## Bekende valkuil bij configuratiewaarden
+
+Home Assistant geeft elke `NumberSelector`-waarde terug als **float**, ook bij
+een veld dat een geheel getal voorstelt. Een zaad van `20260823` arriveert dus
+als `20260823.0`.
+
+Dat veroorzaakte in 1.2.0 een crash bij het opzetten:
+
+```
+TypeError: unsupported operand type(s) for &: 'float' and 'int'
+```
+
+Opgelost in 1.2.1 door te coërceren op de grens — daar waar config-waarden de
+rekenkern binnenkomen — in plaats van verspreid door de code. Zie
+`tests/test_config_value_types.py`.

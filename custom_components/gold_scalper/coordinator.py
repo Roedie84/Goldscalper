@@ -53,6 +53,33 @@ from .strategy.streaming import StreamState
 _LOGGER = logging.getLogger(__name__)
 
 
+def _as_datetime(value, fallback: datetime) -> datetime:
+    """Zet open_time om naar een datetime, ongeacht de vorm.
+
+    De paper-broker bewaart ISO-strings in de database; de venue-adapter geeft
+    datetimes terug. Beide komen in dezelfde lus binnen, dus de omzetting hoort
+    op één plek te staan in plaats van in een reeks ternaire expressies waar
+    makkelijk een tak fout gaat.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return fallback
+    return fallback
+
+
+def _as_int(value, fallback: int) -> int:
+    """Config-flow-waarden komen als float binnen; coërceer op de grens."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
     """Houdt de handelslus, de administratie en alle bewaking bij elkaar."""
 
@@ -69,7 +96,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
         if options.get(CONF_VENUE, DEFAULT_VENUE) == VENUE_SIMULATOR:
             self.venue: ExecutionVenue = SimulatorVenue(
-                seed=options.get(CONF_SIM_SEED, DEFAULT_SIM_SEED),
+                seed=_as_int(options.get(CONF_SIM_SEED), DEFAULT_SIM_SEED),
                 spread=options.get(CONF_SIM_SPREAD, DEFAULT_SIM_SPREAD),
                 balance=self.starting_balance,
             )
@@ -93,8 +120,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             min_edge_multiple=options.get(CONF_MIN_EDGE_MULTIPLE, 2.0),
             entry_threshold=options.get(CONF_ENTRY_THRESHOLD, 0.45),
             trading_hours_utc=(
-                options.get(CONF_TRADING_START_HOUR, 7),
-                options.get(CONF_TRADING_END_HOUR, 20),
+                _as_int(options.get(CONF_TRADING_START_HOUR), 7),
+                _as_int(options.get(CONF_TRADING_END_HOUR), 20),
             ),
             commission_per_lot_per_side=0.0,  # OANDA rekent in de spread
             volume=self.units / CONTRACT_SIZE,
@@ -103,8 +130,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self.risk = RiskManager(
             RiskLimits(
                 max_daily_loss_pct=options.get(CONF_MAX_DAILY_LOSS_PCT, 2.0),
-                max_trades_per_day=options.get(CONF_MAX_TRADES_PER_DAY, 100),
-                max_consecutive_losses=options.get(CONF_MAX_CONSECUTIVE_LOSSES, 5),
+                max_trades_per_day=_as_int(options.get(CONF_MAX_TRADES_PER_DAY), 100),
+                max_consecutive_losses=_as_int(
+                    options.get(CONF_MAX_CONSECUTIVE_LOSSES), 5
+                ),
                 equity_floor_pct=options.get(CONF_EQUITY_FLOOR_PCT, 80.0),
                 max_volume=options.get(CONF_MAX_UNITS, DEFAULT_MAX_UNITS) / CONTRACT_SIZE,
             ),
@@ -135,7 +164,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             update_interval=timedelta(
                 seconds=max(
                     MIN_UPDATE_SECONDS,
-                    options.get(CONF_UPDATE_SECONDS, DEFAULT_UPDATE_SECONDS),
+                    _as_int(options.get(CONF_UPDATE_SECONDS), DEFAULT_UPDATE_SECONDS),
                 )
             ),
         )
@@ -411,16 +440,14 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
         for position in await self._open_positions():
             ticket = str(getattr(position, "ticket", None) or getattr(position, "id", ""))
-            opened = (
-                position.open_time
-                if getattr(position, "open_time", None)
-                else datetime.fromisoformat(position.open_time)
-                if isinstance(getattr(position, "open_time", None), str)
-                else now
-            )
+            opened = _as_datetime(getattr(position, "open_time", None), now)
+            # Paper-trades bewaren volume in lots, venue-posities in ounces.
+            size = getattr(position, "units", None)
+            if size is None:
+                size = (getattr(position, "volume", 0) or 0) * CONTRACT_SIZE
             action = self.exits.evaluate(
                 side=position.side,
-                volume=getattr(position, "units", 0) or getattr(position, "volume", 0),
+                volume=size,
                 open_price=position.open_price,
                 current_stop=getattr(position, "stop_loss", None),
                 bid=quote.bid, ask=quote.ask, atr=atr,
