@@ -1,0 +1,12 @@
+{
+  "domain": "gold_scalper",
+  "name": "Gold Scalper",
+  "codeowners": ["@Roedie84"],
+  "config_flow": true,
+  "documentation": "https://github.com/Roedie84/gold-scalper",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/Roedie84/gold-scalper/issues",
+  "requirements": [],
+  "version": "0.2.0"
+}

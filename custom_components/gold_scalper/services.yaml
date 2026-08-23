@@ -1,0 +1,30 @@
+prepare_shutdown:
+  name: Afwikkelen voor herstart
+  description: >
+    Stopt met nieuwe posities openen en wikkelt de lopende af. Roep dit aan
+    vóórdat je Home Assistant herstart of bijwerkt. Controleer daarna
+    binary_sensor.gold_scalper_veilig_herstarten.
+
+close_all:
+  name: Alles sluiten
+  description: >
+    Sluit alle open posities direct tegen marktprijs. Noodknop.
+
+resume:
+  name: Hervatten na noodstop
+  description: >
+    Heft een noodstop op en stemt opnieuw af met de broker. Doe dit pas nadat
+    je hebt vastgesteld wat de noodstop veroorzaakte.
+
+generate_report:
+  name: Keuringsrapport maken
+  description: >
+    Schrijft een zelfstandig HTML-rapport met resultaat, kosten en analyse
+    naar je configuratiemap.
+  fields:
+    path:
+      name: Bestandsnaam
+      description: Bestandsnaam binnen de configuratiemap.
+      example: gold_scalper_rapport.html
+      selector:
+        text:

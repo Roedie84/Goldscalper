@@ -1,0 +1,98 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Gold Scalper: kies je databron",
+        "description": "Begin met de simulator als je nog geen account hebt. Die draait volledig lokaal en laat zien of alles werkt.",
+        "data": {
+          "venue": "Databron"
+        }
+      },
+      "simulator": {
+        "title": "Simulator instellen",
+        "description": "{note}",
+        "data": {
+          "symbol": "Instrument",
+          "timeframe": "Tijdsframe",
+          "sim_spread": "Spread (USD per ounce)",
+          "sim_seed": "Zaad"
+        }
+      },
+      "oanda": {
+        "title": "OANDA verbinden",
+        "description": "Haal je token op via het accountportaal: My Services, Manage API Access.",
+        "data": {
+          "token": "API-token",
+          "account_id": "Account-ID",
+          "environment": "Omgeving",
+          "symbol": "Instrument",
+          "timeframe": "Tijdsframe",
+          "mode": "Modus"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Kan OANDA niet bereiken. Controleer je internetverbinding.",
+      "invalid_token": "Het API-token wordt geweigerd.",
+      "invalid_account": "Account-ID onbekend, of het hoort bij de andere omgeving (practice tegenover live).",
+      "insufficient_history": "Te weinig historie voor een zinnige analyse; minimaal 60 candles nodig."
+    },
+    "abort": {
+      "already_configured": "Dit instrument is al ingesteld voor dit account."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Gold Scalper afstellen",
+        "description": "Strategie- en risico-instellingen. De risicolimieten zijn noodremmen: bij overschrijding volgt een noodstop die handmatig hervat moet worden.",
+        "data": {
+          "mode": "Modus",
+          "update_seconds": "Verversingsinterval",
+          "units": "Positiegrootte (ounce)",
+          "max_units": "Maximale positiegrootte",
+          "starting_balance": "Startbalans papermodus",
+          "max_spread": "Maximale spread",
+          "min_edge_multiple": "Vereiste marge boven de kosten",
+          "entry_threshold": "Instapdrempel",
+          "trading_start_hour": "Handel vanaf (UTC)",
+          "trading_end_hour": "Handel tot (UTC)",
+          "max_daily_loss_pct": "Maximaal dagverlies",
+          "equity_floor_pct": "Equity-ondergrens",
+          "max_trades_per_day": "Maximaal trades per dag",
+          "max_consecutive_losses": "Verliezers op rij voor pauze"
+        }
+      }
+    },
+    "error": {
+      "hours_inverted": "Het beginuur moet vóór het einduur liggen.",
+      "units_above_cap": "De positiegrootte ligt boven het ingestelde maximum."
+    }
+  },
+  "services": {
+    "prepare_shutdown": {
+      "name": "Afwikkelen voor herstart",
+      "description": "Stopt met openen en wikkelt lopende posities af."
+    },
+    "close_all": {
+      "name": "Alles sluiten",
+      "description": "Sluit alle open posities direct."
+    },
+    "resume": {
+      "name": "Hervatten",
+      "description": "Heft een noodstop op na handmatige controle."
+    },
+    "generate_report": {
+      "name": "Keuringsrapport maken",
+      "description": "Schrijft een HTML-rapport naar je configuratiemap."
+    }
+  },
+  "selector": {
+    "venue": {
+      "options": {
+        "simulator": "Simulator (geen account nodig)",
+        "oanda": "OANDA (echte marktdata)"
+      }
+    }
+  }
+}

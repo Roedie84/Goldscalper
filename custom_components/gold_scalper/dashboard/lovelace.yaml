@@ -1,0 +1,136 @@
+# Lovelace-dashboard voor Home Assistant.
+#
+# LET OP: dit verwijst naar entiteiten die de HA-integratielaag aanmaakt, en die
+# laag bestaat in deze versie nog niet (zie de installatiesectie in de README).
+# Het standalone HTML-rapport uit dashboard/report.py werkt wél direct.
+#
+# Plaatsen via Instellingen -> Dashboards -> Ruwe configuratie-editor.
+
+views:
+  - title: Gold Scalper
+    path: gold-scalper
+    icon: mdi:gold
+    cards:
+
+      # -- Toestand in één oogopslag ------------------------------------------
+      - type: horizontal-stack
+        cards:
+          - type: entity
+            entity: sensor.gold_scalper_mode
+            name: Modus
+            icon: mdi:shield-check
+          - type: entity
+            entity: sensor.gold_scalper_lifecycle_state
+            name: Toestand
+          - type: entity
+            entity: binary_sensor.gold_scalper_safe_to_restart
+            name: Veilig herstarten
+
+      # -- Noodbediening -------------------------------------------------------
+      # Bovenaan, want als je die nodig hebt wil je niet scrollen.
+      - type: entities
+        title: Bediening
+        entities:
+          - entity: switch.gold_scalper_trading_enabled
+            name: Handel actief
+          - type: button
+            name: Afwikkelen voor herstart
+            icon: mdi:stop-circle-outline
+            action_name: Start
+            tap_action:
+              action: call-service
+              service: gold_scalper.prepare_shutdown
+          - type: button
+            name: Alles sluiten
+            icon: mdi:close-octagon
+            action_name: Nu
+            tap_action:
+              action: call-service
+              service: gold_scalper.close_all
+              confirmation:
+                text: Alle open posities direct sluiten tegen marktprijs?
+
+      # -- Resultaat -----------------------------------------------------------
+      - type: glance
+        title: Resultaat
+        columns: 4
+        entities:
+          - entity: sensor.gold_scalper_net_pnl
+            name: Netto
+          - entity: sensor.gold_scalper_total_costs
+            name: Kosten
+          - entity: sensor.gold_scalper_win_rate
+            name: Winst%
+          - entity: sensor.gold_scalper_profit_factor
+            name: PF
+          - entity: sensor.gold_scalper_trades_today
+            name: Vandaag
+          - entity: sensor.gold_scalper_t_statistic
+            name: t-stat
+          - entity: sensor.gold_scalper_cost_ratio
+            name: Kostenratio
+          - entity: sensor.gold_scalper_max_drawdown
+            name: Max DD
+
+      - type: history-graph
+        title: Equity
+        hours_to_show: 168
+        entities:
+          - sensor.gold_scalper_equity
+          - sensor.gold_scalper_cumulative_costs
+
+      # -- Markt ---------------------------------------------------------------
+      - type: entities
+        title: Markt
+        entities:
+          - sensor.gold_scalper_price
+          - sensor.gold_scalper_spread
+          - sensor.gold_scalper_atr
+          - sensor.gold_scalper_regime
+          - sensor.gold_scalper_signal
+          - sensor.gold_scalper_confidence
+
+      # -- Waarom er niet gehandeld wordt --------------------------------------
+      - type: markdown
+        title: Signaaltrechter
+        content: >
+          {% set s = state_attr('sensor.gold_scalper_signal','rejections') or {} %}
+          Evaluaties: **{{ states('sensor.gold_scalper_evaluations') }}** ·
+          gehandeld: **{{ states('sensor.gold_scalper_trades_today') }}**
+
+          {% for reason, count in (s.items() | sort(attribute='1', reverse=true)) %}
+          - {{ reason }}: {{ count }}
+          {% endfor %}
+
+      # -- Poort naar live -----------------------------------------------------
+      - type: markdown
+        title: Bewijsfase
+        content: >
+          {% set g = state_attr('sensor.gold_scalper_live_gate','checks') or {} %}
+          {% for check, passed in g.items() %}
+          {{ '✓' if passed else '✗' }} {{ check | replace('_',' ') }}
+          {% endfor %}
+
+          {% set r = state_attr('sensor.gold_scalper_live_gate','blocking_reasons') or [] %}
+          {% if r %}**Nog open:**{% for reason in r %}
+          - {{ reason }}{% endfor %}{% endif %}
+
+      # -- Open posities -------------------------------------------------------
+      - type: markdown
+        title: Open posities
+        content: >
+          {% set p = state_attr('sensor.gold_scalper_positions','positions') or [] %}
+          {% if p %}{% for pos in p %}
+          **{{ pos.side }}** {{ pos.volume }} @ {{ pos.open_price }} ·
+          nu {{ pos.current_price }} · {{ pos.profit }} · SL {{ pos.sl }}
+          {% endfor %}{% else %}Geen open posities.{% endif %}
+
+      # -- Risico --------------------------------------------------------------
+      - type: entities
+        title: Risicobewaking
+        entities:
+          - sensor.gold_scalper_risk_state
+          - sensor.gold_scalper_consecutive_losses
+          - sensor.gold_scalper_daily_loss
+          - binary_sensor.gold_scalper_data_problem
+          - sensor.gold_scalper_heartbeat_age
