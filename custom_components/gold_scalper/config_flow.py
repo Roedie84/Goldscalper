@@ -12,6 +12,7 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     NumberSelector, NumberSelectorConfig, NumberSelectorMode,
     SelectSelector, SelectSelectorConfig, SelectSelectorMode,
     TextSelector, TextSelectorConfig, TextSelectorType,
@@ -21,7 +22,7 @@ from .broker.adapter import VenueError
 from .broker.oanda import OandaVenue
 from .broker.public_data import PublicDataVenue
 from .const import (
-    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, DEFAULT_ASSUMED_SPREAD,
+    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_SHOW_PANEL, DEFAULT_ASSUMED_SPREAD,
     PUBLIC_SYMBOLS, VENUE_PUBLIC, CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
     DEFAULT_SIM_SEED, DEFAULT_SIM_SPREAD, DEFAULT_VENUE, VENUES,
     VENUE_OANDA, VENUE_SIMULATOR, CONF_ENTRY_THRESHOLD, CONF_ENVIRONMENT, CONF_EQUITY_FLOOR_PCT,
@@ -307,5 +308,11 @@ class GoldScalperOptionsFlow(OptionsFlow):
             vol.Required(CONF_MAX_CONSECUTIVE_LOSSES,
                          default=default(CONF_MAX_CONSECUTIVE_LOSSES, 5)):
                 _number(2, 20, 1, slider=True),
+
+            # Het rapportpaneel is zonder authenticatie leesbaar voor iedereen
+            # die je Home Assistant kan bereiken. Er staan geen tokens of
+            # inloggegevens in, maar wel je handelsresultaten.
+            vol.Required(CONF_SHOW_PANEL, default=default(CONF_SHOW_PANEL, True)):
+                BooleanSelector(),
         })
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

@@ -69,7 +69,8 @@
           "max_daily_loss_pct": "Maximaal dagverlies",
           "equity_floor_pct": "Equity-ondergrens",
           "max_trades_per_day": "Maximaal trades per dag",
-          "max_consecutive_losses": "Verliezers op rij voor pauze"
+          "max_consecutive_losses": "Verliezers op rij voor pauze",
+          "show_panel": "Toon 'Gold Scalper' in de zijbalk"
         }
       }
     },

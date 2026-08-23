@@ -33,6 +33,7 @@ CONF_MAX_TRADES_PER_DAY: Final = "max_trades_per_day"
 CONF_MAX_CONSECUTIVE_LOSSES: Final = "max_consecutive_losses"
 CONF_EQUITY_FLOOR_PCT: Final = "equity_floor_pct"
 
+CONF_SHOW_PANEL: Final = "show_panel"
 CONF_DRAIN_POLICY: Final = "drain_policy"
 CONF_STARTING_BALANCE: Final = "starting_balance"
 

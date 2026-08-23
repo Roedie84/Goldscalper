@@ -10,10 +10,11 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
-    DOMAIN, PLATFORMS, REPORT_FILENAME, SERVICE_CLOSE_ALL, SERVICE_GENERATE_REPORT,
-    SERVICE_PREPARE_SHUTDOWN, SERVICE_RESUME,
+    CONF_SHOW_PANEL, DOMAIN, PLATFORMS, REPORT_FILENAME, SERVICE_CLOSE_ALL,
+    SERVICE_GENERATE_REPORT, SERVICE_PREPARE_SHUTDOWN, SERVICE_RESUME,
 )
 from .coordinator import GoldScalperCoordinator
+from .http import async_register_frontend, async_unregister_frontend
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +27,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+
+    # Zijbalk-item en rapportadres. Gebeurt automatisch: het dashboard hoort
+    # er te zijn zonder dat je eerst een knop indrukt of YAML plakt.
+    options = {**entry.data, **entry.options}
+    await async_register_frontend(hass, options.get(CONF_SHOW_PANEL, True))
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
 
@@ -80,6 +87,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unloaded:
         coordinator: GoldScalperCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
         await coordinator.async_shutdown_hook()
+        await async_unregister_frontend(hass)
     return unloaded
 
 
