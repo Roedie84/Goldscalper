@@ -21,9 +21,11 @@ from homeassistant.helpers.selector import (
 from .broker.adapter import VenueError
 from .broker.oanda import OandaVenue
 from .broker.public_data import PublicDataVenue
+from .broker.stooq import StooqVenue
 from .const import (
-    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_SHOW_PANEL, DEFAULT_ASSUMED_SPREAD,
-    PUBLIC_SYMBOLS, VENUE_PUBLIC, CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
+    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_REGIME_SWITCHING, CONF_SHOW_PANEL, DEFAULT_ASSUMED_SPREAD,
+    PUBLIC_SYMBOLS, VENUE_PUBLIC, VENUE_STOOQ, STOOQ_SYMBOLS, STOOQ_TIMEFRAMES,
+    CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
     DEFAULT_SIM_SEED, DEFAULT_SIM_SPREAD, DEFAULT_VENUE, VENUES,
     VENUE_OANDA, VENUE_SIMULATOR, CONF_ENTRY_THRESHOLD, CONF_ENVIRONMENT, CONF_EQUITY_FLOOR_PCT,
     CONF_MAX_CONSECUTIVE_LOSSES, CONF_MAX_DAILY_LOSS_PCT, CONF_MAX_SPREAD,
@@ -74,6 +76,8 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
             venue = user_input[CONF_VENUE]
             if venue == VENUE_PUBLIC:
                 return await self.async_step_public()
+            if venue == VENUE_STOOQ:
+                return await self.async_step_stooq()
             if venue == VENUE_SIMULATOR:
                 return await self.async_step_simulator()
             return await self.async_step_oanda()
@@ -95,6 +99,7 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Echte goudkoersen, papierhandel, geen account."""
         errors: dict[str, str] = {}
+        detail = ""
 
         if user_input is not None:
             venue = PublicDataVenue(
@@ -109,9 +114,17 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
                 if len(candles) < 60:
                     errors["base"] = "insufficient_history"
+                    detail = (
+                        f"Slechts {len(candles)} candles ontvangen; minimaal 60 nodig. "
+                        "Buiten handelsuren levert de bron soms te weinig."
+                    )
             except VenueError as err:
-                _LOGGER.debug("Publieke databron faalde: %s", err)
-                errors["base"] = "cannot_connect"
+                # De werkelijke reden tonen in plaats van 'kan niet bereiken'.
+                # Die melding dekt vijf verschillende oorzaken en laat je raden
+                # welke het is.
+                _LOGGER.warning("Publieke databron faalde: %s", err)
+                errors["base"] = "fetch_failed"
+                detail = str(err)
 
             if not errors:
                 if self.source != SOURCE_RECONFIGURE:
@@ -151,11 +164,80 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "note": (
                     "Echte goudkoersen van Yahoo Finance, uitvoering volledig op "
-                    "papier. Let op: publieke bronnen leveren geen bied- en "
-                    "laatprijs, dus de spread is een aanname. Op nul zetten "
-                    "schakelt de transactiekosten uit; het resultaat is dan "
-                    "fictief en live handel blijft vergrendeld."
+                    "papier. Publieke bronnen leveren geen bied- en laatprijs, dus "
+                    "de spread is een aanname. Op nul zetten schakelt de "
+                    "transactiekosten uit; het resultaat is dan fictief en live "
+                    "handel blijft vergrendeld."
+                    + (f"\n\nFoutdetails: {detail}" if detail else "")
+                ),
+                "detail": detail or "-",
+            },
+        )
+
+    async def async_step_stooq(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Stooq: CSV zonder sleutel, maar alleen daggegevens."""
+        errors: dict[str, str] = {}
+        detail = ""
+
+        if user_input is not None:
+            venue = StooqVenue(
+                session=async_get_clientsession(self.hass),
+                symbol=user_input[CONF_SYMBOL],
+                assumed_spread=user_input[CONF_ASSUMED_SPREAD],
+            )
+            try:
+                candles = await venue.candles(
+                    user_input[CONF_SYMBOL], user_input[CONF_TIMEFRAME], 120
                 )
+                if len(candles) < 60:
+                    errors["base"] = "insufficient_history"
+                    detail = f"Slechts {len(candles)} candles; minimaal 60 nodig."
+            except VenueError as err:
+                _LOGGER.warning("Stooq faalde: %s", err)
+                errors["base"] = "fetch_failed"
+                detail = str(err)
+
+            if not errors:
+                data = {**user_input, CONF_VENUE: VENUE_STOOQ, CONF_MODE: "paper"}
+                if self.source == SOURCE_RECONFIGURE:
+                    return self.async_update_reload_and_abort(
+                        self._get_reconfigure_entry(), data_updates=data
+                    )
+                await self.async_set_unique_id(f"stooq_{user_input[CONF_SYMBOL]}")
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=f"{user_input[CONF_SYMBOL].upper()} (Stooq)", data=data,
+                )
+
+        return self.async_show_form(
+            step_id="stooq",
+            data_schema=vol.Schema({
+                vol.Required(CONF_SYMBOL, default="xauusd"): SelectSelector(
+                    SelectSelectorConfig(options=STOOQ_SYMBOLS,
+                                         mode=SelectSelectorMode.DROPDOWN)
+                ),
+                vol.Required(CONF_TIMEFRAME, default="1d"): SelectSelector(
+                    SelectSelectorConfig(options=STOOQ_TIMEFRAMES,
+                                         mode=SelectSelectorMode.DROPDOWN)
+                ),
+                vol.Required(
+                    CONF_ASSUMED_SPREAD, default=DEFAULT_ASSUMED_SPREAD
+                ): NumberSelector(
+                    NumberSelectorConfig(min=0.0, max=2.0, step=0.01,
+                                         unit_of_measurement="USD",
+                                         mode=NumberSelectorMode.SLIDER)
+                ),
+            }),
+            errors=errors,
+            description_placeholders={
+                "note": (
+                    "Stooq levert CSV zonder sleutel of toestemmingspagina, maar "
+                    "alleen daggegevens. Ongeschikt voor scalping, bruikbaar als "
+                    "Yahoo je regio blokkeert."
+                    + (f"\n\nFoutdetails: {detail}" if detail else "")
+                ),
             },
         )
 
@@ -282,6 +364,8 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
             self._reconfigure_venue = venue
             if venue == VENUE_PUBLIC:
                 return await self.async_step_public()
+            if venue == VENUE_STOOQ:
+                return await self.async_step_stooq()
             if venue == VENUE_SIMULATOR:
                 return await self.async_step_simulator()
             return await self.async_step_oanda()
@@ -388,6 +472,13 @@ class GoldScalperOptionsFlow(OptionsFlow):
             # Het rapportpaneel is zonder authenticatie leesbaar voor iedereen
             # die je Home Assistant kan bereiken. Er staan geen tokens of
             # inloggegevens in, maar wel je handelsresultaten.
+            # Zie de toelichting bij ScalpConfig.regime_switching: optellen van
+            # trend en mean reversion laat ze elkaar opheffen.
+            vol.Required(
+                CONF_REGIME_SWITCHING,
+                default=default(CONF_REGIME_SWITCHING, True),
+            ): BooleanSelector(),
+
             vol.Required(CONF_SHOW_PANEL, default=default(CONF_SHOW_PANEL, True)):
                 BooleanSelector(),
         })

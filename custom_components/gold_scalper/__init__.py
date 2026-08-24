@@ -71,8 +71,11 @@ def _register_services(hass: HomeAssistant) -> None:
 
         for coordinator in _coordinators():
             path = hass.config.path(call.data.get("path") or REPORT_FILENAME)
+            from homeassistant.util import dt as dt_util
+
             written = await hass.async_add_executor_job(
-                write_report, coordinator.db, coordinator.run_id, path, coordinator.gate
+                write_report, coordinator.db, coordinator.run_id, path,
+                coordinator.gate, dt_util.DEFAULT_TIME_ZONE,
             )
             _LOGGER.info("Keuringsrapport geschreven naar %s", written)
 

@@ -25,7 +25,7 @@ omdat ze onaangenaam zijn:
 from __future__ import annotations
 
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Sequence
 
 from .database import Trade, TradeDatabase
@@ -112,15 +112,24 @@ def compute(trades: Sequence[Trade], starting_balance: float = 10_000.0) -> dict
         "net_pnl": round(net_total, 2),
         "gross_pnl": round(gross_total, 2),
         "total_costs": round(cost_total, 2),
-        "cost_ratio": round(_safe(cost_total, abs(gross_total), float("inf")), 3),
+        "cost_ratio": (
+            round(cost_total / abs(gross_total), 3) if gross_total else None
+        ),
         "cost_per_trade": round(_safe(cost_total, len(closed)), 4),
 
-        "profit_factor": round(_safe(gross_profit, gross_loss, float("inf")), 3),
+        # None in plaats van oneindig: Infinity is geen geldige JSON en breekt
+        # strikte parsers, waaronder sommige dashboardtools. Zonder verliezers
+        # ís er geen verhouding, en dat is eerlijker dan een oneindig getal.
+        "profit_factor": (
+            round(gross_profit / gross_loss, 3) if gross_loss > 0 else None
+        ),
         "expectancy": round(mean_net, 4),
         "avg_win": round(_safe(sum(wins), len(wins)), 4),
         "avg_loss": round(_safe(sum(losses), len(losses)), 4),
-        "largest_win": round(max(nets), 2),
-        "largest_loss": round(min(nets), 2),
+        # Bij nul verliezers is er geen grootste verlies. min(nets) zou dan de
+        # kleinste winst teruggeven en die als verlies presenteren.
+        "largest_win": round(max(wins), 2) if wins else 0.0,
+        "largest_loss": round(min(losses), 2) if losses else 0.0,
 
         "return_pct": round(_safe(net_total, starting_balance) * 100.0, 3),
         "max_drawdown": round(max_dd, 2),
@@ -162,7 +171,7 @@ def verdict(stats: dict) -> dict:
     reasons: list[str] = []
     if stats["net_pnl"] <= 0:
         reasons.append("netto resultaat is niet positief")
-    if stats["cost_ratio"] >= 1.0:
+    if stats["cost_ratio"] is not None and stats["cost_ratio"] >= 1.0:
         reasons.append(
             f"kosten ({stats['total_costs']:.0f}) overtreffen de bruto marktbeweging "
             f"die is gevangen ({abs(stats['gross_pnl']):.0f})"
@@ -177,8 +186,17 @@ def verdict(stats: dict) -> dict:
             f"t-statistiek {stats['t_statistic']:.2f} ligt onder {T_STAT_THRESHOLD}: "
             "het resultaat is niet te onderscheiden van toeval"
         )
-    if stats["profit_factor"] < 1.2:
+    if stats["profit_factor"] is not None and stats["profit_factor"] < 1.2:
         reasons.append(f"profit factor {stats['profit_factor']} is te laag voor marge")
+    elif stats["profit_factor"] is None and stats["losses"] == 0:
+        # Geen enkele verliezer over honderden trades is geen goede strategie
+        # maar een waarschuwingssignaal: meestal een fout in de kostenboeking,
+        # de exitlogica of de simulatie. Dit ongemerkt laten passeren zou de
+        # poort openzetten op basis van een boekhoudfout.
+        reasons.append(
+            f"geen enkele verliezende trade over {trades} trades; dat wijst op "
+            "een fout in de administratie of exitlogica, niet op een edge"
+        )
     if stats["max_drawdown_pct"] > 25:
         reasons.append(f"drawdown van {stats['max_drawdown_pct']}% is te groot")
 
@@ -249,19 +267,28 @@ def cost_projection(
     return out
 
 
-def compute_for_run(db: TradeDatabase, run_id: int) -> dict:
-    """Metrieken voor één run, inclusief de signaalstatistiek."""
+def compute_for_run(
+    db: TradeDatabase, run_id: int, trades: Sequence[Trade] | None = None
+) -> dict:
+    """Metrieken voor één run, inclusief de signaalstatistiek.
+
+    ``trades`` kan meegegeven worden als de aanroeper ze al heeft. Zonder dat
+    werden ze hier twee keer ingelezen, en omdat de coordinator deze functie
+    elke cyclus aanroept liep dat bij duizenden trades op tot honderden
+    milliseconden per twintig seconden - aan het herhaaldelijk inlezen van
+    precies dezelfde rijen.
+    """
     run = db.get_run(run_id)
     if not run:
         return {"trades": 0, "verdict": "no_data", "verdict_text": "Run bestaat niet."}
-    stats = compute(db.closed_trades(run_id), run["starting_balance"])
+    if trades is None:
+        trades = db.closed_trades(run_id)
+    stats = compute(trades, run["starting_balance"])
     stats["run_id"] = run_id
     stats["mode"] = run["mode"]
     stats["strategy_version"] = run["strategy_version"]
     stats["started_at"] = run["started_at"]
     stats["signals"] = db.signal_stats(run_id)
-
-    trades = db.closed_trades(run_id)
     stats["cost_projection"] = cost_projection(trades)
 
     # Markeer expliciet als er zonder kosten gedraaid is. Zonder dit ziet een
@@ -276,13 +303,23 @@ def compute_for_run(db: TradeDatabase, run_id: int) -> dict:
     return stats
 
 
-def daily_breakdown(trades: Sequence[Trade]) -> list[dict]:
-    """Resultaat per dag. Nuttig om te zien of winst uit één uitschieter komt."""
+def daily_breakdown(trades: Sequence[Trade], tz=None) -> list[dict]:
+    """Resultaat per dag. Nuttig om te zien of winst uit één uitschieter komt.
+
+    Groepeert op lokale kalenderdag als er een tijdzone is meegegeven. Op UTC
+    groeperen zou een trade van 01:30 Nederlandse tijd op de vorige dag zetten,
+    en dan telt je 'handelsdagen'-criterium verkeerd.
+    """
     buckets: dict[str, list[Trade]] = {}
     for t in trades:
         if not t.close_time or t.net_pnl is None:
             continue
-        day = datetime.fromisoformat(t.close_time).date().isoformat()
+        moment = datetime.fromisoformat(t.close_time)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        if tz is not None:
+            moment = moment.astimezone(tz)
+        day = moment.date().isoformat()
         buckets.setdefault(day, []).append(t)
 
     out = []

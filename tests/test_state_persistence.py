@@ -75,3 +75,15 @@ def test_coordinator_restores_before_first_cycle():
     load_pos = setup.index("async_load()")
     assert "warm_up" not in setup[:load_pos], "historie geladen vóór de toestand"
     assert "self.risk.halt" in setup, "noodstop wordt niet hersteld"
+
+
+def test_gate_is_recomputed_when_trades_change():
+    """De poort werd alleen bij opstarten berekend en meldde daardoor na
+    honderden trades nog steeds '0 trades in de bewijsfase' - precies het
+    getal waar de hele bewijsfase op steunt."""
+    from pathlib import Path
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "coordinator.py").read_text()
+    update = source.split("async def _async_update_data")[1].split("\n    async def ")[0]
+    assert "_refresh_gate()" in update, "poort wordt niet bijgewerkt tijdens het draaien"
+    assert "_gate_trade_count" in update, "poort wordt elke cyclus opnieuw berekend"

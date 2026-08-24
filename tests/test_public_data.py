@@ -10,21 +10,38 @@ from gold_scalper.storage.database import Trade
 from gold_scalper.storage.performance import cost_projection
 
 
+class FakeURL:
+    def __init__(self, host): self.host = host
+
+
 class FakeResponse:
-    def __init__(self, payload, status=200):
+    """Bootst een aiohttp-respons na, inclusief headers en URL.
+
+    Die twee ontbraken eerst, waardoor de testdubbel niet meer leek op wat
+    aiohttp werkelijk teruggeeft en een content-type-controle er dwars
+    doorheen viel.
+    """
+
+    def __init__(self, payload, status=200, content_type="application/json",
+                 host="query1.finance.yahoo.com"):
         self._payload, self.status = payload, status
-    async def json(self): return self._payload
+        self.headers = {"Content-Type": content_type}
+        self.url = FakeURL(host)
+
+    async def json(self, content_type=None): return self._payload
     async def __aenter__(self): return self
     async def __aexit__(self, *a): return False
 
 
 class FakeSession:
-    def __init__(self, payload, status=200):
+    def __init__(self, payload, status=200, content_type="application/json",
+                 host="query1.finance.yahoo.com"):
         self.payload, self.status = payload, status
+        self.content_type, self.host = content_type, host
         self.calls = []
     def get(self, url, **kw):
         self.calls.append({"url": url, **kw})
-        return FakeResponse(self.payload, self.status)
+        return FakeResponse(self.payload, self.status, self.content_type, self.host)
 
 
 def chart(timestamps, o, h, l, c, v=None, price=3300.0, state="REGULAR"):
@@ -44,8 +61,11 @@ SAMPLE = chart(
 )
 
 
-def venue(payload=SAMPLE, spread=0.0, status=200):
-    return PublicDataVenue(FakeSession(payload, status), "GC=F", spread)
+def venue(payload=SAMPLE, spread=0.0, status=200,
+          content_type="application/json", host="query1.finance.yahoo.com"):
+    return PublicDataVenue(
+        FakeSession(payload, status, content_type, host), "GC=F", spread
+    )
 
 
 # ---------------- parsing ----------------
@@ -179,3 +199,40 @@ def test_market_state_maps_to_tradeable(state, expected):
     payload = chart([1], [1.0], [2.0], [0.5], [1.5], state=state)
     q = asyncio.run(venue(payload).quote())
     assert q.tradeable is expected
+
+
+# ---------------- kerncijfers zonder verliezers ----------------
+
+def test_no_losses_gives_no_profit_factor_not_infinity():
+    """Infinity is geen geldige JSON en breekt strikte parsers."""
+    from gold_scalper.storage.performance import compute
+    stats = compute([_trade(1.0) for _ in range(5)], 1000.0)
+    assert stats["profit_factor"] is None
+    import json
+    json.dumps(stats)  # mag niet 'Infinity' bevatten
+    assert "Infinity" not in json.dumps(stats)
+
+
+def test_largest_loss_is_zero_without_losers():
+    """min(nets) zou anders de kleinste winst als verlies presenteren."""
+    from gold_scalper.storage.performance import compute
+    stats = compute([_trade(1.22)], 1000.0)
+    assert stats["largest_loss"] == 0.0
+    assert stats["largest_win"] == 1.22
+
+
+def test_flawless_run_is_blocked_not_passed():
+    """Nul verliezers over honderden trades wijst op een boekhoudfout."""
+    from gold_scalper.storage.performance import compute, verdict
+    stats = compute([_trade(1.0) for _ in range(600)], 1000.0)
+    result = verdict(stats)
+    assert result["verdict"] == "failed"
+    assert any("verliezende trade" in r for r in result["blocking_reasons"])
+
+
+def test_normal_mixed_run_computes_profit_factor():
+    from gold_scalper.storage.performance import compute
+    trades = [_trade(2.0) for _ in range(6)] + [_trade(-1.0) for _ in range(4)]
+    stats = compute(trades, 1000.0)
+    assert stats["profit_factor"] == pytest.approx(3.0)
+    assert stats["largest_loss"] == -1.0

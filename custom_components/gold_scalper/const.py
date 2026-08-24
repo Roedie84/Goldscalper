@@ -25,6 +25,7 @@ CONF_MAX_UNITS: Final = "max_units"
 CONF_MAX_SPREAD: Final = "max_spread"
 CONF_MIN_EDGE_MULTIPLE: Final = "min_edge_multiple"
 CONF_ENTRY_THRESHOLD: Final = "entry_threshold"
+CONF_REGIME_SWITCHING: Final = "regime_switching"
 CONF_TRADING_START_HOUR: Final = "trading_start_hour"
 CONF_TRADING_END_HOUR: Final = "trading_end_hour"
 
@@ -42,7 +43,10 @@ CONF_STARTING_BALANCE: Final = "starting_balance"
 VENUE_SIMULATOR: Final = "simulator"
 VENUE_PUBLIC: Final = "public_data"
 VENUE_OANDA: Final = "oanda"
-VENUES: Final = [VENUE_PUBLIC, VENUE_SIMULATOR, VENUE_OANDA]
+VENUE_STOOQ: Final = "stooq"
+VENUES: Final = [VENUE_PUBLIC, VENUE_STOOQ, VENUE_SIMULATOR, VENUE_OANDA]
+STOOQ_SYMBOLS: Final = ["xauusd", "xaueur"]
+STOOQ_TIMEFRAMES: Final = ["1d", "1w"]
 
 CONF_ASSUMED_SPREAD: Final = "assumed_spread"
 #: Nul betekent: transactiekosten uitgeschakeld. Handig om de machinerie te

@@ -43,6 +43,27 @@ TOKENS = {
 }
 
 
+def _local(iso: str | None, tz=None, fmt: str = "%d-%m-%Y %H:%M") -> str:
+    """Toon een UTC-tijdstempel in de lokale tijdzone.
+
+    De database bewaart alles in UTC - dat is de enige zinnige keuze voor een
+    reeks die over zomertijdwissels heen loopt. Maar een rapport dat je om
+    17:31 opent en 15:31 toont, is verwarrend en maakt het lastig om een trade
+    terug te vinden in je eigen herinnering.
+    """
+    if not iso:
+        return "—"
+    try:
+        moment = datetime.fromisoformat(iso)
+    except ValueError:
+        return _esc(iso)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    if tz is not None:
+        moment = moment.astimezone(tz)
+    return moment.strftime(fmt)
+
+
 def _fmt(value, digits: int = 2, suffix: str = "") -> str:
     if value is None:
         return "—"
@@ -62,6 +83,29 @@ def _esc(text) -> str:
 # --------------------------------------------------------------------------- #
 
 
+def _downsample(values: list[float], target: int) -> list[float]:
+    """Dun een reeks uit tot ``target`` punten met behoud van de vorm.
+
+    De grafiek is 720 pixels breed; meer punten dan dat leveren geen zichtbaar
+    detail maar wel een enorme SVG. Bij 5000 trades scheelt dit de helft van de
+    opbouwtijd en tweederde van de bestandsgrootte.
+
+    Er wordt bewust *niet* gemiddeld maar gesampled met behoud van de uitersten
+    per blok: een middeling zou de drawdowns gladstrijken, en dat is precies
+    wat je wél wilt zien.
+    """
+    if len(values) <= target or target < 3:
+        return list(values)
+    block = len(values) / target
+    out = [values[0]]
+    for i in range(1, target - 1):
+        chunk = values[int(i * block):int((i + 1) * block)] or [out[-1]]
+        # Neem het punt dat het verst van het vorige ligt: behoudt pieken en dalen.
+        out.append(max(chunk, key=lambda v: abs(v - out[-1])))
+    out.append(values[-1])
+    return out
+
+
 def _line_chart(
     series: list[float],
     costs: list[float] | None = None,
@@ -75,6 +119,11 @@ def _line_chart(
     """
     if len(series) < 2:
         return _empty_chart(width, height, "Nog geen equitydata")
+
+    if len(series) > width:
+        if costs and len(costs) == len(series):
+            costs = _downsample(costs, width)
+        series = _downsample(series, width)
 
     pad_l, pad_r, pad_t, pad_b = 56, 16, 14, 24
     plot_w, plot_h = width - pad_l - pad_r, height - pad_t - pad_b
@@ -430,7 +479,12 @@ footer{margin-top:52px;padding-top:16px;border-top:1px solid %(rule)s;
 
 
 def build_report(
-    db: TradeDatabase, run_id: int, gate: dict | None = None, title: str = "Gold Scalper"
+    db: TradeDatabase,
+    run_id: int,
+    gate: dict | None = None,
+    title: str = "Gold Scalper",
+    tz=None,
+    refresh_seconds: int = 0,
 ) -> str:
     """Bouw het volledige HTML-rapport voor één run."""
     run = db.get_run(run_id) or {}
@@ -481,7 +535,7 @@ def build_report(
     for t in reversed(trades[-60:]):
         cls = "pos" if (t.net_pnl or 0) >= 0 else "neg"
         trade_rows += f"""<tr>
-      <td>{_esc((t.close_time or '')[:16].replace('T', ' '))}</td>
+      <td>{_local(t.close_time, tz, "%d-%m %H:%M")}</td>
       <td>{_esc(t.side)}</td>
       <td class="num">{_fmt(t.volume, 2)}</td>
       <td class="num">{_fmt(t.open_price, 2)}</td>
@@ -494,11 +548,25 @@ def build_report(
     if not trade_rows:
         trade_rows = '<tr><td colspan="9" class="empty">Nog geen gesloten trades.</td></tr>'
 
-    generated = datetime.now(timezone.utc).strftime("%d-%m-%Y %H:%M UTC")
+    now = datetime.now(tz or timezone.utc)
+    label = now.tzname() or "UTC"
+    generated = now.strftime(f"%d-%m-%Y %H:%M:%S {label}")
+
+    # Automatisch verversen via meta-refresh in plaats van JavaScript: het
+    # rapport blijft daarmee scriptvrij, wat van belang is omdat het paneel
+    # zonder authenticatie bereikbaar is.
+    #
+    # Nul betekent uit; dan blijft het een momentopname en moet je zelf
+    # verversen.
+    refresh_tag = (
+        f'<meta http-equiv="refresh" content="{int(refresh_seconds)}">'
+        if refresh_seconds and refresh_seconds > 0 else ""
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="nl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+{refresh_tag}
 <title>{_esc(title)} · keuringsrapport</title>
 <style>{_CSS}</style></head><body><div class="wrap">
 
@@ -507,8 +575,9 @@ def build_report(
     <h1>Keuringsrapport</h1>
     <p class="subtitle">{_esc(run.get('symbol', '—'))} · {_esc(run.get('mode', '—'))}modus
       · {_esc(run.get('strategy_version', '—'))}</p>
-    <p class="meta">Run {run_id} · gestart {_esc((run.get('started_at') or '—')[:16].replace('T', ' '))}
-      · opgemaakt {generated}</p>
+    <p class="meta">Run {run_id} · gestart {_local(run.get('started_at'), tz)}
+      · opgemaakt {generated}
+      {f"· ververst elke {int(refresh_seconds)}s" if refresh_seconds else ""}</p>
   </div>
   {_stamp(stats, gate)}
 </header>
@@ -584,9 +653,13 @@ def build_report(
 
 
 def write_report(
-    db: TradeDatabase, run_id: int, path: str | Path, gate: dict | None = None
+    db: TradeDatabase,
+    run_id: int,
+    path: str | Path,
+    gate: dict | None = None,
+    tz=None,
 ) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(build_report(db, run_id, gate), encoding="utf-8")
+    target.write_text(build_report(db, run_id, gate, tz=tz), encoding="utf-8")
     return target

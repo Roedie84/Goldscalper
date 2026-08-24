@@ -37,6 +37,15 @@ _LOGGER = logging.getLogger(__name__)
 REPORT_URL = "/api/gold_scalper/report"
 PANEL_URL_PATH = "gold-scalper"
 
+#: Hoe vaak het rapport zichzelf ververst, in seconden.
+#:
+#: Zestig is een compromis. De onderliggende data ververst elke twintig
+#: seconden, maar het rapport opnieuw opbouwen kost bij duizenden trades
+#: honderden milliseconden; drie keer per minuut zou dat verdrievoudigen
+#: zonder dat je meer ziet. Aan te passen met ?refresh=N, en 0 zet het uit.
+DEFAULT_REFRESH_SECONDS = 60
+MIN_REFRESH_SECONDS = 15
+
 
 class GoldScalperReportView(HomeAssistantView):
     """Bouwt het keuringsrapport bij elke aanvraag opnieuw."""
@@ -78,8 +87,19 @@ class GoldScalperReportView(HomeAssistantView):
         from .dashboard.report import build_report
 
         try:
+            refresh = int(request.query.get("refresh", DEFAULT_REFRESH_SECONDS))
+        except (TypeError, ValueError):
+            refresh = DEFAULT_REFRESH_SECONDS
+        if refresh:
+            refresh = max(MIN_REFRESH_SECONDS, refresh)
+
+        try:
+            from homeassistant.util import dt as dt_util
+
             html = await hass.async_add_executor_job(
-                build_report, coordinator.db, coordinator.run_id, coordinator.gate
+                build_report, coordinator.db, coordinator.run_id,
+                coordinator.gate, "Gold Scalper", dt_util.DEFAULT_TIME_ZONE,
+                refresh,
             )
         except Exception as err:  # noqa: BLE001
             _LOGGER.exception("Kon rapport niet bouwen")

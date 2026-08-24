@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from ..analysis.core import ema, linreg_slope, rma, safe_div, stdev, true_range
 from ..analysis.momentum import rsi
 from ..analysis.signals import Candles
+from ..analysis.trend import adx
 from ..analysis.volatility import atr, bollinger
 
 _LOGGER = logging.getLogger(__name__)
@@ -62,6 +63,22 @@ class ScalpConfig:
     trading_hours_utc: tuple[int, int] = (7, 20)
     #: Drempel voor de samengestelde scalpscore.
     entry_threshold: float = 0.45
+    #: Kies per marktregime tussen trendvolgend en contrair, in plaats van
+    #: beide op te tellen.
+    #:
+    #: De oorspronkelijke opzet telde de trendcomponent en de mean-reversion
+    #: component bij elkaar op. Die twee correleren -0,78: de een zegt 'volg de
+    #: beweging', de ander 'ga ertegenin'. Opgeteld heffen ze elkaar grotendeels
+    #: op, waardoor de samengestelde score zelden een drempel haalde. Dat was
+    #: geen selectiviteit maar besluiteloosheid.
+    #:
+    #: Met deze schakelaar bepaalt de ADX welke van de twee leidend is. Dat
+    #: levert bij dezelfde drempel ongeveer vijf keer zoveel kandidaten op.
+    #: Meer kandidaten is niet automatisch beter - de kostenpoort filtert nog
+    #: steeds - maar het is wél een strategie die een standpunt inneemt.
+    regime_switching: bool = True
+    #: ADX-waarde waarboven de markt als trendend geldt.
+    adx_trend_threshold: float = 25.0
     #: Commissie per lot per zijde; moet matchen met je BrokerCosts.
     commission_per_lot_per_side: float = 3.50
     #: Geschatte slippage per zijde in USD per ounce.
@@ -212,16 +229,35 @@ def evaluate(
     if vol_score < 0:
         return reject("volatility_regime", vol_note)
 
-    # Trend en mean reversion spreken elkaar per definitie tegen. Dat is geen
-    # bug: als ze het oneens zijn is er geen heldere kans, en dan zakt de score
-    # vanzelf onder de drempel.
-    score = 0.40 * trend_score + 0.35 * stretch_score + 0.25 * mom_score
-    direction = 1 if score > 0 else -1
+    if cfg.regime_switching:
+        # Laat de ADX bepalen welk verhaal geldt. In een trendende markt is
+        # 'ga tegen de beweging in' een slecht idee, en in een zijwaartse markt
+        # is 'volg de beweging' dat evenzeer.
+        adx_line, _, _ = adx(candles, 14)
+        adx_value = adx_line[-1] if adx_line and adx_line[-1] is not None else 0.0
+        trending = adx_value >= cfg.adx_trend_threshold
+        components["adx"] = round(adx_value, 1)
+        components["regime"] = "trend" if trending else "range"
+        if trending:
+            score = 0.70 * trend_score + 0.30 * mom_score
+            leading, supporting = trend_score, mom_score
+        else:
+            score = 0.70 * stretch_score + 0.30 * mom_score
+            leading, supporting = stretch_score, mom_score
+        # Vertrouwen op basis van of de steunende component meebeweegt met de
+        # leidende, in plaats van op de mate waarin twee tegengestelde
+        # componenten toevallig samenvallen.
+        confidence = max(0.0, min(1.0, 1.0 - abs(leading - supporting) / 2.0))
+    else:
+        # Optellen van trend en mean reversion. Bewaard voor vergelijking;
+        # zie de toelichting bij ``regime_switching``.
+        score = 0.40 * trend_score + 0.35 * stretch_score + 0.25 * mom_score
+        agreement = 1.0 - (
+            abs(trend_score - stretch_score) + abs(trend_score - mom_score)
+        ) / 4.0
+        confidence = max(0.0, min(1.0, agreement))
 
-    agreement = 1.0 - (
-        abs(trend_score - stretch_score) + abs(trend_score - mom_score)
-    ) / 4.0
-    confidence = max(0.0, min(1.0, agreement))
+    direction = 1 if score > 0 else -1
 
     if abs(score) < cfg.entry_threshold:
         return reject(

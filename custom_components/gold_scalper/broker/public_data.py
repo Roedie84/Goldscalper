@@ -46,7 +46,12 @@ _LOGGER = logging.getLogger(__name__)
 
 TIMEOUT = ClientTimeout(total=20)
 
-BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
+#: Yahoo verdeelt de belasting over twee hosts. Faalt de een, dan is de ander
+#: vaak wel bereikbaar; ze worden daarom achter elkaar geprobeerd.
+HOSTS = (
+    "https://query1.finance.yahoo.com/v8/finance/chart",
+    "https://query2.finance.yahoo.com/v8/finance/chart",
+)
 
 #: Yahoo weigert verzoeken zonder herkenbare user-agent met HTTP 429.
 HEADERS = {
@@ -104,8 +109,9 @@ class PublicDataVenue(ExecutionVenue):
     def costs_disabled(self) -> bool:
         return self.assumed_spread <= 0.0
 
-    async def _fetch(self, symbol: str, interval: str, rng: str) -> dict:
-        url = f"{BASE}/{symbol}"
+    async def _fetch_one(self, base: str, symbol: str, interval: str, rng: str) -> dict:
+        """Eén poging bij één host. Faalt met een specifieke reden."""
+        url = f"{base}/{symbol}"
         try:
             async with self._session.get(
                 url,
@@ -115,7 +121,13 @@ class PublicDataVenue(ExecutionVenue):
             ) as response:
                 if response.status == 429:
                     raise VenueError(
-                        "Yahoo knijpt ons af (429). Verhoog het verversingsinterval."
+                        "Yahoo knijpt af (HTTP 429). Verhoog het verversingsinterval "
+                        "of wacht een kwartier."
+                    )
+                if response.status in (401, 403):
+                    raise VenueError(
+                        f"Yahoo weigert de aanvraag (HTTP {response.status}). Dit "
+                        "gebeurt als Yahoo een cookie of crumb eist voor jouw regio."
                     )
                 if response.status == 404:
                     raise VenueError(
@@ -124,19 +136,55 @@ class PublicDataVenue(ExecutionVenue):
                     )
                 if response.status >= 400:
                     raise VenueError(f"Yahoo antwoordde met HTTP {response.status}")
-                payload = await response.json()
+
+                # Yahoo stuurt Europese bezoekers regelmatig door naar een
+                # cookie-toestemmingspagina. Dan komt er HTML terug in plaats van
+                # JSON, en zonder deze controle zie je alleen een vage
+                # netwerkfout in plaats van de werkelijke oorzaak.
+                content_type = response.headers.get("Content-Type", "")
+                if "json" not in content_type.lower():
+                    host = str(response.url.host or "")
+                    if "consent" in host or "guce" in host:
+                        raise VenueError(
+                            "Yahoo leidt door naar een cookie-toestemmingspagina "
+                            f"({host}). Deze bron is vanaf jouw netwerk niet "
+                            "bruikbaar zonder toestemming te geven."
+                        )
+                    raise VenueError(
+                        f"Yahoo gaf {content_type or 'onbekend formaat'} terug in "
+                        "plaats van JSON; waarschijnlijk een tussenpagina."
+                    )
+
+                payload = await response.json(content_type=None)
         except VenueError:
             raise
+        except TimeoutError as err:
+            raise VenueError(f"Yahoo antwoordde niet binnen {TIMEOUT.total}s") from err
         except ClientError as err:
-            raise VenueError(f"Netwerkfout richting Yahoo: {err}") from err
+            raise VenueError(
+                f"Netwerkfout richting Yahoo: {type(err).__name__}: {err}"
+            ) from err
 
         chart = payload.get("chart") or {}
         if chart.get("error"):
-            raise VenueError(f"Yahoo: {chart['error'].get('description', 'onbekende fout')}")
+            raise VenueError(
+                f"Yahoo: {chart['error'].get('description', 'onbekende fout')}"
+            )
         results = chart.get("result") or []
         if not results:
             raise VenueError(f"Yahoo gaf geen data voor {symbol}")
         return results[0]
+
+    async def _fetch(self, symbol: str, interval: str, rng: str) -> dict:
+        """Probeer beide hosts; meld de laatste fout als beide falen."""
+        errors: list[str] = []
+        for base in HOSTS:
+            try:
+                return await self._fetch_one(base, symbol, interval, rng)
+            except VenueError as err:
+                errors.append(f"{base.split('/')[2]}: {err}")
+                _LOGGER.debug("Yahoo-host faalde: %s", errors[-1])
+        raise VenueError(" | ".join(errors))
 
     # -- marktdata ---------------------------------------------------------- #
 

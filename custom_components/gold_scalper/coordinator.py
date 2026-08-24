@@ -28,12 +28,14 @@ from .broker.adapter import ExecutionVenue, VenueError, VenueQuote
 from .broker.exits import ExitConfig, ExitManager
 from .broker.oanda import OandaVenue
 from .broker.public_data import PublicDataVenue
+from .broker.stooq import StooqVenue
 from .broker.simulator import SimulatorVenue
 from .broker.paper import CONTRACT_SIZE, BrokerCosts, PaperBroker
 from .broker.paper import Quote as PaperQuote
 from .broker.risk import RiskLimits, RiskManager, TradingState
 from .const import (
-    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, DEFAULT_ASSUMED_SPREAD, VENUE_PUBLIC,
+    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_REGIME_SWITCHING, DEFAULT_ASSUMED_SPREAD, VENUE_PUBLIC,
+    VENUE_STOOQ,
     CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
     DEFAULT_SIM_SEED, DEFAULT_SIM_SPREAD, DEFAULT_VENUE, VENUE_SIMULATOR, CONF_ENTRY_THRESHOLD, CONF_ENVIRONMENT, CONF_EQUITY_FLOOR_PCT,
     CONF_MAX_CONSECUTIVE_LOSSES, CONF_MAX_DAILY_LOSS_PCT, CONF_MAX_SPREAD,
@@ -110,7 +112,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # stilzwijgend afdwingen is gevaarlijk: iemand die 'live' koos, denkt
         # dan dat het live staat. Daarom wordt de reden vastgelegd en via de
         # modus-sensor getoond.
-        if venue_name in (VENUE_PUBLIC, VENUE_SIMULATOR) and self.mode is not TradingMode.PAPER:
+        if (venue_name in (VENUE_PUBLIC, VENUE_STOOQ, VENUE_SIMULATOR)
+                and self.mode is not TradingMode.PAPER):
             self.mode_override_reason = (
                 f"Databron '{venue_name}' kan niet uitvoeren, dus modus "
                 f"'{self.requested_mode.value}' is genegeerd en er wordt op "
@@ -124,6 +127,13 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 assumed_spread=options.get(
                     CONF_ASSUMED_SPREAD, DEFAULT_ASSUMED_SPREAD
                 ),
+            )
+            self.mode = TradingMode.PAPER
+        elif venue_name == VENUE_STOOQ:
+            self.venue = StooqVenue(
+                session=async_get_clientsession(hass),
+                symbol=self.symbol,
+                assumed_spread=options.get(CONF_ASSUMED_SPREAD, DEFAULT_ASSUMED_SPREAD),
             )
             self.mode = TradingMode.PAPER
         elif venue_name == VENUE_SIMULATOR:
@@ -149,6 +159,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             max_spread=options.get(CONF_MAX_SPREAD, 0.30),
             min_edge_multiple=options.get(CONF_MIN_EDGE_MULTIPLE, 2.0),
             entry_threshold=options.get(CONF_ENTRY_THRESHOLD, 0.45),
+            regime_switching=options.get(CONF_REGIME_SWITCHING, True),
             trading_hours_utc=(
                 _as_int(options.get(CONF_TRADING_START_HOUR), 7),
                 _as_int(options.get(CONF_TRADING_END_HOUR), 20),
@@ -185,6 +196,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self._partial_taken: set[str] = set()
         self._last_quote: VenueQuote | None = None
         self._last_signal = None
+        #: Aantal gesloten trades bij de laatste poortberekening. De poort
+        #: herberekenen is duur (meerdere queries), dus dat gebeurt alleen als
+        #: er werkelijk iets veranderd is.
+        self._gate_trade_count: int = -1
         self._enabled: bool = False
         self._store = StateStore(hass, entry.entry_id)
         self._state = RuntimeState()
@@ -300,11 +315,13 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         """Herbereken of live handel vrijgegeven mag worden."""
         if self.run_id is None:
             return
+        trades = await self.hass.async_add_executor_job(
+            self.db.closed_trades, self.run_id
+        )
         stats = await self.hass.async_add_executor_job(
-            performance.compute_for_run, self.db, self.run_id
+            performance.compute_for_run, self.db, self.run_id, trades
         )
         run = await self.hass.async_add_executor_job(self.db.get_run, self.run_id)
-        trades = await self.hass.async_add_executor_job(self.db.closed_trades, self.run_id)
         daily = performance.daily_breakdown(trades)
         self.gate = LiveGate().evaluate(stats, run or {}, daily).as_dict()
 
@@ -467,6 +484,19 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         stats = await self.hass.async_add_executor_job(
             performance.compute_for_run, self.db, self.run_id
         )
+
+        # Poort bijwerken zodra er trades bij zijn gekomen. Zonder dit blijft
+        # de uitkomst staan zoals hij bij het opstarten was, en meldt hij na
+        # duizend trades nog steeds "0 trades in de bewijsfase" - precies het
+        # getal waar de hele bewijsfase op steunt. Alleen bij verandering,
+        # want de berekening kost meerdere queries.
+        trade_count = stats.get("trades", 0)
+        if trade_count != self._gate_trade_count:
+            await self._refresh_gate()
+            self._gate_trade_count = trade_count
+            stats = await self.hass.async_add_executor_job(
+                performance.compute_for_run, self.db, self.run_id
+            )
 
         # Elke cyclus bewaren, niet alleen bij afsluiten: een noodstop die
         # halverwege afgaat mag niet verloren gaan als HA daarna hardhandig

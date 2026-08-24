@@ -63,3 +63,32 @@ def test_report_never_contains_credentials(fresh_run):
     html = build_report(db, run).lower()
     for forbidden in ("token", "password", "wachtwoord", "api_key", "bearer"):
         assert forbidden not in html
+
+
+def test_report_refreshes_itself_by_default(fresh_run):
+    """Zonder automatische verversing is het rapport een momentopname van het
+    moment dat je hem opende, terwijl de data elke 20 seconden bijwerkt."""
+    db, run = fresh_run
+    html = build_report(db, run, refresh_seconds=60)
+    assert 'http-equiv="refresh" content="60"' in html
+    assert "ververst elke 60s" in html
+
+
+def test_refresh_can_be_disabled(fresh_run):
+    db, run = fresh_run
+    html = build_report(db, run, refresh_seconds=0)
+    assert "http-equiv=\"refresh\"" not in html
+
+
+def test_refresh_uses_meta_not_javascript(fresh_run):
+    """Het paneel is zonder authenticatie bereikbaar; scriptvrij houden."""
+    db, run = fresh_run
+    html = build_report(db, run, refresh_seconds=60)
+    assert "<script" not in html
+
+
+def test_minimum_refresh_is_enforced():
+    """Te vaak verversen laat de Pi alleen maar rapporten bouwen."""
+    from gold_scalper.http import MIN_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS
+    assert MIN_REFRESH_SECONDS >= 15
+    assert DEFAULT_REFRESH_SECONDS >= MIN_REFRESH_SECONDS

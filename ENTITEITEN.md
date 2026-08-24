@@ -14,20 +14,18 @@ sensor.gold_scalper_xau_usd_signaal
 **Niet** `switch.gold_scalper_handel_actief` — die bestaat niet. Verander je het
 symbool of de databron, dan veranderen de ID's mee.
 
-De betrouwbaarste manier om ze te vinden: Instellingen → Apparaten en diensten
-→ Gold Scalper → het apparaat aanklikken. Daar staan ze allemaal.
+Betrouwbaarste manier om ze te vinden: Instellingen → Apparaten en diensten
+→ Gold Scalper → het apparaat aanklikken.
 
 ## Beginnen
 
-E�n schakelaar, en niets gebeurt zonder.
+Één schakelaar, en niets gebeurt zonder.
 
 ```yaml
 service: switch.turn_on
 target:
   entity_id: switch.gold_scalper_xau_usd_handel_actief
 ```
-
-Of via Ontwikkelhulpmiddelen → Acties → `switch.turn_on`.
 
 De stand blijft bewaard tussen herstarts, dus dit hoef je maar één keer te doen.
 
@@ -39,15 +37,13 @@ attribuut `toelichting`.
 | Status | Betekenis |
 |---|---|
 | `uitgeschakeld` | de hoofdschakelaar staat uit |
+| `markt_gesloten` | goudmarkt dicht; hervat vanzelf, geen storing |
 | `wachtend` | actief, maar nog geen geschikt signaal (reden staat erbij) |
 | `positie_open` | er loopt een positie; exits worden bewaakt |
 | `gepauzeerd` | tijdelijke pauze na een reeks verliezers |
 | `noodstop` | limiet geraakt; vereist `gold_scalper.resume` |
 | `afgestemd_probleem` | database en broker oneens over posities |
 | `afwikkelen` | bezig met afwikkelen voor een herstart |
-
-Bij `wachtend` staat in de toelichting waaróm: buiten het handelsvenster,
-spread te breed, signaal te zwak, verwachte beweging dekt de kosten niet.
 
 ## Alle entiteiten
 
@@ -58,9 +54,9 @@ Vervang `<...>` door `gold_scalper_xau_usd` of wat er bij jouw symbool staat.
 |---|---|
 | `switch.<...>_handel_actief` | hoofdschakelaar, blijft bewaard |
 | `button.<...>_alles_sluiten` | noodknop |
-| `button.<...>_afwikkelen_voor_herstart` | afwikkelen vóór een update |
+| `button.<...>_afwikkelen_voor_herstart` | afwikkelen voor een update |
 | `button.<...>_hervatten_na_noodstop` | noodstop opheffen |
-| `button.<...>_keuringsrapport_maken` | rapport schrijven |
+| `button.<...>_keuringsrapport_maken` | rapport naar bestand schrijven |
 
 ### Markt
 | Entiteit | Doel |
@@ -68,7 +64,7 @@ Vervang `<...>` door `gold_scalper_xau_usd` of wat er bij jouw symbool staat.
 | `sensor.<...>_koers` | midprijs |
 | `sensor.<...>_spread` | bij marktdata: je *aanname*, geen meting |
 | `sensor.<...>_atr` | gemiddelde beweging per candle |
-| `sensor.<...>_signaal` | richting, score, afwijsreden |
+| `sensor.<...>_signaal` | richting, score, componenten, afwijsreden |
 
 ### Resultaat
 | Entiteit | Doel |
@@ -90,13 +86,43 @@ Vervang `<...>` door `gold_scalper_xau_usd` of wat er bij jouw symbool staat.
 
 ## Dashboard
 
-Na installatie staat **Gold Scalper** in de zijbalk met het keuringsrapport.
-Zie je het niet: hard verversen met Ctrl+Shift+R, of open rechtstreeks
+Na installatie staat **Gold Scalper** in de zijbalk. Zie je het niet: hard
+verversen met Ctrl+Shift+R, of open rechtstreeks
 `http://homeassistant.local:8123/api/gold_scalper/report`.
 
-Voor live entiteiten: `dashboard/lovelace.yaml` via Instellingen → Dashboards →
-nieuw dashboard → potlood → driepuntsmenu → Ruwe configuratie-editor. **Pas de
-entiteit-ID's aan** naar jouw symbool.
+### Hoe vaak wordt het bijgewerkt
+
+Het rapport wordt bij elke aanvraag opnieuw uit de database opgebouwd, en
+ververst zichzelf **elke 60 seconden**. Rechtsboven staat wanneer het is
+opgemaakt, in jouw lokale tijd.
+
+Zestig seconden is een compromis. De onderliggende data ververst elke twintig
+seconden, maar het rapport opbouwen kost bij duizenden trades honderden
+milliseconden; drie keer per minuut zou dat verdrievoudigen zonder dat je meer
+te zien krijgt.
+
+Aanpassen per aanvraag:
+
+```
+/api/gold_scalper/report?refresh=30     sneller (minimaal 15)
+/api/gold_scalper/report?refresh=0      uit; alleen handmatig verversen
+```
+
+De verversing gebruikt een `meta http-equiv`-tag, geen JavaScript. Bewuste
+keuze: het paneel is zonder authenticatie bereikbaar, en dan houd je het
+scriptvrij.
+
+### Tijden
+
+De database bewaart alles in UTC — de enige zinnige keuze voor een reeks die
+over de zomertijdwissel heen loopt. Het rapport toont de tijdzone die in Home
+Assistant is ingesteld: voor Nederland UTC+2 in de zomer, UTC+1 in de winter.
+
+## Lovelace
+
+`dashboard/lovelace.yaml` via Instellingen → Dashboards → nieuw dashboard →
+potlood → driepuntsmenu → Ruwe configuratie-editor. **Pas de entiteit-ID's aan**
+naar jouw symbool.
 
 ## Van databron wisselen
 

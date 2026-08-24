@@ -98,7 +98,7 @@ class ReportButton(GoldScalperEntity, ButtonEntity):
         path = self.hass.config.path(REPORT_FILENAME)
         written = await self.hass.async_add_executor_job(
             write_report, self.coordinator.db, self.coordinator.run_id,
-            path, self.coordinator.gate,
+            path, self.coordinator.gate, dt_util.DEFAULT_TIME_ZONE,
         )
         self._last_written = dt_util.utcnow().isoformat(timespec="seconds")
         _LOGGER.info("Keuringsrapport op %s, bereikbaar via %s", written, REPORT_URL)
