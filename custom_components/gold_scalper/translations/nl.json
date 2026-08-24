@@ -113,5 +113,12 @@
         "oanda": "OANDA (account nodig, kan echt handelen)"
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "Status"
+      }
+    }
   }
 }

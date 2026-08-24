@@ -16,6 +16,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DISCLAIMER, DOMAIN
 from .coordinator import GoldScalperCoordinator
 from .entity import GoldScalperEntity
+from .status import build_status
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -29,6 +30,21 @@ def _stats(d: dict) -> dict:
 
 
 SENSORS: tuple[ScalperSensor, ...] = (
+    ScalperSensor(
+        key="status", name="Status", icon="mdi:information-outline",
+        # Bewust de eerste sensor: dit is de entiteit die je als eerste opent
+        # als je je afvraagt waarom er niets gebeurt.
+        value_fn=lambda d: build_status(d)[0],
+        attrs_fn=lambda d: {
+            "toelichting": build_status(d)[1],
+            "enabled": d.get("enabled"),
+            "mode": d.get("mode"),
+            "evaluations": (
+                ((d.get("stats") or {}).get("signals") or {}).get("evaluations")
+            ),
+            "acted": ((d.get("stats") or {}).get("signals") or {}).get("acted"),
+        },
+    ),
     ScalperSensor(
         key="price", name="Koers", icon="mdi:gold",
         state_class=SensorStateClass.MEASUREMENT, suggested_display_precision=2,
