@@ -129,11 +129,12 @@ def test_corrupt_rows_are_skipped():
     assert QuoteAggregator.from_dict(data, "5m").bar_count == 2
 
 
-def test_correction_matches_a_measured_comparison():
-    """Uitgelijnd op dezelfde tijdstempels vergelijken, niet op dezelfde duur.
+def _measure_correction(seed: int, step: int = 20) -> tuple[float, float]:
+    """Vergelijk zelfgebouwde met echte bars op dezelfde tijdstempels.
 
-    Een eerdere meting vergeleek twee verschillende tijdvensters en leek 19%
-    afwijking te tonen; dat was marktverschil, geen bemonsteringsfout.
+    Uitlijnen op tijdstempels en niet op duur: een eerdere meting vergeleek
+    twee verschillende tijdvensters en leek 19% afwijking te tonen, maar dat
+    was marktverschil en geen bemonsteringsfout.
     """
     import asyncio
     import statistics
@@ -141,15 +142,15 @@ def test_correction_matches_a_measured_comparison():
 
     from gold_scalper.broker.simulator import SimulatorVenue
 
-    venue = SimulatorVenue(seed=20260823)
-    real = asyncio.run(venue.candles("XAU_USD", "5m", 120))
+    venue = SimulatorVenue(seed=seed)
+    real = asyncio.run(venue.candles("XAU_USD", "5m", 150))
 
     agg = QuoteAggregator("5m")
     moment = real.timestamp[0]
     while moment < real.timestamp[-1] + 300:
         agg.add(venue.price_at(moment),
                 datetime.fromtimestamp(moment, timezone.utc))
-        moment += 20
+        moment += step
     built = agg.candles()
 
     shared = set(built.timestamp) & set(real.timestamp)
@@ -162,7 +163,42 @@ def test_correction_matches_a_measured_comparison():
         for i, ts in enumerate(real.timestamp) if ts in shared
     ]
     needed = statistics.median(real_ranges) / statistics.median(built_ranges)
+    return agg.correction, needed
 
-    assert abs(agg.correction - needed) < 0.03, (
-        f"correctie {agg.correction:.3f} wijkt af van gemeten {needed:.3f}"
+
+def test_correction_matches_a_measured_comparison():
+    """Middelen over meerdere markten.
+
+    Op één reeks varieert de uitkomst met een paar procent; dat is ruis, geen
+    fout. De tolerantie oprekken zou de test waardeloos maken, dus in plaats
+    daarvan wordt er over vijf markten gemiddeld.
+    """
+    import statistics
+
+    applied, measured = [], []
+    for seed in (1, 7, 42, 20260823, 99):
+        a, m = _measure_correction(seed)
+        applied.append(a)
+        measured.append(m)
+
+    assert abs(statistics.mean(applied) - statistics.mean(measured)) < 0.03, (
+        f"toegepast {statistics.mean(applied):.3f} tegen gemeten "
+        f"{statistics.mean(measured):.3f}"
     )
+
+
+def test_correction_is_in_the_right_direction():
+    """Zelfgebouwde bars onderschatten de range; de factor hoort boven 1."""
+    import statistics
+
+    measured = [_measure_correction(seed)[1] for seed in (1, 7, 42, 99)]
+    assert statistics.mean(measured) > 1.0
+
+
+def test_slower_sampling_needs_a_larger_correction():
+    """Minder monsters per bar betekent meer gemiste uitersten."""
+    import statistics
+
+    fast = statistics.mean([_measure_correction(s, step=10)[1] for s in (1, 42)])
+    slow = statistics.mean([_measure_correction(s, step=60)[1] for s in (1, 42)])
+    assert slow > fast

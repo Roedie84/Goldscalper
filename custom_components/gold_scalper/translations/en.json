@@ -64,7 +64,8 @@
           "password": "Wachtwoord (Capital.com: het API-sleutelwachtwoord)",
           "environment": "Omgeving",
           "epic": "Instrument (epic)",
-          "timeframe": "Tijdsframe"
+          "timeframe": "Tijdsframe",
+          "build_from_quotes": "Bars opbouwen uit live koersen (geen historie opvragen)"
         }
       }
     },

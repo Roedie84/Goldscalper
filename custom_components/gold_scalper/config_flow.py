@@ -202,21 +202,37 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
                 epic=user_input[CONF_EPIC].strip(),
                 trading_enabled=False,
             )
-            # Eén echte verbinding: inloggen én data ophalen. Liever hier falen
-            # dan pas over twintig seconden in de logs.
+            # Eén echte verbinding: inloggen, en alleen data ophalen als dat
+            # ook de bedoeling is. Bouw je bars uit live koersen, dan zou een
+            # historiecontrole hier datapunten kosten uit precies het quotum
+            # dat je wilt sparen - en als dat al op is, kom je niet eens tot de
+            # instelling die dat oplost.
+            build_from_quotes = user_input.get(CONF_BUILD_FROM_QUOTES, False)
             try:
                 await venue.account()
-                candles = await venue.candles(
-                    user_input[CONF_EPIC], user_input[CONF_TIMEFRAME], 120
-                )
-                if len(candles) < 60:
+                if build_from_quotes:
+                    # Wel de koers toetsen: dat valt onder een andere,
+                    # ruimere limiet en bewijst dat het instrument klopt.
+                    quote = await venue.quote(user_input[CONF_EPIC])
+                    _LOGGER.info(
+                        "Verbinding met %s in orde; koers %.2f, spread %.3f. "
+                        "Bars worden uit live koersen opgebouwd.",
+                        broker, quote.mid, quote.spread,
+                    )
+                    candles = None
+                else:
+                    candles = await venue.candles(
+                        user_input[CONF_EPIC], user_input[CONF_TIMEFRAME], 120
+                    )
+                if candles is not None and len(candles) < 60:
                     errors["base"] = "insufficient_history"
                     detail = (
                         f"Slechts {len(candles)} candles ontvangen; minimaal 60 "
                         "nodig. Buiten handelsuren levert de broker soms te "
                         "weinig, en op een demo-account kan het weekquotum voor "
-                        "historische koersen op zijn. Een hoger tijdsframe "
-                        "kost minder datapunten."
+                        "historische koersen op zijn. Zet 'Bars opbouwen uit "
+                        "live koersen' aan om historie helemaal over te slaan, "
+                        "of kies een hoger tijdsframe."
                     )
             except VenueError as err:
                 _LOGGER.warning("%s-verbinding faalde: %s", broker, err)
@@ -287,10 +303,17 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
                     SelectSelectorConfig(options=TIMEFRAMES,
                                          mode=SelectSelectorMode.DROPDOWN)
                 ),
+                # Hier en niet alleen bij de opties: is het historie-quotum op,
+                # dan is dit de enige weg naar binnen.
+                vol.Required(CONF_BUILD_FROM_QUOTES, default=True): BooleanSelector(),
             }),
             errors=errors,
             description_placeholders={
-                "note": hint + (f"\n\nFoutdetails: {detail}" if detail else "")
+                "note": hint + (
+                    "\n\nBars opbouwen uit live koersen vraagt nooit historie op "
+                    "en kost dus geen datapunten. Prijs: een opwarmperiode van "
+                    "ongeveer 60 bars voordat de analyse begint."
+                ) + (f"\n\nFoutdetails: {detail}" if detail else "")
             },
         )
 
