@@ -97,3 +97,21 @@ def test_status_module_has_no_home_assistant_imports():
     source = (Path(__file__).resolve().parent.parent / "custom_components"
               / "gold_scalper" / "status.py").read_text()
     assert "homeassistant" not in source
+
+
+def test_closed_market_is_not_reported_as_a_problem():
+    """Een gesloten markt hoort geruststellend te klinken, niet alarmerend."""
+    state, text = _status(data(market_open=False))
+    assert state == "markt_gesloten"
+    assert "geen storing" in text
+
+
+def test_closed_market_outranks_disabled_switch():
+    state, _ = _status(data(market_open=False, enabled=False))
+    assert state == "markt_gesloten"
+
+
+def test_halt_still_outranks_closed_market():
+    state, _ = _status(data(market_open=False,
+                            risk={"state": "halted", "halt_reason": "x"}))
+    assert state == "noodstop"

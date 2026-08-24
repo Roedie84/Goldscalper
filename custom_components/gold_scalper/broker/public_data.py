@@ -57,6 +57,8 @@ HEADERS = {
     "Accept": "application/json",
 }
 
+#: Yahoo begrenst intraday-historie tot circa 60 dagen, en minuutdata tot een
+#: dag of zeven. Het bereik per interval is daarop gekozen.
 INTERVALS = {
     "1m": ("1m", "5d"),
     "5m": ("5m", "1mo"),
@@ -164,7 +166,12 @@ class PublicDataVenue(ExecutionVenue):
             bid=round(price - half, 3),
             ask=round(price + half, 3),
             time=moment,
-            tradeable=str(meta.get("marketState", "")).upper() not in ("CLOSED", "POSTPOST"),
+            # marketState is de enige aanwijzing die Yahoo geeft. Buiten de
+            # handelsuren is regularMarketTime uren oud; zonder deze vlag zou
+            # de risicobewaking dat als een dode verbinding zien en een
+            # noodstop slaan die handmatig hervat moet worden.
+            tradeable=str(meta.get("marketState", "")).upper()
+            not in ("CLOSED", "POSTPOST", "PREPRE"),
         )
 
     async def candles(self, symbol: str, timeframe: str, count: int) -> Candles:

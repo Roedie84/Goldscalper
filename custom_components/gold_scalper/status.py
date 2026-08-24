@@ -34,6 +34,11 @@ def build_status(d: dict) -> tuple[str, str]:
         )
     if lifecycle == "draining":
         return "afwikkelen", "Bezig met afwikkelen voor een herstart."
+    if d.get("market_open") is False:
+        return "markt_gesloten", (
+            "De goudmarkt is gesloten. Handel hervat automatisch bij opening; "
+            "dit is geen storing."
+        )
     if not d.get("enabled"):
         return "uitgeschakeld", (
             "Handel staat uit. Zet de schakelaar 'Handel actief' aan om te beginnen."

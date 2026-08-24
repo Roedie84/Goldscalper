@@ -167,3 +167,15 @@ def test_gate_allows_run_with_real_costs():
            "config_json": json.dumps({"venue": "oanda", "simulated": False})}
     daily = [{"date": f"2026-06-{i+1:02d}", "trades": 30, "net_pnl": 50.0} for i in range(20)]
     assert LiveGate().evaluate(stats, run, daily).unlocked
+
+
+@pytest.mark.parametrize("state,expected", [
+    ("REGULAR", True), ("PRE", True), ("POST", True),
+    ("CLOSED", False), ("POSTPOST", False), ("PREPRE", False),
+])
+def test_market_state_maps_to_tradeable(state, expected):
+    """Buiten handelsuren is regularMarketTime uren oud. Wordt dat niet als
+    'gesloten' herkend, dan slaat de risicobewaking een noodstop."""
+    payload = chart([1], [1.0], [2.0], [0.5], [1.5], state=state)
+    q = asyncio.run(venue(payload).quote())
+    assert q.tradeable is expected

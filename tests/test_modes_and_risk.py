@@ -83,7 +83,8 @@ def fresh(**over):
 
 def args(**over):
     base = dict(now=NOW, balance=10000.0, equity=10000.0, starting_balance=10000.0,
-                open_positions=0, volume=0.01, spread=0.35, last_tick_age=1.0)
+                open_positions=0, volume=0.01, spread=0.35, last_tick_age=1.0,
+                market_open=True)
     base.update(over); return base
 
 
@@ -198,3 +199,32 @@ def test_risk_manager_day_is_explicit_not_wall_clock():
     from datetime import date
     rm = RiskManager(RiskLimits(), 10000.0, now=datetime(2020, 1, 15, tzinfo=timezone.utc))
     assert rm.state.day == date(2020, 1, 15)
+
+
+def test_closed_market_does_not_halt():
+    """Goud handelt niet in het weekend en kent een dagelijkse onderbreking.
+    De laatste koers is dan uren oud zonder dat er iets mis is.
+
+    Zonder dit onderscheid legt de bot zichzelf de eerste vrijdagavond
+    permanent stil met een noodstop die handmatig hervat moet worden."""
+    rm = fresh(max_data_staleness_seconds=30)
+    ok, reason = rm.can_open(**args(last_tick_age=48000.0, market_open=False))
+    assert not ok
+    assert reason == "markt gesloten"
+    assert rm.state.state is TradingState.RUNNING
+
+
+def test_stale_data_during_open_market_still_halts():
+    """Tijdens handelsuren is verouderde data wél een storing."""
+    rm = fresh(max_data_staleness_seconds=30)
+    ok, _ = rm.can_open(**args(last_tick_age=300.0, market_open=True))
+    assert not ok
+    assert rm.state.state is TradingState.HALTED
+
+
+def test_trading_resumes_after_market_reopens():
+    """Na sluiting moet hij vanzelf weer aan; geen handmatige actie nodig."""
+    rm = fresh(max_data_staleness_seconds=30)
+    rm.can_open(**args(last_tick_age=48000.0, market_open=False))
+    ok, _ = rm.can_open(**args(last_tick_age=2.0, market_open=True))
+    assert ok

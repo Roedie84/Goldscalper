@@ -397,7 +397,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         budget.mark("candles")
 
         # -- open posities beheren, vóór alles anders ------------------------ #
-        await self._manage_open_positions(quote, now)
+        # Bij een gesloten markt niet ingrijpen: een stop verplaatsen of een
+        # positie sluiten op een koers van uren geleden is erger dan wachten.
+        if quote.tradeable:
+            await self._manage_open_positions(quote, now)
         budget.mark("exits")
 
         # -- boekhouding ----------------------------------------------------- #
@@ -440,6 +443,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                     open_positions=len(open_positions),
                     volume=self.units / CONTRACT_SIZE,
                     spread=quote.spread, last_tick_age=tick_age,
+                    market_open=quote.tradeable,
                 )
                 reject_reason = None if allowed else f"risico: {why}"
 
@@ -479,6 +483,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "quote": quote,
             "price": quote.mid,
             "candles": len(self._candles) if self._candles else 0,
+            "market_open": quote.tradeable,
+            "quote_age_seconds": round(tick_age, 1),
             "candles_consistent": len(candle_lengths) <= 1,
             "spread": quote.spread,
             "atr": self.state.atr.value,

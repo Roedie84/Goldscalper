@@ -128,6 +128,7 @@ class RiskManager:
         volume: float,
         spread: float,
         last_tick_age: float,
+        market_open: bool = True,
     ) -> tuple[bool, str | None]:
         """Mag er nu een positie open? Geeft (toegestaan, reden bij weigering)."""
         self._roll_day(now, balance)
@@ -142,10 +143,18 @@ class RiskManager:
             self.state.state = TradingState.RUNNING
             self.state.paused_until = None
 
-        # Dode dataverbinding: het gevaarlijkste scenario, want de bot denkt
-        # dat hij weet wat de prijs is terwijl die minuten oud is.
+        # Gesloten markt is geen storing. Goud handelt niet in het weekend en
+        # kent een dagelijkse onderbreking; de laatste koers is dan uren oud
+        # zonder dat er iets mis is. Zonder dit onderscheid legt de bot zichzelf
+        # de eerste vrijdagavond permanent stil met een noodstop die handmatige
+        # interventie vereist.
+        if not market_open:
+            return False, "markt gesloten"
+
+        # Dode dataverbinding tijdens handelsuren is wél het gevaarlijkste
+        # scenario: de bot denkt te weten wat de prijs is terwijl die verouderd is.
         if last_tick_age > self.limits.max_data_staleness_seconds:
-            self.halt(f"geen tickdata gedurende {last_tick_age:.0f}s")
+            self.halt(f"geen tickdata gedurende {last_tick_age:.0f}s tijdens handelsuren")
             return False, "dataverbinding dood"
 
         equity_pct = equity / starting_balance * 100.0 if starting_balance else 100.0
