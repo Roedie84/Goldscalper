@@ -38,6 +38,13 @@
           "timeframe": "Tijdsframe",
           "assumed_spread": "Aangenomen spread (0 = kosten uit)"
         }
+      },
+      "reconfigure": {
+        "title": "Andere databron kiezen",
+        "description": "Wissel van databron zonder de integratie te verwijderen. Je tradedatabase blijft behouden.",
+        "data": {
+          "venue": "Databron"
+        }
       }
     },
     "error": {
@@ -47,14 +54,15 @@
       "insufficient_history": "Te weinig historie voor een zinnige analyse; minimaal 60 candles nodig."
     },
     "abort": {
-      "already_configured": "Dit instrument is al ingesteld voor dit account."
+      "already_configured": "Dit instrument is al ingesteld voor dit account.",
+      "reconfigure_successful": "Databron gewijzigd."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Gold Scalper afstellen",
-        "description": "Strategie- en risico-instellingen. De risicolimieten zijn noodremmen: bij overschrijding volgt een noodstop die handmatig hervat moet worden.",
+        "description": "Strategie- en risico-instellingen. De risicolimieten zijn noodremmen: bij overschrijding volgt een noodstop die een herstart overleeft en handmatig hervat moet worden via gold_scalper.resume. De hoofdschakelaar blijft eveneens bewaard tussen herstarts.",
         "data": {
           "mode": "Modus",
           "update_seconds": "Verversingsinterval",

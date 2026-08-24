@@ -24,6 +24,7 @@ async def async_setup_entry(
         RiskHalted(coordinator, entry),
         MarketTradeable(coordinator, entry),
         DataIntegrity(coordinator, entry),
+        ModeOverridden(coordinator, entry),
     ])
 
 
@@ -181,4 +182,36 @@ class DataIntegrity(GoldScalperEntity, BinarySensorEntity):
                 "Bij een probleem wordt de historie automatisch opnieuw opgehaald "
                 "bij de volgende cyclus."
             ),
+        }
+
+
+class ModeOverridden(GoldScalperEntity, BinarySensorEntity):
+    """Aan als de gekozen modus is genegeerd.
+
+    Bestaat omdat een stilzwijgende overschrijving gevaarlijk is: wie 'live'
+    kiest en niets hoort, gaat ervan uit dat het live staat.
+    """
+
+    _attr_name = "Modus genegeerd"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_icon = "mdi:alert-circle-outline"
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_mode_overridden"
+
+    @property
+    def is_on(self) -> bool | None:
+        data = self.coordinator.data
+        if not data:
+            return None
+        return data.get("mode") != data.get("requested_mode")
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        data = self.coordinator.data or {}
+        return {
+            "requested": data.get("requested_mode"),
+            "actual": data.get("mode"),
+            "reason": data.get("mode_override_reason"),
         }

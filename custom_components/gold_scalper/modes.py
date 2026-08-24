@@ -34,6 +34,9 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class TradingMode(str, Enum):
+    #: Nog niet geïmplementeerd; gedraagt zich als PAPER. Wordt daarom niet
+    #: aangeboden in de configuratie. Blijft bestaan zodat bestaande entries
+    #: met deze waarde niet stukgaan bij het laden.
     BACKTEST = "backtest"
     PAPER = "paper"
     LIVE = "live"

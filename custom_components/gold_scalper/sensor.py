@@ -137,7 +137,18 @@ SENSORS: tuple[ScalperSensor, ...] = (
     ScalperSensor(
         key="mode", name="Modus", icon="mdi:shield-check",
         device_class=SensorDeviceClass.ENUM, options=["backtest", "paper", "live"],
+        # De werkelijk actieve modus, niet wat er in de opties staat.
         value_fn=lambda d: d.get("mode"),
+        attrs_fn=lambda d: {
+            "requested_mode": d.get("requested_mode"),
+            "overridden": d.get("mode") != d.get("requested_mode"),
+            "reason": d.get("mode_override_reason"),
+            "uses_real_money": (
+                d.get("mode") == "live"
+                and bool((d.get("gate") or {}).get("unlocked"))
+                and bool(d.get("enabled"))
+            ),
+        },
     ),
     ScalperSensor(
         key="lifecycle", name="Toestand", icon="mdi:state-machine",

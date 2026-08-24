@@ -57,6 +57,11 @@ def _options():
     options = GoldScalperOptionsFlow()
     options.handler = entry.entry_id
     hass = MagicMock()
+    # Home Assistant zoekt de entry op via async_get_known_entry, niet via
+    # async_get_entry. Beide zetten, zodat de fixture blijft werken als HA
+    # intern wisselt in plaats van stilletjes een MagicMock door te geven -
+    # dat leverde een venue van None op en dus de verkeerde standaardwaarden.
+    hass.config_entries.async_get_known_entry.return_value = entry
     hass.config_entries.async_get_entry.return_value = entry
     options.hass = hass
     return options
@@ -97,3 +102,79 @@ def test_manifest_matches_installed_platforms():
     from gold_scalper.const import PLATFORMS
     for platform in PLATFORMS:
         importlib.import_module(f"homeassistant.components.{platform}")
+
+
+def test_reconfigure_step_builds():
+    """Van databron wisselen zonder verwijderen."""
+    from homeassistant.data_entry_flow import FlowResultType
+    from unittest.mock import patch
+
+    flow = _flow()
+    entry = MagicMock()
+    entry.data = {"venue": "simulator", "symbol": "XAU_USD"}
+    with patch.object(type(flow), "_get_reconfigure_entry", return_value=entry,
+                      create=True):
+        result = asyncio.run(flow.async_step_reconfigure())
+    assert result["type"] == FlowResultType.FORM
+    assert "venue" in [str(k) for k in result["data_schema"].schema]
+
+
+def _options_for(venue: str):
+    from gold_scalper.config_flow import GoldScalperOptionsFlow
+    entry = MagicMock()
+    entry.entry_id = "testentry"
+    entry.domain = "gold_scalper"
+    entry.data = {"venue": venue, "symbol": "XAU_USD", "timeframe": "1m"}
+    entry.options = {"mode": "live"}
+    options = GoldScalperOptionsFlow()
+    options.handler = entry.entry_id
+    hass = MagicMock()
+    # Home Assistant zoekt de entry op via async_get_known_entry, niet via
+    # async_get_entry. Beide zetten, zodat de fixture blijft werken als HA
+    # intern wisselt in plaats van stilletjes een MagicMock door te geven -
+    # dat leverde een venue van None op en dus de verkeerde standaardwaarden.
+    hass.config_entries.async_get_known_entry.return_value = entry
+    hass.config_entries.async_get_entry.return_value = entry
+    options.hass = hass
+    return options
+
+
+@pytest.mark.parametrize("venue", ["simulator", "public_data"])
+def test_non_executing_venues_hide_live_mode(venue):
+    """Wie 'live' kiest bij een databron die niet kan uitvoeren, krijgt niets
+    wat daarop lijkt. De keuze mag niet aangeboden worden."""
+    result = asyncio.run(_options_for(venue).async_step_init())
+    schema = result["data_schema"].schema
+    mode_field = next(k for k in schema if str(k) == "mode")
+    config = schema[mode_field].config
+    assert "live" not in config["options"]
+    # Backtest wordt niet aangeboden: die modus is niet geïmplementeerd en
+    # gedraagt zich identiek aan paper.
+    assert set(config["options"]) == {"paper"}
+
+
+def test_oanda_offers_live_mode():
+    result = asyncio.run(_options_for("oanda").async_step_init())
+    schema = result["data_schema"].schema
+    mode_field = next(k for k in schema if str(k) == "mode")
+    assert "live" in schema[mode_field].config["options"]
+
+
+@pytest.mark.parametrize("venue", ["simulator", "public_data"])
+def test_stale_live_option_falls_back_to_paper(venue):
+    """De entry bevat al mode=live uit een eerdere versie. Het formulier moet
+    dan niet crashen maar terugvallen op paper."""
+    result = asyncio.run(_options_for(venue).async_step_init())
+    schema = result["data_schema"].schema
+    mode_field = next(k for k in schema if str(k) == "mode")
+    assert mode_field.default() == "paper"
+
+
+@pytest.mark.parametrize("venue", ["simulator", "public_data", "oanda"])
+def test_backtest_is_never_offered(venue):
+    """Een modus aanbieden die zich identiek aan paper gedraagt, wekt de
+    indruk dat er iets anders gebeurt."""
+    result = asyncio.run(_options_for(venue).async_step_init())
+    schema = result["data_schema"].schema
+    mode_field = next(k for k in schema if str(k) == "mode")
+    assert "backtest" not in schema[mode_field].config["options"]

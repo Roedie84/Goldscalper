@@ -7,7 +7,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import (
-    ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow,
+    SOURCE_RECONFIGURE, ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow,
 )
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -64,6 +64,8 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    _reconfigure_venue: str | None = None
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -112,11 +114,18 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
 
             if not errors:
-                await self.async_set_unique_id(f"public_{user_input[CONF_SYMBOL]}")
-                self._abort_if_unique_id_configured()
+                if self.source != SOURCE_RECONFIGURE:
+                    await self.async_set_unique_id(f"public_{user_input[CONF_SYMBOL]}")
+                    self._abort_if_unique_id_configured()
+                data = {**user_input,
+                        CONF_VENUE: VENUE_PUBLIC,
+                        CONF_MODE: "paper"}
+                if self.source == SOURCE_RECONFIGURE:
+                    return self.async_update_reload_and_abort(
+                        self._get_reconfigure_entry(), data_updates=data
+                    )
                 return self.async_create_entry(
-                    title=f"{user_input[CONF_SYMBOL]} (marktdata)",
-                    data={**user_input, CONF_VENUE: VENUE_PUBLIC, CONF_MODE: "paper"},
+                    title=f"{user_input[CONF_SYMBOL]} (marktdata)", data=data,
                 )
 
         return self.async_show_form(
@@ -155,8 +164,9 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Simulator: geen account, geen token, geen netwerk."""
         if user_input is not None:
-            await self.async_set_unique_id(f"simulator_{user_input[CONF_SYMBOL]}")
-            self._abort_if_unique_id_configured()
+            if self.source != SOURCE_RECONFIGURE:
+                await self.async_set_unique_id(f"simulator_{user_input[CONF_SYMBOL]}")
+                self._abort_if_unique_id_configured()
             return self.async_create_entry(
                 title=f"{user_input[CONF_SYMBOL]} (simulator)",
                 data={**user_input, CONF_VENUE: VENUE_SIMULATOR, CONF_MODE: "paper"},
@@ -195,8 +205,9 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             account = user_input[CONF_ACCOUNT_ID].strip()
-            await self.async_set_unique_id(f"{account}_{user_input[CONF_SYMBOL]}")
-            self._abort_if_unique_id_configured()
+            if self.source != SOURCE_RECONFIGURE:
+                await self.async_set_unique_id(f"{account}_{user_input[CONF_SYMBOL]}")
+                self._abort_if_unique_id_configured()
 
             venue = OandaVenue(
                 session=async_get_clientsession(self.hass),
@@ -225,9 +236,14 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.debug("Validatie faalde: %s", err)
 
             if not errors:
+                data = {**user_input, CONF_VENUE: VENUE_OANDA}
+                if self.source == SOURCE_RECONFIGURE:
+                    return self.async_update_reload_and_abort(
+                        self._get_reconfigure_entry(), data_updates=data
+                    )
                 return self.async_create_entry(
                     title=f"{user_input[CONF_SYMBOL]} ({user_input[CONF_ENVIRONMENT]})",
-                    data={**user_input, CONF_VENUE: VENUE_OANDA},
+                    data=data,
                 )
 
         schema = vol.Schema({
@@ -252,6 +268,38 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
         })
         return self.async_show_form(step_id="oanda", data_schema=schema, errors=errors)
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Van databron wisselen zonder de integratie te verwijderen.
+
+        Zonder deze stap moet je bij elke wissel opnieuw beginnen, en daarbij
+        raak je je tradedatabase niet kwijt maar wel je entry-instellingen.
+        """
+        if user_input is not None:
+            venue = user_input[CONF_VENUE]
+            self._reconfigure_venue = venue
+            if venue == VENUE_PUBLIC:
+                return await self.async_step_public()
+            if venue == VENUE_SIMULATOR:
+                return await self.async_step_simulator()
+            return await self.async_step_oanda()
+
+        entry = self._get_reconfigure_entry()
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_VENUE, default=entry.data.get(CONF_VENUE, DEFAULT_VENUE)
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=VENUES, mode=SelectSelectorMode.LIST,
+                        translation_key="venue",
+                    )
+                ),
+            }),
+        )
 
     @staticmethod
     @callback
@@ -280,10 +328,25 @@ class GoldScalperOptionsFlow(OptionsFlow):
         def default(key, fallback):
             return current.get(key, fallback)
 
+        # Alleen modi tonen die deze databron werkelijk aankan. Simulator en
+        # publieke marktdata kunnen niet uitvoeren; 'live' aanbieden zou de
+        # indruk wekken dat je iets aanzet terwijl er niets verandert.
+        # Backtest wordt bewust niet aangeboden: die modus is nog niet
+        # geïmplementeerd en gedraagt zich identiek aan paper. Een keuze tonen
+        # die niets verandert, wekt de indruk dat er iets anders gebeurt.
+        venue = current.get(CONF_VENUE, DEFAULT_VENUE)
+        if venue in (VENUE_SIMULATOR, VENUE_PUBLIC):
+            available_modes = [TradingMode.PAPER.value]
+        else:
+            available_modes = [TradingMode.PAPER.value, TradingMode.LIVE.value]
+        current_mode = default(CONF_MODE, DEFAULT_MODE)
+        if current_mode not in available_modes:
+            current_mode = TradingMode.PAPER.value
+
         schema = vol.Schema({
-            vol.Required(CONF_MODE, default=default(CONF_MODE, DEFAULT_MODE)):
+            vol.Required(CONF_MODE, default=current_mode):
                 SelectSelector(SelectSelectorConfig(
-                    options=[m.value for m in TradingMode],
+                    options=available_modes,
                     mode=SelectSelectorMode.DROPDOWN)),
             vol.Required(CONF_UPDATE_SECONDS,
                          default=default(CONF_UPDATE_SECONDS, DEFAULT_UPDATE_SECONDS)):

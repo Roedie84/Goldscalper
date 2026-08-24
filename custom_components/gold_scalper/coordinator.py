@@ -48,6 +48,7 @@ from .lifecycle import DrainPolicy, LifecycleController
 from .modes import LiveGate, ModeLockedError, TradingMode, require_live_unlocked
 from .storage import performance
 from .storage.database import MODE_LIVE, MODE_PAPER, TradeDatabase
+from .storage.state import RuntimeState, StateStore
 from .storage.latency import LatencyBudget, LatencyTracker, install_buffered_signals
 from .strategy.scalping import STRATEGY_VERSION, ScalpConfig, evaluate
 from .strategy.streaming import StreamState
@@ -90,13 +91,32 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self.entry = entry
         self.symbol: str = options.get(CONF_SYMBOL, DEFAULT_SYMBOL)
         self.timeframe: str = options.get(CONF_TIMEFRAME, DEFAULT_TIMEFRAME)
-        self.mode = TradingMode(options.get(CONF_MODE, DEFAULT_MODE))
+        #: Wat de gebruiker koos. Kan afwijken van ``self.mode`` als de
+        #: databron niet kan uitvoeren - zie ``mode_override_reason``.
+        requested = options.get(CONF_MODE, DEFAULT_MODE)
+        # Bestaande entries kunnen 'backtest' bevatten uit een eerdere versie.
+        if requested == TradingMode.BACKTEST.value:
+            requested = TradingMode.PAPER.value
+        self.requested_mode = TradingMode(requested)
+        self.mode = self.requested_mode
+        self.mode_override_reason: str | None = None
         self.units: float = options.get(CONF_UNITS, DEFAULT_UNITS)
         self.starting_balance: float = options.get(
             CONF_STARTING_BALANCE, DEFAULT_STARTING_BALANCE
         )
 
         venue_name = options.get(CONF_VENUE, DEFAULT_VENUE)
+        # Databronnen zonder uitvoering kunnen alleen papierhandel doen. Dat
+        # stilzwijgend afdwingen is gevaarlijk: iemand die 'live' koos, denkt
+        # dan dat het live staat. Daarom wordt de reden vastgelegd en via de
+        # modus-sensor getoond.
+        if venue_name in (VENUE_PUBLIC, VENUE_SIMULATOR) and self.mode is not TradingMode.PAPER:
+            self.mode_override_reason = (
+                f"Databron '{venue_name}' kan niet uitvoeren, dus modus "
+                f"'{self.requested_mode.value}' is genegeerd en er wordt op "
+                "papier gehandeld."
+            )
+            _LOGGER.warning(self.mode_override_reason)
         if venue_name == VENUE_PUBLIC:
             self.venue: ExecutionVenue = PublicDataVenue(
                 session=async_get_clientsession(hass),
@@ -105,7 +125,6 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                     CONF_ASSUMED_SPREAD, DEFAULT_ASSUMED_SPREAD
                 ),
             )
-            # Publieke data kan niet uitvoeren; altijd papierhandel.
             self.mode = TradingMode.PAPER
         elif venue_name == VENUE_SIMULATOR:
             self.venue = SimulatorVenue(
@@ -113,8 +132,6 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 spread=options.get(CONF_SIM_SPREAD, DEFAULT_SIM_SPREAD),
                 balance=self.starting_balance,
             )
-            # Een simulatorrun is per definitie papierhandel; live zou hier
-            # betekenisloos zijn en de poort blokkeert hem toch.
             self.mode = TradingMode.PAPER
         else:
             self.venue = OandaVenue(
@@ -169,6 +186,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self._last_quote: VenueQuote | None = None
         self._last_signal = None
         self._enabled: bool = False
+        self._store = StateStore(hass, entry.entry_id)
+        self._state = RuntimeState()
 
         super().__init__(
             hass,
@@ -185,7 +204,23 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
     # -- opstarten ---------------------------------------------------------- #
 
     async def async_setup(self) -> None:
-        """Database openen, historie ophalen, afstemmen met de broker."""
+        """Toestand herstellen, database openen, historie ophalen, afstemmen."""
+        # Eerst de bewaarde toestand: een noodstop uit een vorige sessie moet
+        # gelden vóórdat er ook maar één cyclus draait.
+        self._state = await self._store.async_load()
+        self._enabled = self._state.enabled
+        if self._state.halted:
+            self.risk.halt(self._state.halt_reason or "noodstop uit vorige sessie")
+        self.risk.state.consecutive_losses = self._state.consecutive_losses
+        if self._state.day and self._state.day_start_balance is not None:
+            from datetime import date as _date
+            try:
+                self.risk.state.day = _date.fromisoformat(self._state.day)
+                self.risk.state.day_start_balance = self._state.day_start_balance
+                self.risk.state.trades_today = self._state.trades_today
+            except ValueError:
+                _LOGGER.debug("Bewaarde handelsdag onleesbaar; opnieuw beginnen")
+
         path = self.hass.config.path(DATABASE_FILENAME)
         self.db = TradeDatabase(path)
         await self.hass.async_add_executor_job(self.db.connect)
@@ -287,8 +322,21 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
     async def async_set_enabled(self, value: bool) -> None:
         self._enabled = value
+        await self._persist()
         await self._refresh_gate()
         await self.async_request_refresh()
+
+    async def _persist(self) -> None:
+        """Sla de toestand op die een herstart moet overleven."""
+        self._state.enabled = self._enabled
+        self._state.halted = self.risk.state.state is TradingState.HALTED
+        self._state.halt_reason = self.risk.state.halt_reason
+        self._state.consecutive_losses = self.risk.state.consecutive_losses
+        self._state.day = self.risk.state.day.isoformat()
+        self._state.day_start_balance = self.risk.state.day_start_balance
+        self._state.trades_today = self.risk.state.trades_today
+        self._state.run_id = self.run_id
+        await self._store.async_save(self._state)
 
     async def async_prepare_shutdown(self) -> dict:
         """Wikkel af zodat HA veilig herstart kan worden."""
@@ -304,6 +352,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
     async def async_resume(self) -> None:
         """Hervat na een noodstop. Bewust handmatig."""
         self.risk.manual_resume()
+        await self._persist()
         await self._reconcile()
         await self.async_request_refresh()
 
@@ -415,6 +464,11 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             performance.compute_for_run, self.db, self.run_id
         )
 
+        # Elke cyclus bewaren, niet alleen bij afsluiten: een noodstop die
+        # halverwege afgaat mag niet verloren gaan als HA daarna hardhandig
+        # stopt.
+        await self._persist()
+
         columns = ("timestamp", "open", "high", "low", "close", "volume")
         candle_lengths = (
             {len(getattr(self._candles, f)) for f in columns}
@@ -439,6 +493,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "lifecycle": self.lifecycle.as_dict(),
             "latency": self.latency.stats(),
             "mode": self.mode.value,
+            "requested_mode": self.requested_mode.value,
+            "mode_override_reason": self.mode_override_reason,
             "enabled": self._enabled,
         }
 

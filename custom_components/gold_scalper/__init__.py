@@ -82,6 +82,17 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, SERVICE_GENERATE_REPORT, generate_report)
 
 
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Bewaarde toestand opruimen als de entry verdwijnt.
+
+    Anders blijft een noodstop van een verwijderde configuratie in
+    .storage staan en duikt hij op bij een gelijknamige nieuwe entry.
+    """
+    from .storage.state import StateStore
+
+    await StateStore(hass, entry.entry_id).async_remove()
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
