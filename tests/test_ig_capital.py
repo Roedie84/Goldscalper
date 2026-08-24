@@ -236,3 +236,63 @@ def test_venues_report_real_spread():
     """In tegenstelling tot publieke bronnen meten deze de echte spread."""
     assert ig({}).has_real_spread is True
     assert capital({}).has_real_spread is True
+
+
+# ---------------- diagnose van inlogfouten ----------------
+
+def test_email_as_identifier_is_caught_before_sending():
+    """IG antwoordt met 'validation.pattern.invalid...identifier', wat je niets
+    vertelt. Beter vooraf afvangen met een bruikbare uitleg."""
+    venue = IgVenue(FakeSession({}), "key", "ruud@example.nl", "pass")
+    with pytest.raises(VenueError, match="gebruikersnaam"):
+        asyncio.run(venue.quote())
+
+
+def test_empty_identifier_is_caught():
+    venue = IgVenue(FakeSession({}), "key", "   ", "pass")
+    with pytest.raises(VenueError, match="leeg"):
+        asyncio.run(venue.quote())
+
+
+def test_empty_api_key_is_caught():
+    venue = IgVenue(FakeSession({}), "  ", "gebruiker", "pass")
+    with pytest.raises(VenueError, match="leeg"):
+        asyncio.run(venue.quote())
+
+
+@pytest.mark.parametrize("invisible", ["\u200b", "\u00a0", "\ufeff", "\u2060"])
+def test_invisible_characters_are_stripped(invisible):
+    """Een niet-afbrekende ruimte is met het oog niet te zien maar laat elke
+    patroonvalidatie falen; dan zoek je in de verkeerde richting."""
+    venue = IgVenue(FakeSession({}), f"key{invisible}",
+                    f"{invisible}gebruiker{invisible}", "pass")
+    assert venue._identifier == "gebruiker"
+    assert venue._api_key == "key"
+
+
+def test_password_keeps_its_spaces():
+    """Wachtwoorden mogen spaties bevatten; die mogen niet weggetrimd worden."""
+    venue = IgVenue(FakeSession({}), "key", "gebruiker", " wacht woord ")
+    assert venue._password == " wacht woord "
+
+
+def test_error_codes_get_a_readable_explanation():
+    from gold_scalper.broker.ig_capital import IgStyleVenue
+    message = IgStyleVenue._describe_error(
+        400, {"errorCode": "validation.pattern.invalid.authenticationRequest.identifier"}
+    )
+    assert "e-mailadres" in message
+
+
+def test_wrong_environment_key_is_explained():
+    from gold_scalper.broker.ig_capital import IgStyleVenue
+    message = IgStyleVenue._describe_error(
+        403, {"errorCode": "error.security.api-key-invalid"}
+    )
+    assert "omgeving" in message
+
+
+def test_unknown_error_code_still_returns_something_useful():
+    from gold_scalper.broker.ig_capital import IgStyleVenue
+    message = IgStyleVenue._describe_error(500, {"errorCode": "iets.nieuws"})
+    assert "500" in message and "iets.nieuws" in message

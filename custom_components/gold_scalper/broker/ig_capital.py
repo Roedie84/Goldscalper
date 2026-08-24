@@ -19,6 +19,12 @@ verversingsinterval van twintig seconden speelt dat niet, maar na een pauze -
 gesloten markt, noodstop - moet er opnieuw ingelogd worden. Beide adapters
 loggen daarom automatisch opnieuw in bij een 401.
 
+**Capital.com wil het API-sleutelwachtwoord, niet je accountwachtwoord.** Bij
+het aanmaken van een sleutel stel je een apart wachtwoord in; dát hoort in het
+``password``-veld. Je inlogwachtwoord invullen levert een 401 op die er precies
+zo uitziet als verkeerde inloggegevens, en dan zoek je in de verkeerde richting.
+IG gebruikt wél gewoon je accountwachtwoord.
+
 Geen van beide is door mij tegen een echte verbinding getest. De parsing is
 gebouwd op hun publieke documentatie en getoetst tegen nagebootste antwoorden.
 Reken erop dat de eerste verbinding iets oplevert dat hier nog niet klopt; de
@@ -79,9 +85,14 @@ class IgStyleVenue(ExecutionVenue):
                 f"Onbekende omgeving '{environment}'; kies uit {list(self.base_urls)}"
             )
         self._session = session
-        self._api_key = api_key
-        self._identifier = identifier
-        self._password = password
+        self._api_key = self._clean(api_key)
+        self._identifier = self._clean(identifier)
+        # Wachtwoorden mogen bewust spaties bevatten; alleen onzichtbare
+        # tekens eruit, niet trimmen.
+        self._password = "".join(
+            c for c in str(password)
+            if c not in "\u200b\u200c\u200d\ufeff\u2060"
+        )
         self._base = self.base_urls[environment]
         self.environment = environment
         self.epic = epic
@@ -110,6 +121,20 @@ class IgStyleVenue(ExecutionVenue):
 
     async def _login(self) -> None:
         """Open een sessie en bewaar de twee tokens."""
+        # Vooraf controleren wat de broker anders met een cryptische code
+        # afwijst. Dit scheelt een ronde waarin je moet raden welk veld fout is.
+        if "@" in self._identifier:
+            raise VenueError(
+                f"'{self._identifier}' lijkt een e-mailadres. {self.name.upper()} "
+                "wil je gebruikersnaam (login), zonder apenstaartje. Bij een "
+                "demo-account is dat vaak je live-naam met een achtervoegsel; "
+                "log in op het demo-platform en kijk welke naam daar staat."
+            )
+        if not self._identifier:
+            raise VenueError("De gebruikersnaam is leeg.")
+        if not self._api_key:
+            raise VenueError("De API-sleutel is leeg.")
+
         url = f"{self._base}/session"
         body = {"identifier": self._identifier, "password": self._password}
         try:
@@ -183,20 +208,79 @@ class IgStyleVenue(ExecutionVenue):
                 ) from err
         raise VenueError("Kon geen geldige sessie krijgen na opnieuw inloggen")
 
-    @staticmethod
-    def _describe_error(status: int, payload) -> str:
+    #: Foutcodes van de broker naar iets waar je wat aan hebt.
+    #:
+    #: De ruwe codes zijn onbruikbaar voor wie de API niet kent.
+    #: 'validation.pattern.invalid.authenticationRequest.identifier' zegt niet
+    #: dat je je e-mailadres hebt ingevuld terwijl IG een gebruikersnaam wil,
+    #: maar dat is bijna altijd wat er aan de hand is.
+    ERROR_HINTS = {
+        "validation.pattern.invalid.authenticationRequest.identifier": (
+            "De gebruikersnaam wordt afgewezen op vorm. IG wil je LOGIN, niet je "
+            "e-mailadres: geen apenstaartje, alleen letters en cijfers. Bij een "
+            "demo-account is dat vaak je live-gebruikersnaam met een achtervoegsel. "
+            "Log in op het demo-platform en kijk welke naam daar bovenaan staat."
+        ),
+        "validation.null-not-allowed.authenticationRequest.identifier": (
+            "De gebruikersnaam is leeg aangekomen."
+        ),
+        "validation.pattern.invalid.authenticationRequest.password": (
+            "Het wachtwoord wordt afgewezen op vorm; controleer op meegekopieerde "
+            "spaties of tekens."
+        ),
+        "error.security.invalid-details": (
+            "Gebruikersnaam of wachtwoord onjuist. Let op: het demo-account heeft "
+            "eigen inloggegevens, los van je live account."
+        ),
+        "invalid.details": "Gebruikersnaam of wachtwoord onjuist.",
+        "error.security.api-key-invalid": (
+            "De API-sleutel wordt niet herkend. Een sleutel geldt voor één "
+            "omgeving: een demo-sleutel werkt niet op live en omgekeerd."
+        ),
+        "error.security.api-key-disabled": "De API-sleutel staat op uitgeschakeld.",
+        "error.security.api-key-revoked": "De API-sleutel is ingetrokken.",
+        "error.security.account-token-invalid": "Sessietoken ongeldig; opnieuw inloggen.",
+        "error.public-api.exceeded-account-allowance": (
+            "Rate limit bereikt. Wacht even; op demo liggen de limieten lager."
+        ),
+        "error.public-api.exceeded-api-key-allowance": "Rate limit van de sleutel bereikt.",
+        "error.public-api.failure.encryption.required": (
+            "Deze broker eist een versleuteld wachtwoord voor dit endpoint."
+        ),
+        "error.security.account-migrated": (
+            "Het account is gemigreerd; log eerst in op het webplatform."
+        ),
+        "error.security.client-token-invalid": "Sleutel of sessie ongeldig.",
+        "error.invalid.details": "Ongeldige inloggegevens.",
+    }
+
+    @classmethod
+    def _describe_error(cls, status: int, payload) -> str:
         if isinstance(payload, dict):
             code = payload.get("errorCode") or payload.get("error") or ""
         else:
             code = str(payload)[:200]
-        hints = {
-            "error.security.api-key-invalid": "De API-sleutel wordt niet herkend.",
-            "error.public-api.exceeded-account-allowance": "Rate limit bereikt.",
-            "error.public-api.failure.encryption.required": "Wachtwoordversleuteling vereist.",
-            "error.invalid.details": "Ongeldige inloggegevens.",
-        }
-        hint = hints.get(code, "")
+        hint = cls.ERROR_HINTS.get(code, "")
+        if not hint:
+            # Onbekende code: geef in elk geval het patroon mee, dat helpt vaak
+            # al om te zien welk veld de broker afwijst.
+            for known, text in cls.ERROR_HINTS.items():
+                if known.split(".")[-1] and known.split(".")[-1] in code:
+                    hint = text
+                    break
         return f"Broker gaf HTTP {status}: {code}. {hint}".strip()
+
+    @staticmethod
+    def _clean(value: str) -> str:
+        """Verwijder onzichtbare tekens die bij kopiëren meekomen.
+
+        Een niet-afbrekende ruimte of zero-width space is met het oog niet te
+        zien maar laat elke patroonvalidatie falen. Zonder deze opschoning zoek
+        je in de verkeerde richting, want de waarde ziet er goed uit.
+        """
+        invisible = "\u200b\u200c\u200d\ufeff\u00a0\u2060"
+        cleaned = "".join(c for c in str(value) if c not in invisible)
+        return cleaned.strip()
 
     # -- marktdata ----------------------------------------------------------- #
 

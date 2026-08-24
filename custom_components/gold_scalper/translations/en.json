@@ -60,8 +60,8 @@
         "description": "{note}",
         "data": {
           "api_key": "API-sleutel",
-          "identifier": "Gebruikersnaam",
-          "password": "Wachtwoord",
+          "identifier": "Gebruikersnaam of e-mailadres",
+          "password": "Wachtwoord (Capital.com: het API-sleutelwachtwoord)",
           "environment": "Omgeving",
           "epic": "Instrument (epic)",
           "timeframe": "Tijdsframe"

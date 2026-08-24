@@ -47,9 +47,36 @@ adapters het meeste van hun code.
 
 **Voordeel:** geen live account nodig voor demo-toegang.
 
-**Aandachtspunt:** je moet eerst 2FA aanzetten voordat je een API-sleutel kunt
-maken. En de sessie verloopt na tien minuten inactiviteit; de adapter logt
-daarom automatisch opnieuw in bij een 401.
+### Een sleutel aanmaken
+
+1. Zet **2FA** aan (verplicht vóór je een sleutel kunt maken)
+2. Instellingen → API integraties → **Generate API key**
+3. Geef de sleutel een naam en **stel een API-sleutelwachtwoord in**
+4. Voer je 2FA-code in
+
+Er bestaat maar één soort sleutel en die geeft handelsrechten; read-only sleutels
+zijn er niet. Dat verklaart de tekst "alleen met Trade toestemming" op dat
+scherm - informatief, geen blokkade.
+
+### De valkuil met het wachtwoord
+
+Bij `POST /session` verwacht Capital.com je login plus het
+**API-sleutelwachtwoord** dat je bij stap 3 hebt ingesteld. **Niet** je
+inlogwachtwoord.
+
+Vul je het verkeerde in, dan krijg je een 401 die er precies zo uitziet als
+verkeerde inloggegevens, en ga je in de verkeerde richting zoeken. IG gebruikt
+wél gewoon je accountwachtwoord.
+
+### Zie je geen knop?
+
+De documentatie noemt 2FA als enige voorwaarde. Staat die aan en zie je hem
+toch niet: scroll in het paneel (het lijkt afgekapt), probeer een
+desktopbrowser in plaats van de app, en controleer of je accountverificatie
+volledig is afgerond.
+
+De sessie verloopt na tien minuten inactiviteit; de adapter logt automatisch
+opnieuw in bij een 401.
 
 ## OANDA
 

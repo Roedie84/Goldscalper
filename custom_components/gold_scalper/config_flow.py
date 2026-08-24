@@ -232,11 +232,15 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
 
         hint = (
-            "IG: genereer een sleutel in je accountinstellingen. Let op dat een "
-            "demo-account hetzelfde e-mailadres moet gebruiken als je live account."
+            "IG: genereer een sleutel in je accountinstellingen. Het wachtwoord "
+            "hieronder is je gewone accountwachtwoord. Let op: een demo-account "
+            "moet hetzelfde e-mailadres gebruiken als je live account."
             if broker == VENUE_IG else
-            "Capital.com: zet eerst 2FA aan, daarna kun je een API-sleutel maken "
-            "in de instellingen."
+            "Capital.com: zet eerst 2FA aan, ga dan naar Instellingen, API "
+            "integraties, Generate API key. LET OP: bij het aanmaken stel je een "
+            "apart API-sleutelwachtwoord in. Vul hieronder DAT wachtwoord in, niet "
+            "je inlogwachtwoord - anders krijg je een 401 die eruitziet als "
+            "verkeerde inloggegevens."
         )
         return self.async_show_form(
             step_id="broker",
