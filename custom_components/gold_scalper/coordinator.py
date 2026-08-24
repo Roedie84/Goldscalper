@@ -115,6 +115,17 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         )
 
         venue_name = options.get(CONF_VENUE, DEFAULT_VENUE)
+
+        # Brokers gebruiken hun eigen instrumentcode (bij IG een 'epic'), en
+        # die staat in een apart veld. Bij herconfigureren blijft het oude
+        # symbool uit de vorige databron in de entry staan, en dat werd hier
+        # gebruikt - waarna elke aanroep de venue om 'XAU_USD' vroeg in plaats
+        # van om 'CS.D.CFDGOLD.CFDGC.IP'. De broker antwoordde dan met een
+        # 404 die niets over het instrument zei.
+        if venue_name in (VENUE_IG, VENUE_CAPITAL):
+            epic = options.get(CONF_EPIC)
+            if epic:
+                self.symbol = epic
         # Databronnen zonder uitvoering kunnen alleen papierhandel doen. Dat
         # stilzwijgend afdwingen is gevaarlijk: iemand die 'live' koos, denkt
         # dan dat het live staat. Daarom wordt de reden vastgelegd en via de
