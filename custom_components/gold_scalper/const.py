@@ -94,8 +94,11 @@ DEFAULT_STARTING_BALANCE: Final = 10_000.0
 
 TIMEFRAMES: Final = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
 
-#: Aantal candles dat wordt opgehaald bij het opwarmen.
+#: Aantal candles dat bij het opwarmen wordt gevraagd.
 WARMUP_CANDLES: Final = 400
+#: Ondergrens. Hoeveel een broker werkelijk levert verschilt per instrument,
+#: tijdsframe en omgeving, dus wordt er afgebouwd tot dit aantal.
+MIN_WARMUP_CANDLES: Final = 60
 
 DATABASE_FILENAME: Final = "gold_scalper.db"
 #: Bewust in www/: alles daarin serveert Home Assistant op /local/, wat de

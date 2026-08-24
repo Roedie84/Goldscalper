@@ -50,7 +50,8 @@ from .const import (
     CONF_TRADING_END_HOUR, CONF_TRADING_START_HOUR, CONF_UNITS, CONF_UPDATE_SECONDS,
     DATABASE_FILENAME, DEFAULT_ENVIRONMENT, DEFAULT_MAX_UNITS, DEFAULT_MODE,
     DEFAULT_STARTING_BALANCE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME, DEFAULT_UNITS,
-    DEFAULT_UPDATE_SECONDS, DOMAIN, MIN_UPDATE_SECONDS, WARMUP_CANDLES,
+    DEFAULT_UPDATE_SECONDS, DOMAIN, MIN_UPDATE_SECONDS, MIN_WARMUP_CANDLES,
+    WARMUP_CANDLES,
 )
 from .lifecycle import DrainPolicy, LifecycleController
 from .modes import LiveGate, ModeLockedError, TradingMode, require_live_unlocked
@@ -334,9 +335,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # Historie opwarmen. Zonder dit begint elke herstart met een blinde
         # periode van 60 candles - bij 1m een heel uur.
         try:
-            self._candles = await self.venue.candles(
-                self.symbol, self.timeframe, WARMUP_CANDLES
-            )
+            self._candles = await self._fetch_warmup()
             self.state = StreamState()
             await self.hass.async_add_executor_job(self.state.warm_up, self._candles)
             self._last_bar_ts = self._candles.timestamp[-1]
@@ -349,6 +348,51 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
         await self._reconcile()
         await self._refresh_gate()
+
+    async def _fetch_warmup(self) -> Candles:
+        """Haal historie op, en vraag minder als de broker weigert.
+
+        Hoeveel candles een broker teruggeeft hangt af van het instrument, het
+        tijdsframe, de omgeving en soms een weekquotum. IG antwoordt op een te
+        grote aanvraag met ``error.price-history.io-error``, wat niet verklapt
+        dat het aantal het probleem is.
+
+        Een vast getal is daarom altijd ergens fout. Beter beginnen bij wat je
+        wilt en afbouwen tot wat je krijgt: liever een kortere historie dan een
+        integratie die niet opstart.
+        """
+        attempts = [WARMUP_CANDLES, 250, 150, 100, MIN_WARMUP_CANDLES]
+        last_error: Exception | None = None
+
+        for count in attempts:
+            try:
+                candles = await self.venue.candles(
+                    self.symbol, self.timeframe, count
+                )
+            except VenueError as err:
+                last_error = err
+                _LOGGER.debug("Opwarmen met %d candles faalde: %s", count, err)
+                continue
+
+            if len(candles) >= MIN_WARMUP_CANDLES:
+                if count != WARMUP_CANDLES:
+                    _LOGGER.warning(
+                        "Opwarmen met %d candles gelukt nadat %d werd geweigerd. "
+                        "Langetermijnindicatoren zijn met minder historie minder "
+                        "betrouwbaar.", len(candles), WARMUP_CANDLES,
+                    )
+                return candles
+
+            last_error = VenueError(
+                f"Slechts {len(candles)} candles ontvangen bij een aanvraag van "
+                f"{count}; minimaal {MIN_WARMUP_CANDLES} nodig."
+            )
+
+        raise VenueError(
+            f"Kon geen bruikbare historie ophalen voor {self.symbol} op "
+            f"{self.timeframe}. Laatste fout: {last_error}. Probeer een hoger "
+            "tijdsframe; dat kost minder datapunten en reikt verder terug."
+        )
 
     def _fingerprint(self, config: dict) -> str:
         """Hash van alles wat het handelsgedrag bepaalt.
@@ -713,9 +757,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # Historie kwijt na een integriteitsprobleem: opnieuw opwarmen.
         if self._candles is None:
             try:
-                self._candles = await self.venue.candles(
-                    self.symbol, self.timeframe, WARMUP_CANDLES
-                )
+                self._candles = await self._fetch_warmup()
                 self.state = StreamState()
                 await self.hass.async_add_executor_job(
                     self.state.warm_up, self._candles
