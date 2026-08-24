@@ -315,3 +315,37 @@ def test_historical_data_quota_is_explained():
         403, {"errorCode": "error.public-api.exceeded-account-historical-data-allowance"}
     )
     assert "quotum" in message and "tijdsframe" in message
+
+
+def test_login_failure_keeps_the_brokers_error_code():
+    """Een eigen samenvatting die de foutcode weggooit, laat je raden welk
+    van vijf dingen er mis is."""
+    session = FakeSession({})
+
+    class Denied(FakeSession):
+        def post(self, url, **kw):
+            self.calls.append({"method": "POST", "url": url})
+            return FakeResponse({"errorCode": "error.security.account-locked"}, 403)
+
+    venue = IgVenue(Denied({}), "key", "gebruiker", "pass")
+    with pytest.raises(VenueError) as excinfo:
+        asyncio.run(venue.quote())
+    message = str(excinfo.value)
+    assert "error.security.account-locked" in message
+    assert "vergrendeld" in message
+
+
+def test_locked_account_suggests_waiting():
+    from gold_scalper.broker.ig_capital import IgStyleVenue
+    message = IgStyleVenue._describe_error(
+        403, {"errorCode": "error.security.too-many-failed-attempts"}
+    )
+    assert "kwartier" in message
+
+
+def test_wrong_environment_endpoint_is_explained():
+    from gold_scalper.broker.ig_capital import IgStyleVenue
+    message = IgStyleVenue._describe_error(
+        403, {"errorCode": "endpoint.unavailable.for.api-key"}
+    )
+    assert "omgeving" in message

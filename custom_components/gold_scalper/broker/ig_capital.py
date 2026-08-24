@@ -148,18 +148,15 @@ class IgStyleVenue(ExecutionVenue):
                         "en wachtwoord, en of ze bij deze omgeving horen "
                         f"({self.environment})."
                     )
-                if response.status == 403:
-                    raise VenueError(
-                        "Toegang geweigerd. Bij sommige brokers moet de API-sleutel "
-                        "eerst geactiveerd worden, of staat er nog een IP-beperking op."
-                    )
                 if response.status >= 400:
-                    message = (
-                        payload.get("errorCode")
-                        or payload.get("error")
-                        or str(payload)[:200]
+                    # Nooit de foutcode van de broker weggooien: die zegt
+                    # precies wat er mis is - vergrendeld account, sleutel
+                    # uitgeschakeld, verkeerde omgeving - terwijl een eigen
+                    # samenvatting je laat raden.
+                    raise VenueError(
+                        "Inloggen mislukte. "
+                        + self._describe_error(response.status, payload)
                     )
-                    raise VenueError(f"Inloggen mislukte (HTTP {response.status}): {message}")
 
                 self._cst = response.headers.get("CST")
                 self._token = response.headers.get("X-SECURITY-TOKEN")
@@ -239,6 +236,26 @@ class IgStyleVenue(ExecutionVenue):
         ),
         "error.security.api-key-disabled": "De API-sleutel staat op uitgeschakeld.",
         "error.security.api-key-revoked": "De API-sleutel is ingetrokken.",
+        "error.security.account-locked": (
+            "Het account is tijdelijk vergrendeld na te veel mislukte pogingen. "
+            "Wacht een kwartier; log daarna eerst op het webplatform in om de "
+            "vergrendeling op te heffen."
+        ),
+        "error.security.too-many-failed-attempts": (
+            "Te veel mislukte inlogpogingen. Wacht een kwartier voordat je het "
+            "opnieuw probeert; verder proberen verlengt de blokkade."
+        ),
+        "error.security.api-key-missing": "Er is geen API-sleutel meegestuurd.",
+        "error.security.api-key-restricted": (
+            "De sleutel is beperkt, bijvoorbeeld tot bepaalde IP-adressen."
+        ),
+        "error.public-api.key-missing": "Er is geen API-sleutel meegestuurd.",
+        "error.security.oauth-token-invalid": "Sessietoken ongeldig.",
+        "endpoint.unavailable.for.api-key": (
+            "Dit endpoint is niet beschikbaar voor deze sleutel. Controleer of de "
+            "sleutel bij de gekozen omgeving hoort: een live-sleutel werkt niet "
+            "op demo en omgekeerd."
+        ),
         "error.security.account-token-invalid": "Sessietoken ongeldig; opnieuw inloggen.",
         "error.public-api.exceeded-account-allowance": (
             "Rate limit bereikt. Wacht even; op demo liggen de limieten lager."
