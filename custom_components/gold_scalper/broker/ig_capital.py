@@ -244,6 +244,12 @@ class IgStyleVenue(ExecutionVenue):
             "Rate limit bereikt. Wacht even; op demo liggen de limieten lager."
         ),
         "error.public-api.exceeded-api-key-allowance": "Rate limit van de sleutel bereikt.",
+        "error.public-api.exceeded-account-historical-data-allowance": (
+            "Het weekquotum voor historische koersen is op. IG rekent per "
+            "opgehaald datapunt; op demo is dat quotum krap. Wacht tot de "
+            "weekwissel of gebruik een hoger tijdsframe, dat kost minder punten."
+        ),
+        "error.price-history.io-error": "IG kon de koershistorie niet leveren.",
         "error.public-api.failure.encryption.required": (
             "Deze broker eist een versleuteld wachtwoord voor dit endpoint."
         ),
@@ -311,7 +317,16 @@ class IgStyleVenue(ExecutionVenue):
         epic = symbol or self.epic
         payload = await self._request(
             "GET", f"/prices/{epic}", version="3",
-            params={"resolution": self.resolutions[timeframe], "max": min(count, 1000)},
+            params={
+                "resolution": self.resolutions[timeframe],
+                "max": min(count, 1000),
+                # Zonder pageSize pagineert IG met een standaard van 20 stuks,
+                # ongeacht wat je bij max opgeeft. Nul zet paginering uit en
+                # levert de volledige reeks in één antwoord. Zonder deze
+                # parameter kreeg de analyse er nooit meer dan twintig, en die
+                # heeft er minstens zestig nodig.
+                "pageSize": 0,
+            },
         )
         rows = []
         for price in payload.get("prices", []):

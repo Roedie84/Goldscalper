@@ -210,7 +210,13 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
                 if len(candles) < 60:
                     errors["base"] = "insufficient_history"
-                    detail = f"Slechts {len(candles)} candles; minimaal 60 nodig."
+                    detail = (
+                        f"Slechts {len(candles)} candles ontvangen; minimaal 60 "
+                        "nodig. Buiten handelsuren levert de broker soms te "
+                        "weinig, en op een demo-account kan het weekquotum voor "
+                        "historische koersen op zijn. Een hoger tijdsframe "
+                        "kost minder datapunten."
+                    )
             except VenueError as err:
                 _LOGGER.warning("%s-verbinding faalde: %s", broker, err)
                 errors["base"] = "fetch_failed"

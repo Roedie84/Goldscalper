@@ -296,3 +296,22 @@ def test_unknown_error_code_still_returns_something_useful():
     from gold_scalper.broker.ig_capital import IgStyleVenue
     message = IgStyleVenue._describe_error(500, {"errorCode": "iets.nieuws"})
     assert "500" in message and "iets.nieuws" in message
+
+
+def test_page_size_disables_igs_default_pagination():
+    """Zonder pageSize pagineert IG met een standaard van 20, ongeacht max.
+    De analyse heeft er minstens 60 nodig, dus kwam hij nooit op gang."""
+    venue = ig({"/prices/": PRICES})
+    asyncio.run(venue.candles("GOLD", "1m", 400))
+    params = next(c for c in venue._session.calls if "prices" in c["url"])["params"]
+    assert params["pageSize"] == 0
+    assert params["max"] == 400
+
+
+def test_historical_data_quota_is_explained():
+    """IG rekent per opgehaald datapunt; op demo is dat quotum krap."""
+    from gold_scalper.broker.ig_capital import IgStyleVenue
+    message = IgStyleVenue._describe_error(
+        403, {"errorCode": "error.public-api.exceeded-account-historical-data-allowance"}
+    )
+    assert "quotum" in message and "tijdsframe" in message
