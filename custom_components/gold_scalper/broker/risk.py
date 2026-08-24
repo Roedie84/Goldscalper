@@ -81,14 +81,27 @@ class RiskState:
 class RiskManager:
     """Bewaakt de limieten en blokkeert nieuwe posities bij overschrijding."""
 
-    def __init__(self, limits: RiskLimits, starting_balance: float) -> None:
+    def __init__(
+        self,
+        limits: RiskLimits,
+        starting_balance: float,
+        now: datetime | None = None,
+    ) -> None:
         self.limits = limits
-        self.state = RiskState(day_start_balance=starting_balance)
+        # ``now`` is expliciet meegeefbaar zodat de handelsdag niet stilzwijgend
+        # van de wandklok afhangt; dat maakt het gedrag rond middernacht
+        # testbaar in plaats van afhankelijk van wanneer je de test draait.
+        moment = now or datetime.now(timezone.utc)
+        self.state = RiskState(day=moment.date(), day_start_balance=starting_balance)
 
     # -- dagwissel ---------------------------------------------------------- #
 
     def _roll_day(self, now: datetime, balance: float) -> None:
-        if now.date() != self.state.day:
+        # Alleen vooruit rollen. Bij ``!=`` zou een klok die terugspringt - een
+        # NTP-correctie, een tijdzonewissel, een herstart met verkeerde tijd -
+        # de dagverliesteller op nul zetten. Dat is precies de limiet die moet
+        # blijven staan als er iets vreemds aan de hand is.
+        if now.date() > self.state.day:
             _LOGGER.info(
                 "Nieuwe handelsdag; teller op nul (gisteren %d trades)",
                 self.state.trades_today,

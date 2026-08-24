@@ -23,6 +23,7 @@ async def async_setup_entry(
         LiveUnlocked(coordinator, entry),
         RiskHalted(coordinator, entry),
         MarketTradeable(coordinator, entry),
+        DataIntegrity(coordinator, entry),
     ])
 
 
@@ -138,4 +139,46 @@ class MarketTradeable(GoldScalperEntity, BinarySensorEntity):
             "spread": getattr(quote, "spread", None),
             "max_spread": self.coordinator.strategy_cfg.max_spread,
             "market_open": getattr(quote, "tradeable", None),
+        }
+
+
+class DataIntegrity(GoldScalperEntity, BinarySensorEntity):
+    """Aan als de OHLCV-kolommen uit de pas lopen.
+
+    Bestaat omdat dit precies zo'n storing is die niets zichtbaars doet: de
+    integratie blijft draaien, de sensoren blijven waarden tonen, maar de
+    indicatoren rekenen op verschoven data. Zonder deze melding zie je het pas
+    als je een diagnostiekexport naast elkaar legt.
+    """
+
+    _attr_name = "Dataprobleem"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_icon = "mdi:alert-decagram"
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_data_integrity"
+
+    @property
+    def is_on(self) -> bool | None:
+        data = self.coordinator.data
+        if not data:
+            return None
+        if not data.get("candles_consistent", True):
+            return True
+        # Te weinig historie is óók een dataprobleem: de indicatoren geven dan
+        # waarden terug die nergens op steunen.
+        return (data.get("candles") or 0) < 60
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        data = self.coordinator.data or {}
+        return {
+            "candles": data.get("candles"),
+            "indicator_bars": self.coordinator.state.bars,
+            "columns_consistent": data.get("candles_consistent"),
+            "hint": (
+                "Bij een probleem wordt de historie automatisch opnieuw opgehaald "
+                "bij de volgende cyclus."
+            ),
         }

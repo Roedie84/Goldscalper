@@ -415,9 +415,17 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             performance.compute_for_run, self.db, self.run_id
         )
 
+        columns = ("timestamp", "open", "high", "low", "close", "volume")
+        candle_lengths = (
+            {len(getattr(self._candles, f)) for f in columns}
+            if self._candles is not None else set()
+        )
+
         return {
             "quote": quote,
             "price": quote.mid,
+            "candles": len(self._candles) if self._candles else 0,
+            "candles_consistent": len(candle_lengths) <= 1,
             "spread": quote.spread,
             "atr": self.state.atr.value,
             "signal": signal,
@@ -434,6 +442,45 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "enabled": self._enabled,
         }
 
+    def _append_candle(self, fresh: Candles, index: int) -> None:
+        """Voeg één candle toe en kap de reeks af.
+
+        De zes kolommen worden hier als één geheel behandeld. De vorige versie
+        deed het afkappen binnen de lus over de kolommen en toetste daarbij
+        steeds op de lengte van ``close``. Gevolg: alleen ``close`` werd
+        afgekapt en de andere vijf groeiden door, zodat de kolommen na verloop
+        van tijd honderden posities uit de pas liepen. Elke indicator die
+        ``close`` met ``high`` of ``low`` combineert - ATR, Bollinger,
+        Stochastic, MFI - rekende vanaf dat moment op verschoven data, zonder
+        dat er iets zichtbaar misging.
+
+        Daarom staat de afkapstap nu ná het toevoegen van álle kolommen, en
+        wordt de uitkomst gecontroleerd.
+        """
+        if self._candles is None:
+            return
+
+        columns = ("timestamp", "open", "high", "low", "close", "volume")
+        for field in columns:
+            getattr(self._candles, field).append(getattr(fresh, field)[index])
+
+        limit = WARMUP_CANDLES * 2
+        overflow = len(self._candles.close) - limit
+        if overflow > 0:
+            for field in columns:
+                del getattr(self._candles, field)[:overflow]
+
+        lengths = {len(getattr(self._candles, field)) for field in columns}
+        if len(lengths) != 1:
+            # Mag niet kunnen na bovenstaande, maar als het toch gebeurt is
+            # stil doorrekenen op scheve data erger dan opnieuw beginnen.
+            _LOGGER.error(
+                "OHLCV-kolommen liepen uit de pas (%s); historie wordt opnieuw "
+                "opgehaald bij de volgende cyclus", lengths,
+            )
+            self._candles = None
+            self._last_bar_ts = 0
+
     async def _maybe_update_candles(self) -> None:
         """Haal nieuwe candles op als er een bar is afgesloten."""
         try:
@@ -441,18 +488,35 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         except VenueError as err:
             _LOGGER.debug("Kon candles niet verversen: %s", err)
             return
+
+        # Historie kwijt na een integriteitsprobleem: opnieuw opwarmen.
+        if self._candles is None:
+            try:
+                self._candles = await self.venue.candles(
+                    self.symbol, self.timeframe, WARMUP_CANDLES
+                )
+                self.state = StreamState()
+                await self.hass.async_add_executor_job(
+                    self.state.warm_up, self._candles
+                )
+                self._last_bar_ts = self._candles.timestamp[-1]
+                _LOGGER.info("Historie opnieuw opgewarmd met %d candles",
+                             len(self._candles))
+            except VenueError as err:
+                _LOGGER.warning("Opnieuw opwarmen mislukt: %s", err)
+            return
+
         for i, ts in enumerate(fresh.timestamp):
             if ts <= self._last_bar_ts:
                 continue
             self.state.push_candle(
-                fresh.open[i], fresh.high[i], fresh.low[i], fresh.close[i], fresh.volume[i]
+                fresh.open[i], fresh.high[i], fresh.low[i],
+                fresh.close[i], fresh.volume[i],
             )
             self._last_bar_ts = ts
-            if self._candles is not None:
-                for field in ("timestamp", "open", "high", "low", "close", "volume"):
-                    getattr(self._candles, field).append(getattr(fresh, field)[i])
-                    if len(self._candles.close) > WARMUP_CANDLES * 2:
-                        getattr(self._candles, field).pop(0)
+            self._append_candle(fresh, i)
+            if self._candles is None:
+                break
 
     async def _manage_open_positions(self, quote: VenueQuote, now: datetime) -> None:
         """Break-even, gedeeltelijk sluiten, trailing en tijdstops."""

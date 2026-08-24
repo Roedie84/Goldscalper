@@ -40,10 +40,23 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _number(minimum, maximum, step, unit=None, slider=False):
-    return NumberSelector(NumberSelectorConfig(
-        min=minimum, max=maximum, step=step, unit_of_measurement=unit,
-        mode=NumberSelectorMode.SLIDER if slider else NumberSelectorMode.BOX,
-    ))
+    """Bouw een NumberSelector.
+
+    ``unit_of_measurement`` wordt weggelaten in plaats van op ``None`` gezet.
+    Home Assistant valideert dat veld als ``str``, dus een expliciete ``None``
+    maakt de hele configuratiepagina ongeldig - met als zichtbaar gevolg
+    "Config-flow kon niet geladen worden: 400: Bad Request", zonder verdere
+    aanwijzing welk veld de dader is.
+    """
+    config: dict = {
+        "min": minimum,
+        "max": maximum,
+        "step": step,
+        "mode": NumberSelectorMode.SLIDER if slider else NumberSelectorMode.BOX,
+    }
+    if unit is not None:
+        config["unit_of_measurement"] = unit
+    return NumberSelector(NumberSelectorConfig(**config))
 
 
 class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):

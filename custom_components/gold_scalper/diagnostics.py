@@ -53,6 +53,15 @@ async def async_get_config_entry_diagnostics(
         "risk": data.get("risk"),
         "lifecycle": data.get("lifecycle"),
         "latency": data.get("latency"),
-        "candles_loaded": len(coordinator._candles) if coordinator._candles else 0,
-        "indicator_bars": coordinator.state.bars,
+        "candles": {
+            "loaded": len(coordinator._candles) if coordinator._candles else 0,
+            "indicator_bars": coordinator.state.bars,
+            # Deze twee horen gelijk op te lopen op de warmup na. Lopen ze
+            # uiteen, dan is er onderweg historie kwijtgeraakt of afgekapt.
+            "columns": {
+                field: len(getattr(coordinator._candles, field))
+                for field in ("timestamp", "open", "high", "low", "close", "volume")
+            } if coordinator._candles else {},
+            "consistent": data.get("candles_consistent"),
+        },
     }

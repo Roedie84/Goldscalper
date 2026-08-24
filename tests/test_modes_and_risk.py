@@ -76,8 +76,9 @@ def test_paper_never_blocked_by_gate():
 # ---------------- noodremmen ----------------
 
 def fresh(**over):
-    limits = RiskLimits(**over)
-    return RiskManager(limits, 10000.0)
+    # Expliciet dezelfde dag als NOW: anders hangt de uitkomst af van de
+    # wandklok van de machine waarop de test draait.
+    return RiskManager(RiskLimits(**over), 10000.0, now=NOW)
 
 
 def args(**over):
@@ -169,3 +170,31 @@ def test_stale_positions_flagged_for_force_close():
         open_time = (NOW - timedelta(seconds=1800)).isoformat()
     rm = fresh(max_position_age_seconds=900)
     assert len(rm.positions_to_force_close(NOW, [T()])) == 1
+
+
+def test_backwards_clock_does_not_reset_daily_loss():
+    """Een klok die terugspringt - NTP-correctie, tijdzonewissel, herstart met
+    verkeerde tijd - mag de dagverlieslimiet niet wissen. Juist dan moet hij
+    blijven staan."""
+    rm = fresh(max_daily_loss_pct=2.0)
+    rm.can_open(**args(balance=10000.0))
+    yesterday = NOW - timedelta(days=1)
+    ok, _ = rm.can_open(**args(now=yesterday, balance=9700.0))
+    assert not ok
+    assert rm.state.state is TradingState.HALTED
+    assert rm.state.day_start_balance == 10000.0
+
+
+def test_forward_day_rollover_resets_counters():
+    rm = fresh(max_trades_per_day=5)
+    for _ in range(5):
+        rm.record_open()
+    ok, _ = rm.can_open(**args(now=NOW + timedelta(days=1), balance=10000.0))
+    assert ok and rm.state.trades_today == 0
+
+
+def test_risk_manager_day_is_explicit_not_wall_clock():
+    """Anders hangt het gedrag rond middernacht af van wanneer je draait."""
+    from datetime import date
+    rm = RiskManager(RiskLimits(), 10000.0, now=datetime(2020, 1, 15, tzinfo=timezone.utc))
+    assert rm.state.day == date(2020, 1, 15)

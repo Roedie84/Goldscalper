@@ -346,3 +346,18 @@ python -m pytest tests/ -q     # 97 tests
 
 Draait zonder Home Assistant geïnstalleerd: `tests/conftest.py` stubt de
 HA-imports, zodat de rekenkern overal verifieerbaar is.
+
+### Tegen een echte Home Assistant
+
+De gewone suite gebruikt stubs: snel, maar principieel beperkt — een stub kan
+niet aantonen dat Home Assistant je schema's accepteert. Precies daar ging het
+mis met `unit_of_measurement=None`, dat pas in de UI opdook als
+"400: Bad Request".
+
+```bash
+python -m venv .ha && ./.ha/bin/pip install homeassistant pytest
+./.ha/bin/python -m pytest tests/test_real_home_assistant.py -q
+```
+
+Die tests bouwen de config- en options-flow op met de echte selectors en
+valideren plausibele invoer. Zonder Home Assistant slaan ze zichzelf over.

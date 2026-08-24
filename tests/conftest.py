@@ -76,7 +76,12 @@ class _StubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     ``find_module``/``load_module`` is in Python 3.12 verwijderd.
     """
 
-    PREFIXES = ("homeassistant", "voluptuous")
+    # Bewust alléén homeassistant. Voluptuous is een klein zuiver
+    # Python-pakket dat gewoon geïnstalleerd kan worden, en het stubben ervan
+    # was een dure fout: alle schemavalidatie slikte dan stilzwijgend alles,
+    # waardoor een ongeldige config-flow er ongemerkt doorheen kwam en pas in
+    # de UI opdook als "400: Bad Request".
+    PREFIXES = ("homeassistant",)
 
     def find_spec(self, fullname, path=None, target=None):
         if fullname.split(".")[0] not in self.PREFIXES:
