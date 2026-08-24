@@ -19,6 +19,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .broker.adapter import VenueError
+from .broker.ig_capital import CapitalVenue, IgVenue
 from .broker.oanda import OandaVenue
 from .broker.public_data import PublicDataVenue
 from .broker.stooq import StooqVenue
@@ -26,6 +27,8 @@ from .const import (
     CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_ENFORCE_TRADING_HOURS,
     CONF_REGIME_SWITCHING, CONF_SHOW_PANEL, DEFAULT_ASSUMED_SPREAD,
     PUBLIC_SYMBOLS, VENUE_PUBLIC, VENUE_STOOQ, STOOQ_SYMBOLS, STOOQ_TIMEFRAMES,
+    CONF_API_KEY, CONF_EPIC, CONF_IDENTIFIER, CONF_PASSWORD, DEFAULT_EPIC,
+    TRADING_VENUES, VENUE_CAPITAL, VENUE_IG,
     CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
     DEFAULT_SIM_SEED, DEFAULT_SIM_SPREAD, DEFAULT_VENUE, VENUES,
     VENUE_OANDA, VENUE_SIMULATOR, CONF_ENTRY_THRESHOLD, CONF_ENVIRONMENT, CONF_EQUITY_FLOOR_PCT,
@@ -68,6 +71,7 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     _reconfigure_venue: str | None = None
+    _broker: str | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -79,6 +83,9 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
                 return await self.async_step_public()
             if venue == VENUE_STOOQ:
                 return await self.async_step_stooq()
+            if venue in (VENUE_IG, VENUE_CAPITAL):
+                self._broker = venue
+                return await self.async_step_broker()
             if venue == VENUE_SIMULATOR:
                 return await self.async_step_simulator()
             return await self.async_step_oanda()
@@ -172,6 +179,88 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
                     + (f"\n\nFoutdetails: {detail}" if detail else "")
                 ),
                 "detail": detail or "-",
+            },
+        )
+
+    async def async_step_broker(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """IG of Capital.com: API-sleutel plus inloggegevens."""
+        errors: dict[str, str] = {}
+        detail = ""
+        broker = getattr(self, "_broker", VENUE_CAPITAL)
+        factory = IgVenue if broker == VENUE_IG else CapitalVenue
+
+        if user_input is not None:
+            venue = factory(
+                session=async_get_clientsession(self.hass),
+                api_key=user_input[CONF_API_KEY].strip(),
+                identifier=user_input[CONF_IDENTIFIER].strip(),
+                password=user_input[CONF_PASSWORD],
+                environment=user_input[CONF_ENVIRONMENT],
+                epic=user_input[CONF_EPIC].strip(),
+                trading_enabled=False,
+            )
+            # Eén echte verbinding: inloggen én data ophalen. Liever hier falen
+            # dan pas over twintig seconden in de logs.
+            try:
+                await venue.account()
+                candles = await venue.candles(
+                    user_input[CONF_EPIC], user_input[CONF_TIMEFRAME], 120
+                )
+                if len(candles) < 60:
+                    errors["base"] = "insufficient_history"
+                    detail = f"Slechts {len(candles)} candles; minimaal 60 nodig."
+            except VenueError as err:
+                _LOGGER.warning("%s-verbinding faalde: %s", broker, err)
+                errors["base"] = "fetch_failed"
+                detail = str(err)
+
+            if not errors:
+                data = {**user_input, CONF_VENUE: broker, CONF_MODE: "paper"}
+                if self.source == SOURCE_RECONFIGURE:
+                    return self.async_update_reload_and_abort(
+                        self._get_reconfigure_entry(), data_updates=data
+                    )
+                await self.async_set_unique_id(
+                    f"{broker}_{user_input[CONF_EPIC]}_{user_input[CONF_ENVIRONMENT]}"
+                )
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=f"{user_input[CONF_EPIC]} ({broker} {user_input[CONF_ENVIRONMENT]})",
+                    data=data,
+                )
+
+        hint = (
+            "IG: genereer een sleutel in je accountinstellingen. Let op dat een "
+            "demo-account hetzelfde e-mailadres moet gebruiken als je live account."
+            if broker == VENUE_IG else
+            "Capital.com: zet eerst 2FA aan, daarna kun je een API-sleutel maken "
+            "in de instellingen."
+        )
+        return self.async_show_form(
+            step_id="broker",
+            data_schema=vol.Schema({
+                vol.Required(CONF_API_KEY): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+                vol.Required(CONF_IDENTIFIER): str,
+                vol.Required(CONF_PASSWORD): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+                vol.Required(CONF_ENVIRONMENT, default="demo"): SelectSelector(
+                    SelectSelectorConfig(options=["demo", "live"],
+                                         mode=SelectSelectorMode.DROPDOWN)
+                ),
+                vol.Required(CONF_EPIC, default=DEFAULT_EPIC): str,
+                vol.Required(CONF_TIMEFRAME, default=DEFAULT_TIMEFRAME): SelectSelector(
+                    SelectSelectorConfig(options=TIMEFRAMES,
+                                         mode=SelectSelectorMode.DROPDOWN)
+                ),
+            }),
+            errors=errors,
+            description_placeholders={
+                "note": hint + (f"\n\nFoutdetails: {detail}" if detail else "")
             },
         )
 
@@ -367,6 +456,9 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
                 return await self.async_step_public()
             if venue == VENUE_STOOQ:
                 return await self.async_step_stooq()
+            if venue in (VENUE_IG, VENUE_CAPITAL):
+                self._broker = venue
+                return await self.async_step_broker()
             if venue == VENUE_SIMULATOR:
                 return await self.async_step_simulator()
             return await self.async_step_oanda()
@@ -420,10 +512,10 @@ class GoldScalperOptionsFlow(OptionsFlow):
         # geïmplementeerd en gedraagt zich identiek aan paper. Een keuze tonen
         # die niets verandert, wekt de indruk dat er iets anders gebeurt.
         venue = current.get(CONF_VENUE, DEFAULT_VENUE)
-        if venue in (VENUE_SIMULATOR, VENUE_PUBLIC):
-            available_modes = [TradingMode.PAPER.value]
-        else:
+        if venue in TRADING_VENUES:
             available_modes = [TradingMode.PAPER.value, TradingMode.LIVE.value]
+        else:
+            available_modes = [TradingMode.PAPER.value]
         current_mode = default(CONF_MODE, DEFAULT_MODE)
         if current_mode not in available_modes:
             current_mode = TradingMode.PAPER.value

@@ -354,7 +354,6 @@ class PaperBroker:
             # momentopname. Een broker kijkt naar elke tick.
             worst = quote.worst_bid if long else quote.worst_ask
             best = quote.best_bid if long else quote.best_ask
-            current = quote.bid if long else quote.ask
 
             trade.mfe = max(trade.mfe or 0.0, (best - trade.open_price) * direction)
             trade.mae = min(trade.mae or 0.0, (worst - trade.open_price) * direction)

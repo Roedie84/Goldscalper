@@ -204,7 +204,6 @@ def evaluate(
     geen kans maar een val.
     """
     spread = ask - bid
-    mid = (bid + ask) / 2.0
     components: dict[str, float] = {}
 
     def reject(reason: str, text: str) -> ScalpSignal:

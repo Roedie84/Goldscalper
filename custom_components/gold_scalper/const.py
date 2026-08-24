@@ -45,7 +45,21 @@ VENUE_SIMULATOR: Final = "simulator"
 VENUE_PUBLIC: Final = "public_data"
 VENUE_OANDA: Final = "oanda"
 VENUE_STOOQ: Final = "stooq"
-VENUES: Final = [VENUE_PUBLIC, VENUE_STOOQ, VENUE_SIMULATOR, VENUE_OANDA]
+VENUE_IG: Final = "ig"
+VENUE_CAPITAL: Final = "capital"
+VENUES: Final = [
+    VENUE_PUBLIC, VENUE_STOOQ, VENUE_SIMULATOR,
+    VENUE_IG, VENUE_CAPITAL, VENUE_OANDA,
+]
+
+#: Brokers die echt kunnen handelen; die krijgen live-modus aangeboden.
+TRADING_VENUES: Final = [VENUE_IG, VENUE_CAPITAL, VENUE_OANDA]
+
+CONF_IDENTIFIER: Final = "identifier"
+CONF_PASSWORD: Final = "password"
+CONF_API_KEY: Final = "api_key"
+CONF_EPIC: Final = "epic"
+DEFAULT_EPIC: Final = "GOLD"
 STOOQ_SYMBOLS: Final = ["xauusd", "xaueur"]
 STOOQ_TIMEFRAMES: Final = ["1d", "1w"]
 

@@ -361,3 +361,22 @@ python -m venv .ha && ./.ha/bin/pip install homeassistant pytest
 
 Die tests bouwen de config- en options-flow op met de echte selectors en
 valideren plausibele invoer. Zonder Home Assistant slaan ze zichzelf over.
+
+### Statische controle
+
+```bash
+pip install pyflakes
+python -m pytest tests/test_static_analysis.py -q
+```
+
+Vangt ontbrekende imports, ongebruikte variabelen, kapotte f-strings,
+achtergebleven `print()`-aanroepen en kale `except:`-blokken.
+
+Deze module bestaat om een concrete storing: `import json` ontbrak in
+`coordinator.py` en de integratie faalde bij het opstarten met een `NameError`.
+Geen enkele unittest ving dat, omdat de betreffende functie alleen binnen een
+draaiende Home Assistant wordt uitgevoerd.
+
+Een ontbrekende import hoor je niet met unittests te zoeken maar met een
+parser: die vindt hem in milliseconden, over álle regels, ook de regels die
+geen test ooit aanraakt.

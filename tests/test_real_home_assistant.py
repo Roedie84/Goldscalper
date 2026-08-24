@@ -178,3 +178,41 @@ def test_backtest_is_never_offered(venue):
     schema = result["data_schema"].schema
     mode_field = next(k for k in schema if str(k) == "mode")
     assert "backtest" not in schema[mode_field].config["options"]
+
+
+@pytest.mark.parametrize("broker", ["ig", "capital"])
+def test_broker_step_builds(broker):
+    from homeassistant.data_entry_flow import FlowResultType
+    flow = _flow()
+    flow._broker = broker
+    result = asyncio.run(flow.async_step_broker())
+    assert result["type"] == FlowResultType.FORM
+    fields = {str(k) for k in result["data_schema"].schema}
+    assert {"api_key", "identifier", "password", "environment", "epic"} <= fields
+
+
+@pytest.mark.parametrize("venue", ["ig", "capital", "oanda"])
+def test_real_brokers_offer_live_mode(venue):
+    result = asyncio.run(_options_for(venue).async_step_init())
+    schema = result["data_schema"].schema
+    mode_field = next(k for k in schema if str(k) == "mode")
+    assert "live" in schema[mode_field].config["options"]
+
+
+@pytest.mark.parametrize("venue", ["simulator", "public_data", "stooq"])
+def test_data_only_venues_hide_live_mode(venue):
+    result = asyncio.run(_options_for(venue).async_step_init())
+    schema = result["data_schema"].schema
+    mode_field = next(k for k in schema if str(k) == "mode")
+    assert schema[mode_field].config["options"] == ["paper"]
+
+
+def test_password_fields_are_masked():
+    """Wachtwoord en API-sleutel horen niet leesbaar in beeld te staan."""
+    flow = _flow()
+    flow._broker = "ig"
+    result = asyncio.run(flow.async_step_broker())
+    schema = result["data_schema"].schema
+    for name in ("api_key", "password"):
+        field = next(k for k in schema if str(k) == name)
+        assert schema[field].config["type"] == "password"

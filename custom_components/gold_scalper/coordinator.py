@@ -15,6 +15,8 @@ Alles draait binnen HA. Er is geen tweede proces, geen bridge, geen Windows.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -27,6 +29,7 @@ from .analysis.signals import Candles
 from .broker.adapter import ExecutionVenue, VenueError, VenueQuote
 from .broker.execution_safety import BrokerLimits, SafeExecutor
 from .broker.exits import ExitConfig, ExitManager
+from .broker.ig_capital import CapitalVenue, IgVenue
 from .broker.oanda import OandaVenue
 from .broker.public_data import PublicDataVenue
 from .broker.stooq import StooqVenue
@@ -35,7 +38,8 @@ from .broker.paper import CONTRACT_SIZE, BrokerCosts, PaperBroker
 from .broker.paper import Quote as PaperQuote
 from .broker.risk import RiskLimits, RiskManager, TradingState
 from .const import (
-    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_ENFORCE_TRADING_HOURS,
+    CONF_ACCOUNT_ID, CONF_API_KEY, CONF_ASSUMED_SPREAD, CONF_ENFORCE_TRADING_HOURS,
+    CONF_EPIC, CONF_IDENTIFIER, CONF_PASSWORD, DEFAULT_EPIC, VENUE_CAPITAL, VENUE_IG,
     CONF_REGIME_SWITCHING, DEFAULT_ASSUMED_SPREAD, VENUE_PUBLIC,
     VENUE_STOOQ,
     CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
@@ -131,6 +135,19 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 ),
             )
             self.mode = TradingMode.PAPER
+        elif venue_name in (VENUE_IG, VENUE_CAPITAL):
+            factory = IgVenue if venue_name == VENUE_IG else CapitalVenue
+            self.venue = factory(
+                session=async_get_clientsession(hass),
+                api_key=options[CONF_API_KEY],
+                identifier=options[CONF_IDENTIFIER],
+                password=options[CONF_PASSWORD],
+                environment=options.get(CONF_ENVIRONMENT, "demo"),
+                epic=options.get(CONF_EPIC, DEFAULT_EPIC),
+                # Pas ingeschakeld nadat de poort opengaat; zie _refresh_gate.
+                trading_enabled=False,
+                max_units=options.get(CONF_MAX_UNITS, DEFAULT_MAX_UNITS),
+            )
         elif venue_name == VENUE_STOOQ:
             self.venue = StooqVenue(
                 session=async_get_clientsession(hass),

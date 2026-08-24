@@ -236,3 +236,52 @@ def test_normal_mixed_run_computes_profit_factor():
     stats = compute(trades, 1000.0)
     assert stats["profit_factor"] == pytest.approx(3.0)
     assert stats["largest_loss"] == -1.0
+
+
+# ---------------- crumb en verkeersbeperking ----------------
+
+def test_crumb_is_appended_to_requests():
+    """Zonder crumb-token weigert Yahoo met 429, ongeacht het pollinterval."""
+    v = venue()
+    v._crumb = "abc123"
+    asyncio.run(v.candles("GC=F", "1m", 10))
+    chart_call = next(c for c in v._session.calls if "chart" in c["url"])
+    assert chart_call["params"]["crumb"] == "abc123"
+
+
+def test_429_discards_a_stale_crumb():
+    """Een verlopen token moet opnieuw opgehaald worden, niet eindeloos herhaald."""
+    v = venue(status=429)
+    v._crumb = "oud"
+    with pytest.raises(VenueError):
+        asyncio.run(v.candles("GC=F", "1m", 10))
+    assert v._crumb is None
+
+
+def test_429_message_points_at_the_real_cause():
+    """'Verhoog je interval' was misleidend: het gaat om het ontbrekende token."""
+    with pytest.raises(VenueError, match="crumb|cookie"):
+        asyncio.run(venue(status=429).candles("GC=F", "1m", 10))
+
+
+def test_quote_and_candles_share_one_request():
+    """Twee verzoeken per cyclus naar een bron die met 429 om zich heen slaat,
+    is er één te veel."""
+    v = venue()
+    v._crumb_failed = True          # sla de handshake over in de test
+    asyncio.run(v.candles("GC=F", "1m", 10))
+    before = len([c for c in v._session.calls if "chart" in c["url"]])
+    asyncio.run(v.quote())
+    after = len([c for c in v._session.calls if "chart" in c["url"]])
+    assert after == before, "quote() deed een eigen verzoek in plaats van de cache"
+
+
+def test_cache_expires():
+    v = venue()
+    v._crumb_failed = True
+    v._cache_ttl = 0.0
+    asyncio.run(v.candles("GC=F", "1m", 10))
+    n1 = len([c for c in v._session.calls if "chart" in c["url"]])
+    asyncio.run(v.candles("GC=F", "1m", 10))
+    n2 = len([c for c in v._session.calls if "chart" in c["url"]])
+    assert n2 > n1

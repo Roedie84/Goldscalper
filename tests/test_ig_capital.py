@@ -1,0 +1,238 @@
+"""IG en Capital.com tegen nagebootste antwoorden.
+
+Geen van beide is tegen een echte verbinding getest; deze tests dekken de
+parsing en de foutafhandeling, niet of de broker doet wat zijn documentatie
+belooft.
+"""
+import asyncio
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "custom_components"))
+from gold_scalper.broker.adapter import TradingDisabledError, VenueError
+from gold_scalper.broker.ig_capital import CapitalVenue, IgVenue
+
+
+class FakeResponse:
+    def __init__(self, payload, status=200, headers=None):
+        self._payload, self.status = payload, status
+        self.headers = headers or {}
+    async def json(self, content_type=None): return self._payload
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+
+
+class FakeSession:
+    """Reageert per pad; onthoudt alle verzoeken."""
+
+    def __init__(self, routes, login_headers=None):
+        self.routes = routes
+        # Expliciet op None toetsen: met `or` valt een leeg dict terug op de
+        # standaard, en dan test je het ontbreken van headers niet. Precies
+        # dezelfde valkuil als `unit_of_measurement or None` eerder.
+        self.login_headers = (
+            {"CST": "cst-token", "X-SECURITY-TOKEN": "sec-token"}
+            if login_headers is None else login_headers
+        )
+        self.calls = []
+
+    def _match(self, url):
+        for key, value in self.routes.items():
+            if key in url:
+                return value
+        return ({}, 404)
+
+    def post(self, url, **kw):
+        self.calls.append({"method": "POST", "url": url, **kw})
+        if "/session" in url:
+            return FakeResponse({"currentAccountId": "ACC1"}, 200, self.login_headers)
+        payload, status = self._match(url)
+        return FakeResponse(payload, status)
+
+    def request(self, method, url, **kw):
+        self.calls.append({"method": method, "url": url, **kw})
+        payload, status = self._match(url)
+        return FakeResponse(payload, status)
+
+
+MARKET = ({"snapshot": {"bid": 3300.1, "offer": 3300.4,
+                        "marketStatus": "TRADEABLE"}}, 200)
+PRICES = ({"prices": [
+    {"snapshotTimeUTC": f"2026-08-24T10:{m:02d}:00",
+     "openPrice": {"bid": 3300.0, "ask": 3300.3},
+     "highPrice": {"bid": 3300.5, "ask": 3300.8},
+     "lowPrice": {"bid": 3299.5, "ask": 3299.8},
+     "closePrice": {"bid": 3300.2, "ask": 3300.5},
+     "lastTradedVolume": 100}
+    for m in range(5)]}, 200)
+
+
+def ig(routes, trading=True):
+    return IgVenue(FakeSession(routes), "key", "user", "pass",
+                   environment="demo", epic="GOLD", trading_enabled=trading)
+
+
+def capital(routes, trading=True):
+    return CapitalVenue(FakeSession(routes), "key", "user", "pass",
+                        environment="demo", epic="GOLD", trading_enabled=trading)
+
+
+# ---------------- sessie ----------------
+
+def test_login_stores_both_tokens():
+    venue = ig({"/markets/": MARKET})
+    asyncio.run(venue.quote())
+    assert venue._cst == "cst-token"
+    assert venue._token == "sec-token"
+
+
+def test_missing_tokens_is_explained():
+    venue = IgVenue(FakeSession({}, login_headers={}), "k", "u", "p")
+    with pytest.raises(VenueError, match="CST"):
+        asyncio.run(venue.quote())
+
+
+def test_expired_session_triggers_relogin():
+    """Capital.com laat sessies verlopen na tien minuten inactiviteit."""
+    calls = {"n": 0}
+
+    class Flaky(FakeSession):
+        def request(self, method, url, **kw):
+            self.calls.append({"method": method, "url": url})
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return FakeResponse({"errorCode": "error.security.session"}, 401)
+            return FakeResponse(MARKET[0], 200)
+
+    venue = CapitalVenue(Flaky({}), "k", "u", "p")
+    quote = asyncio.run(venue.quote())
+    assert quote.bid == pytest.approx(3300.1)
+
+
+# ---------------- marktdata ----------------
+
+def test_quote_uses_bid_and_offer():
+    q = asyncio.run(ig({"/markets/": MARKET}).quote())
+    assert q.bid == pytest.approx(3300.1)
+    assert q.ask == pytest.approx(3300.4)
+    assert q.spread == pytest.approx(0.3)
+
+
+def test_closed_market_is_flagged():
+    payload = ({"snapshot": {"bid": 3300.0, "offer": 3300.3,
+                             "marketStatus": "CLOSED"}}, 200)
+    assert asyncio.run(ig({"/markets/": payload}).quote()).tradeable is False
+
+
+def test_candles_use_mid_not_bid():
+    """Op bid rekenen zou elke indicator een halve spread laten schuiven."""
+    c = asyncio.run(ig({"/prices/": PRICES}).candles("GOLD", "1m", 100))
+    assert len(c) == 5
+    assert c.close[0] == pytest.approx((3300.2 + 3300.5) / 2)
+    c.validate()
+
+
+def test_unknown_timeframe_lists_the_options():
+    with pytest.raises(VenueError, match="1m"):
+        asyncio.run(ig({}).candles("GOLD", "3m", 10))
+
+
+def test_empty_price_list_mentions_trading_hours():
+    with pytest.raises(VenueError, match="handelsuren"):
+        asyncio.run(ig({"/prices/": ({"prices": []}, 200)}).candles("GOLD", "1m", 10))
+
+
+# ---------------- handelen ----------------
+
+def test_trading_disabled_blocks_orders():
+    with pytest.raises(TradingDisabledError):
+        asyncio.run(ig({"/markets/": MARKET}, trading=False)
+                    .place_order("GOLD", "buy", 1.0))
+
+
+def test_units_cap_is_enforced():
+    venue = ig({"/markets/": MARKET})
+    venue.max_units = 2.0
+    with pytest.raises(VenueError, match="bereik"):
+        asyncio.run(venue.place_order("GOLD", "buy", 50.0))
+
+
+def test_ig_confirms_in_two_steps():
+    """IG geeft eerst een referentie; het dealId komt uit /confirms."""
+    routes = {
+        "/markets/": MARKET,
+        "/positions/otc": ({"dealReference": "REF123"}, 200),
+        "/confirms/": ({"dealStatus": "ACCEPTED", "dealId": "DEAL9",
+                        "level": 3300.45, "size": 1.0}, 200),
+    }
+    r = asyncio.run(ig(routes).place_order("GOLD", "buy", 1.0, stop_loss=3299.0))
+    assert r.success and r.ticket == "DEAL9"
+    assert r.fill_price == pytest.approx(3300.45)
+    assert r.slippage == pytest.approx(0.05, abs=1e-9)
+
+
+def test_ig_rejected_order_reports_the_reason():
+    routes = {
+        "/markets/": MARKET,
+        "/positions/otc": ({"dealReference": "REF1"}, 200),
+        "/confirms/": ({"dealStatus": "REJECTED", "reason": "MARKET_CLOSED"}, 200),
+    }
+    r = asyncio.run(ig(routes).place_order("GOLD", "buy", 1.0))
+    assert not r.success and "MARKET_CLOSED" in r.error
+
+
+def test_ig_missing_confirmation_warns_it_may_still_be_filled():
+    """Het gevaarlijke geval: geen bevestiging, order mogelijk wél uitgevoerd."""
+    routes = {"/markets/": MARKET, "/positions/otc": ({"dealReference": "REF1"}, 200)}
+    r = asyncio.run(ig(routes).place_order("GOLD", "buy", 1.0))
+    assert not r.success
+    assert "alsnog uitgevoerd" in r.error
+
+
+def test_capital_confirms_directly():
+    routes = {"/markets/": MARKET, "/positions": ({"dealReference": "D1"}, 200)}
+    r = asyncio.run(capital(routes).place_order("GOLD", "buy", 1.0, stop_loss=3299.0))
+    assert r.success and r.ticket == "D1"
+
+
+def test_stop_and_target_are_sent():
+    routes = {"/markets/": MARKET, "/positions": ({"dealReference": "D1"}, 200)}
+    venue = capital(routes)
+    asyncio.run(venue.place_order("GOLD", "buy", 1.0, stop_loss=3299.0,
+                                  take_profit=3302.0))
+    body = venue._session.calls[-1]["json"]
+    assert body["stopLevel"] == 3299.0
+    assert body["profitLevel"] == 3302.0
+
+
+def test_ig_sends_our_own_deal_reference():
+    """Hierop rust de bescherming tegen dubbele orders."""
+    routes = {"/markets/": MARKET, "/positions/otc": ({"dealReference": "R"}, 200),
+              "/confirms/": ({"dealStatus": "ACCEPTED", "dealId": "D"}, 200)}
+    venue = ig(routes)
+    asyncio.run(venue.place_order("GOLD", "buy", 1.0, comment="gold_scalper-abc123"))
+    body = next(c for c in venue._session.calls if "positions/otc" in c["url"])["json"]
+    assert body["dealReference"].startswith("gold_scalper-abc123")
+
+
+# ---------------- posities ----------------
+
+def test_positions_map_direction_and_stop():
+    payload = ({"positions": [{
+        "position": {"dealId": "D1", "direction": "SELL", "size": 2.0,
+                     "level": 3300.0, "stopLevel": 3305.0, "upl": -1.5,
+                     "dealReference": "gold_scalper-x"},
+        "market": {"epic": "GOLD", "bid": 3301.0},
+    }]}, 200)
+    positions = asyncio.run(ig({"/positions": payload}).positions("GOLD"))
+    assert positions[0].side == "sell"
+    assert positions[0].stop_loss == 3305.0
+    assert positions[0].comment == "gold_scalper-x"
+
+
+def test_venues_report_real_spread():
+    """In tegenstelling tot publieke bronnen meten deze de echte spread."""
+    assert ig({}).has_real_spread is True
+    assert capital({}).has_real_spread is True

@@ -54,6 +54,18 @@
           "timeframe": "Tijdsframe",
           "assumed_spread": "Aangenomen spread (0 = kosten uit)"
         }
+      },
+      "broker": {
+        "title": "Broker verbinden",
+        "description": "{note}",
+        "data": {
+          "api_key": "API-sleutel",
+          "identifier": "Gebruikersnaam",
+          "password": "Wachtwoord",
+          "environment": "Omgeving",
+          "epic": "Instrument (epic)",
+          "timeframe": "Tijdsframe"
+        }
       }
     },
     "error": {
@@ -120,10 +132,12 @@
   "selector": {
     "venue": {
       "options": {
-        "public_data": "Yahoo: echte goudkoersen per minuut (geen account)",
-        "stooq": "Stooq: goudkoersen per dag (geen account, geen cookiemuur)",
+        "public_data": "Yahoo: goudkoersen per minuut (geen account)",
+        "stooq": "Stooq: goudkoersen per dag (geen account)",
         "simulator": "Simulator: verzonnen koersen (geen account)",
-        "oanda": "OANDA (account nodig, kan echt handelen)"
+        "ig": "IG (account nodig, kan echt handelen)",
+        "capital": "Capital.com (account nodig, kan echt handelen)",
+        "oanda": "OANDA (account nodig, EU-toegang onzeker)"
       }
     }
   },

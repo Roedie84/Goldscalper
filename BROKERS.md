@@ -1,68 +1,93 @@
 # Brokerkeuze
 
-Eisen: EU-toezicht, beschikbaar in Nederland, en een REST-API die vanuit Home
-Assistant op Linux werkt zonder tweede proces.
+## Wat er nu in zit
 
-| Broker | Toezicht | API | Demo | Adapter |
+| Databron | API | Kan handelen | Toezicht | Door mij getest |
 |---|---|---|---|---|
-| **Capital.com** | CySEC, EU-paspoort (AFM/DNB toezicht) | REST + WebSocket, gratis | ja | te bouwen |
-| **OANDA TMS** | KNF (Polen) | v20 REST — **onzeker voor EU-accounts** | ja | `broker/oanda.py` |
-| **IG** | BaFin (IG Europe GmbH) | REST + Lightstreamer | ja | te bouwen |
-| **Saxo Bank** | Deense FSA, NL-vestiging | OpenAPI (OAuth) | ja | te bouwen |
-| **XTB** | KNF | WebSocket/JSON, geen REST | ja | te bouwen |
-| Interactive Brokers | Central Bank of Ireland | vereist IB Gateway | ja | past niet |
-| AvaTrade | CBI (Ierland) | alleen MetaTrader | ja | past niet |
-| Plus500, DEGIRO, eToro | divers | geen publieke API | — | past niet |
+| **IG** | REST + streaming | ja | BaFin (IG Europe) | alleen nagebootst |
+| **Capital.com** | REST + WebSocket | ja | CySEC | alleen nagebootst |
+| OANDA | v20 REST | ja | KNF (Polen) | alleen nagebootst |
+| Yahoo | publieke chart-API | nee | — | alleen nagebootst |
+| Stooq | CSV | nee | — | alleen nagebootst |
+| Simulator | lokaal | nee | — | volledig |
 
-## Het probleem met OANDA in de EU
+**Geen van de brokeradapters is tegen een echte verbinding getest.** Mijn
+omgeving mag ze niet bereiken. De parsing is gebouwd op hun publieke
+documentatie en getoetst tegen nagebootste antwoorden; dat vangt logicafouten,
+maar niet of het endpoint doet wat de documentatie belooft.
 
-De v20 REST-adapter is gebouwd op OANDA's gepubliceerde API-documentatie. Maar
-OANDA verplaatste in 2023 hun EU-operatie naar Warschau onder de Poolse KNF, en
-die entiteit (OANDA TMS Brokers S.A.) biedt handel via MetaTrader 5 en hun eigen
-platform. Of TMS-accounts toegang krijgen tot v20 is niet uit de documentatie op
-te maken.
+Reken erop dat de eerste verbinding iets oplevert dat nog niet klopt. De
+foutmeldingen zijn daarom zo specifiek mogelijk: status, foutcode van de
+broker, en waar mogelijk wat je eraan kunt doen.
 
-**Controleer dit vóór je verder bouwt.** Open een practice-account en kijk of je
-onder My Services een "Manage API Access" ziet met een tokenoptie. Zo niet, dan
-werkt `broker/oanda.py` niet met jouw account.
+## IG
 
-## Waarom Capital.com de veiligste keuze is
+REST-API met aparte endpoints voor demo (`demo-api.ig.com`) en live
+(`api.ig.com`), dus hetzelfde adapterbestand werkt voor beide.
 
-- Gedocumenteerde publieke REST-API met eigen demo-omgeving
-- CySEC-vergunning met EU-paspoort; AFM en DNB houden lokaal toezicht
-- Beleggerscompensatie tot 20.000 euro
-- Geen commissie; kosten zitten in de spread
-- Authenticatie via API-sleutel plus sessie (2FA moet aan staan vóór je een
-  sleutel kunt genereren)
+**Aandachtspunt bij aanmelden:** om de API op demo te gebruiken moet je
+hetzelfde e-mailadres gebruiken als je live account. In de praktijk: eerst een
+live account registreren, dan van daaruit een demo openen. Registreren
+verplicht je niet tot storten.
 
-Aandachtspunt: de sessie verloopt na 10 minuten inactiviteit. De adapter moet
-dus zelf hernieuwen. Dat is een klein stukje extra logica dat OANDA niet nodig
-heeft, maar het is goed te doen.
+**Twee stappen bij een order.** IG geeft eerst een `dealReference` terug en pas
+daarna, via `/confirms/{ref}`, het `dealId` en of hij is geaccepteerd. Dat is
+extra werk maar juist gunstig: het geeft een spoor dat na een verbroken
+verbinding terug te vinden is, en daar rust de bescherming tegen dubbele orders
+op.
+
+De demo-rate-limits liggen lager dan live en zijn zonder aankondiging gewijzigd.
+Bij twintig seconden verversing zit je ruim onder elke limiet.
+
+## Capital.com
+
+Hun API is gemodelleerd naar die van IG: zelfde sessie met `CST`- en
+`X-SECURITY-TOKEN`-headers, vergelijkbare endpoints. Daarom delen beide
+adapters het meeste van hun code.
+
+**Voordeel:** geen live account nodig voor demo-toegang.
+
+**Aandachtspunt:** je moet eerst 2FA aanzetten voordat je een API-sleutel kunt
+maken. En de sessie verloopt na tien minuten inactiviteit; de adapter logt
+daarom automatisch opnieuw in bij een 401.
+
+## OANDA
+
+De v20-adapter is gebouwd op OANDA's gepubliceerde API, maar hun Europese tak
+is in 2023 verhuisd naar OANDA TMS Brokers in Warschau, en die entiteit werkt
+met MetaTrader 5. Of een EU-account v20-toegang krijgt, is uit de documentatie
+niet op te maken.
+
+Controleer dat vóór gebruik: zie je onder My Services een 'Manage API Access'
+met een tokenoptie, dan werkt de adapter mogelijk.
+
+## Van broker wisselen
+
+Integratie → driepuntsmenu → **Herconfigureren**. De adapterlaag zorgt dat
+alles daarboven — analyse, strategie, database, poort, exits, rapportage —
+ongewijzigd blijft.
+
+Let op: van broker wisselen begint een nieuwe run, want resultaten met een
+andere spread zijn niet vergelijkbaar. De oude run blijft in het rapport staan.
 
 ## ESMA-hefboom
 
-Als particuliere klant in de EU krijg je verplicht lagere hefbomen dan brokers
-adverteren:
+Als particuliere klant in de EU:
 
 | Instrument | Maximum |
 |---|---|
-| Majors (EUR/USD) | 30:1 |
+| Majors | 30:1 |
 | **Goud** | **20:1** |
 | Overige grondstoffen | 10:1 |
 | Aandelen | 5:1 |
-| Crypto | 2:1 |
 
-De code rekent nu met 20:1. Ziet een broker 200:1 adverteren, dan geldt dat voor
-professionele klanten of niet-EU-entiteiten. Reken met wat je werkelijk krijgt,
-anders denkt de margeberekening dat er ruimte is die er niet is.
+De code rekent met 20:1. Adverteert een broker met meer, dan geldt dat voor
+professionele klanten of niet-EU-entiteiten.
 
-Verder gelden in de EU verplichte negatieve-saldobescherming en
-margin-close-out op 50%.
+## De volgorde die ik zou aanhouden
 
-## Wat een andere broker kost aan werk
-
-`broker/adapter.py` definieert de interface: koersen, candles, account,
-posities, order plaatsen, sluiten, stop verplaatsen. Een nieuwe broker is één
-bestand van ongeveer 250 regels plus tests. Alles daarboven — analyse,
-strategie, papersimulatie, database, poort, risicobewaking, exits, rapportage —
-verandert niet mee.
+1. Demo-account aanmaken bij IG of Capital.com
+2. Verbinding testen; stuur me de foutmelding als er iets misgaat
+3. Papermodus draaien op de **echte quotes** van die broker — pas dan is je
+   spread gemeten in plaats van geraden
+4. Pas daarna is de bewijsfase werkelijk bewijs

@@ -279,7 +279,7 @@ class LifecycleController:
             message=(
                 f"Alle posities afgewikkeld in {elapsed:.0f}s. Veilig om te herstarten."
                 if closed
-                else f"Geen open posities. Veilig om te herstarten."
+                else "Geen open posities. Veilig om te herstarten."
             ),
         )
 

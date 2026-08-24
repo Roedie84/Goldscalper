@@ -17,9 +17,16 @@ spotkoers uit interbancaire bronnen. Jouw broker quoteert daar omheen met een
 eigen opslag. Verschillen van enkele tienden van een dollar zijn normaal, en
 dat is precies de orde van grootte waar een scalpingstrategie op leeft.
 
-**Het endpoint is ongedocumenteerd.** Yahoo publiceert deze API niet officieel.
-Hij werkt al jaren, maar kan zonder aankondiging veranderen. Voor een
-verkennende fase is dat aanvaardbaar; voor iets waar geld aan hangt niet.
+**Het endpoint is ongedocumenteerd, en Yahoo werkt tegen.** Sinds circa 2024
+eist de chart-API een cookie plus een 'crumb'-token; zonder die twee volgt
+HTTP 429, ongeacht hoe rustig je pollt. Die handshake zit hieronder ingebouwd,
+maar hij is niet officieel ondersteund en Yahoo weigert Europese IP-adressen
+regelmatig alsnog.
+
+Werkt deze bron bij jou niet, blijf er dan niet aan trekken. Een demo-account
+bij een broker geeft echte quotes én - belangrijker - een **gemeten** spread in
+plaats van een aanname. Voor een bewijsfase is dat het verschil tussen data en
+giswerk.
 
 Minuutdata reikt bij Yahoo ongeveer een week terug. Voor langere historie moet
 je naar een hoger tijdsframe.
@@ -28,6 +35,7 @@ je naar een hoger tijdsframe.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
@@ -52,6 +60,11 @@ HOSTS = (
     "https://query1.finance.yahoo.com/v8/finance/chart",
     "https://query2.finance.yahoo.com/v8/finance/chart",
 )
+
+#: Yahoo eist sinds circa 2024 een cookie plus een 'crumb'-token voor de
+#: chart-API. Zonder die twee volgt HTTP 429, ongeacht hoe rustig je pollt.
+COOKIE_URL = "https://fc.yahoo.com/"
+CRUMB_URL = "https://query1.finance.yahoo.com/v1/test/getcrumb"
 
 #: Yahoo weigert verzoeken zonder herkenbare user-agent met HTTP 429.
 HEADERS = {
@@ -104,25 +117,91 @@ class PublicDataVenue(ExecutionVenue):
         #: Aangenomen spread in USD per ounce. Nul betekent: kosten uitgeschakeld.
         self.assumed_spread = float(assumed_spread)
         self._last_meta: dict = {}
+        self._crumb: str | None = None
+        self._crumb_failed = False
+        #: Korte cache: één ophaalactie per cyclus in plaats van twee.
+        #:
+        #: quote() haalde eerst een eigen chart op om alleen de laatste koers
+        #: te lezen, terwijl candles() dezelfde gegevens al ophaalt. Dat is een
+        #: verdubbeling van het verkeer richting een bron die toch al krap zit.
+        self._cache: dict[str, tuple[float, dict]] = {}
+        self._cache_ttl = 15.0
+        #: Tijdsframe waarop candles worden opgehaald; quote() volgt dat zodat
+        #: beide dezelfde cache-ingang delen.
+        self._quote_interval = "1m"
 
     @property
     def costs_disabled(self) -> bool:
         return self.assumed_spread <= 0.0
 
-    async def _fetch_one(self, base: str, symbol: str, interval: str, rng: str) -> dict:
-        """Eén poging bij één host. Faalt met een specifieke reden."""
-        url = f"{base}/{symbol}"
+    async def _ensure_crumb(self) -> None:
+        """Haal het cookie en het crumb-token op.
+
+        Yahoo geeft anders HTTP 429 terug op elk chart-verzoek. De volgorde is
+        vast: eerst een verzoek naar fc.yahoo.com dat cookies zet (en zelf een
+        404 teruggeeft, dat hoort zo), daarna het crumb-token opvragen met die
+        cookies erbij.
+
+        Lukt het niet, dan wordt het één keer gelogd en daarna niet meer
+        geprobeerd: blijven proberen levert alleen meer 429's op. De
+        chart-aanvraag gaat dan zonder crumb, wat soms nog werkt.
+        """
+        if self._crumb or self._crumb_failed:
+            return
         try:
             async with self._session.get(
-                url,
-                params={"interval": interval, "range": rng, "includePrePost": "false"},
-                headers=HEADERS,
-                timeout=TIMEOUT,
+                COOKIE_URL, headers=HEADERS, timeout=TIMEOUT
+            ):
+                pass  # De 404 is normaal; het gaat om de cookies.
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Cookie ophalen bij Yahoo mislukte: %s", err)
+
+        try:
+            async with self._session.get(
+                CRUMB_URL, headers=HEADERS, timeout=TIMEOUT
+            ) as response:
+                if response.status != 200:
+                    self._crumb_failed = True
+                    _LOGGER.warning(
+                        "Yahoo gaf geen crumb-token (HTTP %s). Chart-aanvragen "
+                        "worden zonder token gedaan en zullen waarschijnlijk "
+                        "met 429 geweigerd worden.", response.status,
+                    )
+                    return
+                crumb = (await response.text()).strip()
+                if not crumb or "<" in crumb:
+                    self._crumb_failed = True
+                    _LOGGER.warning("Yahoo gaf geen bruikbaar crumb-token terug")
+                    return
+                self._crumb = crumb
+                _LOGGER.info("Yahoo crumb-token opgehaald")
+        except Exception as err:  # noqa: BLE001
+            self._crumb_failed = True
+            _LOGGER.warning("Crumb-token ophalen mislukte: %s", err)
+
+    async def _fetch_one(self, base: str, symbol: str, interval: str, rng: str) -> dict:
+        """Eén poging bij één host. Faalt met een specifieke reden."""
+        await self._ensure_crumb()
+        url = f"{base}/{symbol}"
+        params = {"interval": interval, "range": rng, "includePrePost": "false"}
+        if self._crumb:
+            params["crumb"] = self._crumb
+        try:
+            async with self._session.get(
+                url, params=params, headers=HEADERS, timeout=TIMEOUT,
             ) as response:
                 if response.status == 429:
+                    # Een crumb dat we al hadden kan verlopen zijn; één keer
+                    # opnieuw ophalen bij de volgende poging.
+                    if self._crumb:
+                        self._crumb = None
+                        self._crumb_failed = False
                     raise VenueError(
-                        "Yahoo knijpt af (HTTP 429). Verhoog het verversingsinterval "
-                        "of wacht een kwartier."
+                        "Yahoo weigert met HTTP 429. Dat betekent bij Yahoo niet "
+                        "alleen 'te snel', maar meestal dat het vereiste "
+                        "cookie/crumb-token ontbreekt of geweigerd wordt voor jouw "
+                        "regio. Yahoo is voor Europese IP-adressen onbetrouwbaar; "
+                        "een broker-demo geeft echte quotes én een gemeten spread."
                     )
                 if response.status in (401, 403):
                     raise VenueError(
@@ -176,11 +255,18 @@ class PublicDataVenue(ExecutionVenue):
         return results[0]
 
     async def _fetch(self, symbol: str, interval: str, rng: str) -> dict:
-        """Probeer beide hosts; meld de laatste fout als beide falen."""
+        """Probeer beide hosts, met een korte cache erboven."""
+        key = f"{symbol}|{interval}|{rng}"
+        cached = self._cache.get(key)
+        if cached and (time.monotonic() - cached[0]) < self._cache_ttl:
+            return cached[1]
+
         errors: list[str] = []
         for base in HOSTS:
             try:
-                return await self._fetch_one(base, symbol, interval, rng)
+                result = await self._fetch_one(base, symbol, interval, rng)
+                self._cache[key] = (time.monotonic(), result)
+                return result
             except VenueError as err:
                 errors.append(f"{base.split('/')[2]}: {err}")
                 _LOGGER.debug("Yahoo-host faalde: %s", errors[-1])
@@ -191,11 +277,18 @@ class PublicDataVenue(ExecutionVenue):
     async def quote(self, symbol: str | None = None) -> VenueQuote:
         """Laatste koers, met een *aangenomen* spread eromheen.
 
+        Gebruikt hetzelfde antwoord als ``candles`` via de cache, zodat er per
+        cyclus één verzoek naar Yahoo gaat in plaats van twee. Bij een bron die
+        met 429 om zich heen slaat, telt elk vermeden verzoek.
+
         Belangrijk: bid en ask worden hier geconstrueerd, niet gemeten. Bij een
         aangenomen spread van nul vallen ze samen met de midprijs en kost een
         round trip niets - wat in de echte markt nooit het geval is.
         """
-        result = await self._fetch(symbol or self.symbol, "1m", "1d")
+        # Bewust dezelfde parameters als de candle-aanvraag: dan bedient de
+        # cache beide en gaat er één verzoek per cyclus uit in plaats van twee.
+        interval, rng = INTERVALS.get(self._quote_interval, ("1m", "5d"))
+        result = await self._fetch(symbol or self.symbol, interval, rng)
         meta = result.get("meta") or {}
         self._last_meta = meta
 
@@ -227,6 +320,7 @@ class PublicDataVenue(ExecutionVenue):
             raise VenueError(
                 f"Tijdsframe '{timeframe}' niet beschikbaar; kies uit {list(INTERVALS)}"
             )
+        self._quote_interval = timeframe
         interval, rng = INTERVALS[timeframe]
         result = await self._fetch(symbol or self.symbol, interval, rng)
 
