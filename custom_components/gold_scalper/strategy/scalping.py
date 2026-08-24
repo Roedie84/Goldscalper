@@ -58,9 +58,28 @@ class ScalpConfig:
     max_positions: int = 1
     #: Minimale afstand tussen twee entries, in seconden.
     cooldown_seconds: int = 60
-    #: Handelsvenster in UTC-uren. Buiten de Londen/New York-overlap is de
-    #: spread breder en de beweging kleiner: de slechtste combinatie.
+    #: Beperk de handel tot een vast tijdvenster.
+    #:
+    #: Standaard uit: als de markt open is, mag er gehandeld worden. Het
+    #: tijdvenster was een *proxy* voor iets dat elders directer gemeten wordt -
+    #: buiten de Londen/New York-overlap is de spread breder en de beweging
+    #: kleiner, en dat filteren ``max_spread`` en de volatiliteitscontrole al.
+    #:
+    #: Let op de uitzondering: bij een databron zonder echte bied- en laatprijs
+    #: is de spread een vaste aanname, en dan filtert ``max_spread`` niets. In
+    #: dat geval is dit tijdvenster de enige bescherming tegen dunne uren, en
+    #: waarschuwt de strategie daarvoor.
+    enforce_trading_hours: bool = False
+    #: Handelsvenster in UTC-uren, alleen actief als hierboven aan staat.
     trading_hours_utc: tuple[int, int] = (7, 20)
+    #: Is de spread gemeten bij een broker, of een aanname?
+    #:
+    #: Bij een aanname is ``max_spread`` een vergelijking met een constante en
+    #: gaat hij dus nooit af: hij filtert niets. Zonder tijdvenster is er dan
+    #: geen enkele rem op handelen in dunne uren, terwijl spreads daar in
+    #: werkelijkheid juist uitlopen. De volatiliteitscontrole wordt dan
+    #: strenger gezet als vervanging.
+    real_spread: bool = True
     #: Drempel voor de samengestelde scalpscore.
     entry_threshold: float = 0.45
     #: Kies per marktregime tussen trendvolgend en contrair, in plaats van
@@ -145,8 +164,15 @@ def _momentum(close: list[float]) -> tuple[float, str]:
     return max(-1.0, min(1.0, score)), f"RSI(7) {value:.1f}"
 
 
-def _volatility_regime(candles: Candles) -> tuple[float, str]:
-    """Is er genoeg beweging om iets te verdienen, en niet zoveel dat het chaos is."""
+def _volatility_regime(
+    candles: Candles, quiet_floor: float = 0.6
+) -> tuple[float, str]:
+    """Is er genoeg beweging om iets te verdienen, en niet zoveel dat het chaos is.
+
+    ``quiet_floor`` wordt verhoogd als de spread een aanname is in plaats van
+    een meting én er geen tijdvenster geldt. Dan is dit de enige rem op
+    handelen in dunne uren.
+    """
     a = atr(candles, 14)
     if a[-1] is None:
         return 0.0, "geen ATR"
@@ -155,7 +181,7 @@ def _volatility_regime(candles: Candles) -> tuple[float, str]:
         return 0.0, "geen ATR-historie"
     median = sorted(recent)[len(recent) // 2]
     ratio = safe_div(a[-1], median, 1.0)
-    if ratio < 0.6:
+    if ratio < quiet_floor:
         return -0.5, f"volatiliteit {ratio:.2f}× mediaan: te stil om de spread terug te verdienen"
     if ratio > 2.5:
         return -0.8, f"volatiliteit {ratio:.2f}× mediaan: waarschijnlijk nieuws, spread onbetrouwbaar"
@@ -196,12 +222,13 @@ def evaluate(
             f"Spread {spread:.3f} boven de limiet {cfg.max_spread:.3f}",
         )
 
-    start, end = cfg.trading_hours_utc
-    if not (start <= hour_utc < end):
-        return reject(
-            "outside_hours",
-            f"Uur {hour_utc}:00 UTC valt buiten het venster {start}:00-{end}:00",
-        )
+    if cfg.enforce_trading_hours:
+        start, end = cfg.trading_hours_utc
+        if not (start <= hour_utc < end):
+            return reject(
+                "outside_hours",
+                f"Uur {hour_utc}:00 UTC valt buiten het venster {start}:00-{end}:00",
+            )
 
     if open_position_count >= cfg.max_positions:
         return reject("max_positions", f"Al {open_position_count} positie(s) open")
@@ -217,7 +244,12 @@ def evaluate(
     trend_score, trend_note = _micro_trend(close)
     stretch_score, stretch_note = _stretch(close)
     mom_score, mom_note = _momentum(close)
-    vol_score, vol_note = _volatility_regime(candles)
+    # Zonder gemeten spread én zonder tijdvenster is dit de enige bescherming
+    # tegen dunne uren; dan mag de drempel niet op de standaardwaarde blijven.
+    quiet_floor = 0.6
+    if not cfg.real_spread and not cfg.enforce_trading_hours:
+        quiet_floor = 0.85
+    vol_score, vol_note = _volatility_regime(candles, quiet_floor)
 
     components.update({
         "trend": round(trend_score, 3),

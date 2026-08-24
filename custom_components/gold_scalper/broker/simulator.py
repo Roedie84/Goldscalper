@@ -112,6 +112,8 @@ class SimulatorVenue(ExecutionVenue):
     supports_trading = False
     #: Merkteken waar de poort en het rapport op controleren.
     is_simulated = True
+    #: De spread wordt gegenereerd, niet gemeten bij een tegenpartij.
+    has_real_spread = False
 
     def __init__(
         self,

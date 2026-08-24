@@ -67,12 +67,52 @@ class BrokerCosts:
 
 @dataclass(slots=True)
 class Quote:
-    """Een marktquote van de bridge."""
+    """Een marktquote.
+
+    ``high`` en ``low`` zijn de uitersten sinds de vorige quote. Zonder die
+    twee controleert de simulatie stops alleen op het pollmoment, terwijl een
+    broker elke tick toetst. Op een pollinterval van twintig seconden wordt zo
+    ongeveer 12% van de stops gemist: posities die live waren uitgestopt lopen
+    op papier door en maken soms alsnog winst.
+
+    Dat is een systematische vertekening in je voordeel, en juist die soort
+    fout zet je op een verkeerd besluit over echt geld.
+    """
 
     bid: float
     ask: float
     time: datetime
     atr: float = 0.0
+    high: float | None = None
+    low: float | None = None
+
+    @property
+    def worst_bid(self) -> float:
+        """Laagste bied sinds de vorige quote; waar een long-stop op afgaat."""
+        if self.low is None:
+            return self.bid
+        return min(self.bid, self.low - (self.ask - self.bid) / 2.0)
+
+    @property
+    def worst_ask(self) -> float:
+        """Hoogste laat sinds de vorige quote; waar een short-stop op afgaat."""
+        if self.high is None:
+            return self.ask
+        return max(self.ask, self.high + (self.ask - self.bid) / 2.0)
+
+    @property
+    def best_bid(self) -> float:
+        """Hoogste bied sinds de vorige quote; waar een long-TP op afgaat."""
+        if self.high is None:
+            return self.bid
+        return max(self.bid, self.high - (self.ask - self.bid) / 2.0)
+
+    @property
+    def best_ask(self) -> float:
+        """Laagste laat sinds de vorige quote; waar een short-TP op afgaat."""
+        if self.low is None:
+            return self.ask
+        return min(self.ask, self.low + (self.ask - self.bid) / 2.0)
 
     @property
     def mid(self) -> float:
@@ -307,31 +347,39 @@ class PaperBroker:
         """
         closed: list[Trade] = []
         for trade in list(self._open):
-            exit_price = quote.bid if trade.side == "buy" else quote.ask
-            direction = 1.0 if trade.side == "buy" else -1.0
-            excursion = (exit_price - trade.open_price) * direction
+            long = trade.side == "buy"
+            direction = 1.0 if long else -1.0
 
-            trade.mfe = max(trade.mfe or 0.0, excursion)
-            trade.mae = min(trade.mae or 0.0, excursion)
+            # Toets tegen de uitersten sinds de vorige quote, niet tegen de
+            # momentopname. Een broker kijkt naar elke tick.
+            worst = quote.worst_bid if long else quote.worst_ask
+            best = quote.best_bid if long else quote.best_ask
+            current = quote.bid if long else quote.ask
 
-            if trade.stop_loss is not None:
-                hit = (
-                    exit_price <= trade.stop_loss
-                    if trade.side == "buy"
-                    else exit_price >= trade.stop_loss
+            trade.mfe = max(trade.mfe or 0.0, (best - trade.open_price) * direction)
+            trade.mae = min(trade.mae or 0.0, (worst - trade.open_price) * direction)
+
+            stop_hit = trade.stop_loss is not None and (
+                worst <= trade.stop_loss if long else worst >= trade.stop_loss
+            )
+            target_hit = trade.take_profit is not None and (
+                best >= trade.take_profit if long else best <= trade.take_profit
+            )
+
+            # Zijn beide binnen hetzelfde interval geraakt, dan kun je uit de
+            # candle niet afleiden welke eerst kwam. De stop aannemen is de
+            # enige verdedigbare keuze: gokken op de gunstige volgorde is
+            # precies hoe een backtest zichzelf rijk rekent.
+            if stop_hit:
+                closed.append(
+                    self._close_at(trade, quote, trade.stop_loss, "stop_loss")
                 )
-                if hit:
-                    closed.append(self.close_position(trade, quote, "stop_loss"))
-                    continue
-            if trade.take_profit is not None:
-                hit = (
-                    exit_price >= trade.take_profit
-                    if trade.side == "buy"
-                    else exit_price <= trade.take_profit
+                continue
+            if target_hit:
+                closed.append(
+                    self._close_at(trade, quote, trade.take_profit, "take_profit")
                 )
-                if hit:
-                    closed.append(self.close_position(trade, quote, "take_profit"))
-                    continue
+                continue
             self.db.update_trade(trade)
 
         # Simpele margin call: onder 50% margin level gaat alles dicht.
@@ -350,6 +398,26 @@ class PaperBroker:
             self.cumulative_cost,
         )
         return closed
+
+    def _close_at(self, trade: Trade, quote: Quote, level: float, reason: str) -> Trade:
+        """Sluit op het opgegeven niveau in plaats van op de huidige koers.
+
+        Een stop wordt uitgevoerd op het stopniveau, niet op de prijs die
+        twintig seconden later toevallig geldt. Sluiten op de latere prijs zou
+        de uitkomst willekeurig gunstiger of ongunstiger maken dan hij was.
+        """
+        half = (quote.ask - quote.bid) / 2.0
+        synthetic = Quote(
+            bid=level - half if trade.side == "buy" else level,
+            ask=level if trade.side == "buy" else level + half,
+            time=quote.time,
+            atr=quote.atr,
+        )
+        if trade.side == "buy":
+            synthetic = Quote(bid=level, ask=level + 2 * half, time=quote.time, atr=quote.atr)
+        else:
+            synthetic = Quote(bid=level - 2 * half, ask=level, time=quote.time, atr=quote.atr)
+        return self.close_position(trade, synthetic, reason)
 
     def close_all(self, quote: Quote, reason: str = "manual") -> list[Trade]:
         return [self.close_position(t, quote, reason) for t in list(self._open)]

@@ -25,6 +25,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .analysis.signals import Candles
 from .broker.adapter import ExecutionVenue, VenueError, VenueQuote
+from .broker.execution_safety import BrokerLimits, SafeExecutor
 from .broker.exits import ExitConfig, ExitManager
 from .broker.oanda import OandaVenue
 from .broker.public_data import PublicDataVenue
@@ -34,7 +35,8 @@ from .broker.paper import CONTRACT_SIZE, BrokerCosts, PaperBroker
 from .broker.paper import Quote as PaperQuote
 from .broker.risk import RiskLimits, RiskManager, TradingState
 from .const import (
-    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_REGIME_SWITCHING, DEFAULT_ASSUMED_SPREAD, VENUE_PUBLIC,
+    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_ENFORCE_TRADING_HOURS,
+    CONF_REGIME_SWITCHING, DEFAULT_ASSUMED_SPREAD, VENUE_PUBLIC,
     VENUE_STOOQ,
     CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
     DEFAULT_SIM_SEED, DEFAULT_SIM_SPREAD, DEFAULT_VENUE, VENUE_SIMULATOR, CONF_ENTRY_THRESHOLD, CONF_ENVIRONMENT, CONF_EQUITY_FLOOR_PCT,
@@ -160,6 +162,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             min_edge_multiple=options.get(CONF_MIN_EDGE_MULTIPLE, 2.0),
             entry_threshold=options.get(CONF_ENTRY_THRESHOLD, 0.45),
             regime_switching=options.get(CONF_REGIME_SWITCHING, True),
+            enforce_trading_hours=options.get(CONF_ENFORCE_TRADING_HOURS, False),
+            # Alleen een broker levert een echte bied/laat-spread; publieke
+            # bronnen en de simulator geven een aanname.
+            real_spread=getattr(self.venue, "has_real_spread", True),
             trading_hours_utc=(
                 _as_int(options.get(CONF_TRADING_START_HOUR), 7),
                 _as_int(options.get(CONF_TRADING_END_HOUR), 20),
@@ -181,6 +187,19 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             self.starting_balance,
         )
 
+        # Beschermingslaag rond echte orders. Papermodus kent de storingen die
+        # hij afvangt niet, dus de bewijsfase leert je daar niets over.
+        self.executor = SafeExecutor(
+            self.venue,
+            BrokerLimits(
+                max_volume=options.get(CONF_MAX_UNITS, DEFAULT_MAX_UNITS),
+                min_stop_distance=options.get("min_stop_distance", 0.0),
+            ),
+        )
+        #: Cyclusteller voor de periodieke positiecontrole.
+        self._audit_counter = 0
+        self.executor_notes: list[str] = []
+
         self.lifecycle = LifecycleController(DrainPolicy.WAIT_THEN_CLOSE)
         self.exits = ExitManager(ExitConfig())
         self.latency = LatencyTracker()
@@ -200,6 +219,9 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         #: herberekenen is duur (meerdere queries), dus dat gebeurt alleen als
         #: er werkelijk iets veranderd is.
         self._gate_trade_count: int = -1
+        #: Aantal candles dat sinds de vorige positiecontrole is afgesloten.
+        self._bars_since_last_check: int = 1
+        self._new_bars_this_cycle: int = 0
         self._enabled: bool = False
         self._store = StateStore(hass, entry.entry_id)
         self._state = RuntimeState()
@@ -252,10 +274,31 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "assumed_spread": getattr(self.venue, "assumed_spread", None),
             "costs_disabled": getattr(self.venue, "costs_disabled", False),
         }
-        self.run_id = await self.hass.async_add_executor_job(
-            self.db.start_run, self.mode.value, STRATEGY_VERSION,
-            self.symbol, config, self.starting_balance, None,
+
+        fingerprint = self._fingerprint(config)
+        existing = await self.hass.async_add_executor_job(
+            self.db.find_matching_run, fingerprint
         )
+        if existing:
+            # Zelfde opzet: de lopende bewijsfase voortzetten. Elke herstart een
+            # nieuwe run beginnen maakte de eis van dertig dagen onhaalbaar - één
+            # Home Assistant-update zette de teller op nul.
+            self.run_id = int(existing["id"])
+            self.starting_balance = float(existing["starting_balance"])
+            _LOGGER.info(
+                "Bewijsfase voortgezet: run %s, gestart %s",
+                self.run_id, existing["started_at"],
+            )
+        else:
+            self.run_id = await self.hass.async_add_executor_job(
+                self.db.start_run, self.mode.value, STRATEGY_VERSION,
+                self.symbol, config, self.starting_balance, None, fingerprint,
+            )
+            _LOGGER.info(
+                "Nieuwe bewijsfase gestart (run %s): de opzet is gewijzigd. "
+                "Eerdere runs blijven bewaard en staan onderaan het rapport.",
+                self.run_id,
+            )
 
         if self.mode is not TradingMode.LIVE:
             # Slippage volgt de aangenomen spread: staat die op nul, dan is de
@@ -289,6 +332,39 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
         await self._reconcile()
         await self._refresh_gate()
+
+    def _fingerprint(self, config: dict) -> str:
+        """Hash van alles wat het handelsgedrag bepaalt.
+
+        Wijzigt hier iets, dan zijn de resultaten niet meer vergelijkbaar en
+        hoort er een nieuwe run te beginnen. Wijzigt er niets - een herstart,
+        een update, een gewijzigde risicolimiet - dan loopt de bewijsfase door.
+
+        Strategieparameters zitten er bewust in: je kunt een strategie niet
+        bewijzen terwijl je hem verandert. Risicolimieten zitten er bewust
+        níet in; die begrenzen de schade maar veranderen de signalen niet.
+        """
+        material = {
+            "venue": config["venue"],
+            "symbol": config["symbol"],
+            "timeframe": config["timeframe"],
+            "strategy": config["strategy"],
+            "simulated": config["simulated"],
+            "assumed_spread": config["assumed_spread"],
+            "units": config["units"],
+            "entry_threshold": self.strategy_cfg.entry_threshold,
+            "regime_switching": self.strategy_cfg.regime_switching,
+            "min_edge_multiple": self.strategy_cfg.min_edge_multiple,
+            "max_spread": self.strategy_cfg.max_spread,
+            "enforce_hours": self.strategy_cfg.enforce_trading_hours,
+            "real_spread": self.strategy_cfg.real_spread,
+            "trading_hours": (
+                list(self.strategy_cfg.trading_hours_utc)
+                if self.strategy_cfg.enforce_trading_hours else None
+            ),
+        }
+        blob = json.dumps(material, sort_keys=True, default=str)
+        return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
     async def _reconcile(self) -> None:
         """Vergelijk de broker met onze database voordat er iets gebeurt."""
@@ -388,9 +464,25 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             self.paper.close_position(position, self._paper_quote(self._last_quote), reason)
 
     def _paper_quote(self, quote: VenueQuote) -> PaperQuote:
+        """Vertaal een venue-quote naar een paper-quote met de uitersten erbij.
+
+        De high en low komen uit de candles die sinds de vorige cyclus zijn
+        afgesloten. Zonder die twee toetst de simulatie stops alleen op het
+        pollmoment en mist zo ongeveer 12% van de stops - allemaal in je
+        voordeel, wat de bewijsfase waardeloos maakt.
+        """
+        high = low = None
+        if self._candles is not None and self._candles.high:
+            bars = max(1, self._bars_since_last_check)
+            high = max(self._candles.high[-bars:])
+            low = min(self._candles.low[-bars:])
+            # De actuele koers hoort er ook bij: hij kan buiten de laatste
+            # afgesloten candle liggen.
+            high = max(high, quote.ask)
+            low = min(low, quote.bid)
         return PaperQuote(
             bid=quote.bid, ask=quote.ask, time=quote.time,
-            atr=self.state.atr.value or 0.0,
+            atr=self.state.atr.value or 0.0, high=high, low=low,
         )
 
     # -- de lus ------------------------------------------------------------- #
@@ -411,7 +503,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
         # -- nieuwe candle? -------------------------------------------------- #
         await self._maybe_update_candles()
+        self._bars_since_last_check = max(1, self._new_bars_this_cycle)
         budget.mark("candles")
+
+        open_positions_precheck = bool(await self._open_positions())
 
         # -- open posities beheren, vóór alles anders ------------------------ #
         # Bij een gesloten markt niet ingrijpen: een stop verplaatsen of een
@@ -419,6 +514,21 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         if quote.tradeable:
             await self._manage_open_positions(quote, now)
         budget.mark("exits")
+
+        # -- periodieke controle op onbeschermde posities --------------------- #
+        # Een stop kan verdwijnen doordat een wijziging half doorkwam of doordat
+        # de broker hem introk. Zonder controle merk je dat pas als het geld weg
+        # is. Elke tiende cyclus volstaat; vaker belast de broker-API onnodig.
+        if self.mode is TradingMode.LIVE and open_positions_precheck:
+            self._audit_counter += 1
+            if self._audit_counter >= 10:
+                self._audit_counter = 0
+                problems = await self.executor.audit_positions(self.symbol)
+                if problems:
+                    self.executor_notes = problems
+                    self.risk.halt(
+                        "onbeschermde positie gevonden: " + problems[0]
+                    )
 
         # -- boekhouding ----------------------------------------------------- #
         if self.paper:
@@ -528,6 +638,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "risk": self.risk.as_dict(),
             "lifecycle": self.lifecycle.as_dict(),
             "latency": self.latency.stats(),
+            "executor_notes": self.executor_notes,
             "mode": self.mode.value,
             "requested_mode": self.requested_mode.value,
             "mode_override_reason": self.mode_override_reason,
@@ -575,6 +686,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
     async def _maybe_update_candles(self) -> None:
         """Haal nieuwe candles op als er een bar is afgesloten."""
+        self._new_bars_this_cycle = 0
         try:
             fresh = await self.venue.candles(self.symbol, self.timeframe, 3)
         except VenueError as err:
@@ -606,6 +718,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 fresh.close[i], fresh.volume[i],
             )
             self._last_bar_ts = ts
+            self._new_bars_this_cycle += 1
             self._append_candle(fresh, i)
             if self._candles is None:
                 break
@@ -657,13 +770,17 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         try:
             if self.mode is TradingMode.LIVE:
                 require_live_unlocked(self.mode, type("G", (), self.gate)())
-                result = await self.venue.place_order(
-                    self.symbol, side, self.units,
+                # Via de veiligheidslaag: garandeert een stop, voorkomt een
+                # tweede order na een verbroken verbinding.
+                result, notes = await self.executor.open_protected(
+                    self.symbol, side, self.units, quote.mid,
                     stop_loss=signal.stop_loss, take_profit=signal.take_profit,
-                    comment=STRATEGY_VERSION,
                 )
+                self.executor_notes = notes[-10:]
+                for note in notes:
+                    _LOGGER.info("Uitvoering: %s", note)
                 if not result.success:
-                    _LOGGER.warning("Order geweigerd: %s", result.error)
+                    _LOGGER.warning("Order niet geplaatst: %s", result.error)
                     return
             elif self.paper:
                 self.paper.open_position(

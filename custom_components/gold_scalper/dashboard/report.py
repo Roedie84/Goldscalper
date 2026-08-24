@@ -19,6 +19,7 @@ afhankelijkheden die over twee jaar verdwenen zijn.
 from __future__ import annotations
 
 import html
+import json
 import math
 from datetime import datetime, timezone
 from pathlib import Path
@@ -347,6 +348,59 @@ def _cost_projection_block(stats: dict) -> str:
 </section>"""
 
 
+def _run_history(db, current_run_id: int, tz=None) -> str:
+    """Overzicht van alle runs, met de huidige gemarkeerd.
+
+    Bij een wijziging in de opzet - andere databron, andere drempel - begint
+    een nieuwe run, want de resultaten zijn dan niet meer vergelijkbaar. Zonder
+    dit overzicht lijkt de eerdere data verdwenen, terwijl hij gewoon in de
+    database staat.
+    """
+    try:
+        runs = db.run_totals()
+    except Exception:  # noqa: BLE001 - oudere database zonder deze query
+        return ""
+    if len(runs) < 2:
+        return ""
+
+    rows = ""
+    for run in runs[:12]:
+        current = run["id"] == current_run_id
+        try:
+            config = json.loads(run.get("config_json") or "{}")
+        except (TypeError, ValueError):
+            config = {}
+        bron = config.get("venue", "—")
+        if config.get("simulated"):
+            bron += " (fictief)"
+        elif config.get("costs_disabled"):
+            bron += " (geen kosten)"
+        net = run["net_pnl"] or 0.0
+        rows += (
+            f"<tr{' class=\'current\'' if current else ''}>"
+            f"<td>{run['id']}{' ●' if current else ''}</td>"
+            f"<td>{_local(run['started_at'], tz, '%d-%m %H:%M')}</td>"
+            f"<td>{_esc(bron)}</td>"
+            f"<td>{_esc(run['strategy_version'])}</td>"
+            f"<td class='num'>{run['trades']}</td>"
+            f"<td class='num'>{_fmt(run['costs'])}</td>"
+            f"<td class='num {'pos' if net >= 0 else 'neg'}'>{_fmt(net)}</td>"
+            "</tr>"
+        )
+
+    return f"""<section>
+  <h3>Eerdere runs</h3>
+  <p class="note">Een nieuwe run begint zodra de opzet verandert - andere
+     databron, andere drempel, andere spread - omdat de resultaten dan niet meer
+     vergelijkbaar zijn. Een herstart of een gewijzigde risicolimiet begint
+     géén nieuwe run. De huidige staat gemarkeerd.</p>
+  <table><thead><tr>
+    <th>Run</th><th>Gestart</th><th>Bron</th><th>Strategie</th>
+    <th class="num">Trades</th><th class="num">Kosten</th><th class="num">Netto</th>
+  </tr></thead><tbody>{rows}</tbody></table>
+</section>"""
+
+
 def _fineness(stats: dict) -> int:
     """Duizendsten van de bruto beweging die de kosten overleven.
 
@@ -449,6 +503,7 @@ th{text-align:left;font-weight:600;color:%(ink_soft)s;font-size:10px;
   border-bottom:1px solid %(rule)s;white-space:nowrap}
 td{padding:6px 8px;border-bottom:1px solid rgba(178,186,174,.4);white-space:nowrap}
 tbody tr:hover{background:%(ground_deep)s}
+tr.current td{background:%(ground_deep)s;font-weight:600}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .pos{color:%(assay)s}.neg{color:%(reject)s}
 
@@ -634,6 +689,8 @@ def build_report(
     {_scatter_mae_mfe(trades)}
   </div>
 </section>
+
+{_run_history(db, run_id, tz)}
 
 <section>
   <h3>Trades</h3>

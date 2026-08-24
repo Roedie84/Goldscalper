@@ -43,6 +43,8 @@ SENSORS: tuple[ScalperSensor, ...] = (
                 ((d.get("stats") or {}).get("signals") or {}).get("evaluations")
             ),
             "acted": ((d.get("stats") or {}).get("signals") or {}).get("acted"),
+            "run_id": (d.get("stats") or {}).get("run_id"),
+            "run_started": (d.get("stats") or {}).get("started_at"),
         },
     ),
     ScalperSensor(

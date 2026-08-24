@@ -50,8 +50,14 @@ CREATE TABLE IF NOT EXISTS runs (
     symbol            TEXT NOT NULL,
     config_json       TEXT NOT NULL,
     starting_balance  REAL NOT NULL,
-    note              TEXT
+    note              TEXT,
+    -- Hash van alles wat het handelsgedrag bepaalt. Gelijke vingerafdruk
+    -- betekent: dezelfde opzet, dus dezelfde run voortzetten na een herstart.
+    fingerprint       TEXT
 );
+-- De index op fingerprint staat bewust in _migrate() en niet hier: op een
+-- bestaande database van vóór deze kolom zou CREATE INDEX falen omdat de
+-- kolom pas door de migratie wordt toegevoegd.
 
 CREATE TABLE IF NOT EXISTS trades (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -206,12 +212,32 @@ class TradeDatabase:
         )
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
         self._conn.commit()
         _LOGGER.debug("Tradedatabase geopend op %s", self.path)
+
+    def _migrate(self) -> None:
+        """Voeg kolommen toe die in latere versies zijn bijgekomen.
+
+        Zonder dit zou een bestaande database na een update stukgaan op een
+        ontbrekende kolom, en dat is precies de data die je niet kwijt wilt.
+        """
+        existing = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        if "fingerprint" not in existing:
+            self._conn.execute("ALTER TABLE runs ADD COLUMN fingerprint TEXT")
+            _LOGGER.info("Database bijgewerkt: kolom 'fingerprint' toegevoegd")
+        # Pas ná de kolomtoevoeging; op een oude database zou dit anders falen.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_fingerprint ON runs(fingerprint)"
+        )
+        self._conn.commit()
 
     def close(self) -> None:
         if self._conn:
@@ -226,6 +252,34 @@ class TradeDatabase:
 
     # -- runs --------------------------------------------------------------- #
 
+    def find_matching_run(self, fingerprint: str) -> dict | None:
+        """Zoek de meest recente open run met dezelfde opzet.
+
+        Bestaat omdat elke herstart anders een nieuwe run begon en de teller
+        op nul zette. Een bewijsfase van dertig dagen is dan onhaalbaar: één
+        Home Assistant-update wist hem.
+        """
+        row = self.conn.execute(
+            "SELECT * FROM runs WHERE fingerprint = ? AND ended_at IS NULL "
+            "ORDER BY id DESC LIMIT 1",
+            (fingerprint,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def run_totals(self) -> list[dict]:
+        """Samenvatting per run, zodat eerdere runs niet uit beeld verdwijnen."""
+        rows = self.conn.execute(
+            """SELECT r.id, r.started_at, r.ended_at, r.mode, r.strategy_version,
+                      r.symbol, r.config_json, r.starting_balance,
+                      COUNT(t.id) AS trades,
+                      COALESCE(SUM(t.net_pnl), 0) AS net_pnl,
+                      COALESCE(SUM(t.total_cost), 0) AS costs
+               FROM runs r
+               LEFT JOIN trades t ON t.run_id = r.id AND t.close_time IS NOT NULL
+               GROUP BY r.id ORDER BY r.id DESC"""
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def start_run(
         self,
         mode: str,
@@ -234,12 +288,13 @@ class TradeDatabase:
         config: dict,
         starting_balance: float,
         note: str | None = None,
+        fingerprint: str | None = None,
     ) -> int:
         cur = self.conn.execute(
             """INSERT INTO runs
                (started_at, mode, strategy_version, symbol, config_json,
-                starting_balance, note)
-               VALUES (?,?,?,?,?,?,?)""",
+                starting_balance, note, fingerprint)
+               VALUES (?,?,?,?,?,?,?,?)""",
             (
                 _now(),
                 mode,
@@ -248,6 +303,7 @@ class TradeDatabase:
                 json.dumps(config, sort_keys=True, default=str),
                 starting_balance,
                 note,
+                fingerprint,
             ),
         )
         self.conn.commit()

@@ -231,6 +231,7 @@ class OandaVenue(ExecutionVenue):
                 ),
                 unrealised_pnl=float(trade.get("unrealizedPL", 0)),
                 open_time=self._parse_time(trade["openTime"]),
+                comment=(trade.get("clientExtensions") or {}).get("comment"),
             ))
         return out
 

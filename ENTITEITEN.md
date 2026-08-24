@@ -128,3 +128,72 @@ naar jouw symbool.
 
 Integratie → driepuntsmenu → **Herconfigureren**. Je tradedatabase blijft
 behouden.
+
+## Runs en de bewijsfase
+
+De bewijsfase telt per **run**. Een run loopt door zolang de opzet niet
+verandert.
+
+| Actie | Gevolg |
+|---|---|
+| Home Assistant herstarten | run loopt door |
+| Integratie herladen | run loopt door |
+| Risicolimiet aanpassen | run loopt door |
+| Startbalans aanpassen | run loopt door |
+| **Databron wisselen** | nieuwe run |
+| **Instapdrempel wijzigen** | nieuwe run |
+| **Aangenomen spread wijzigen** | nieuwe run |
+| **Handelsvenster wijzigen** | nieuwe run |
+| **Strategieversie bijgewerkt** | nieuwe run |
+
+De scheidslijn: alles wat de *signalen* verandert begint een nieuwe run, want
+resultaten van voor en na zijn dan niet vergelijkbaar. Je kunt een strategie
+niet bewijzen terwijl je hem verandert.
+
+Risicolimieten zitten er bewust niet in. Die begrenzen de schade maar
+veranderen niet welke trades er ontstaan.
+
+Eerdere runs blijven in de database en staan onderaan het keuringsrapport, met
+aantal trades, kosten en nettoresultaat per run. Er gaat niets verloren; de
+teller begint alleen opnieuw waar dat inhoudelijk moet.
+
+`sensor.<...>_status` toont `run_id` en `run_started` als attribuut.
+
+## Wanneer wordt er gehandeld
+
+Standaard: **zodra de markt open is.** Er is geen vast tijdvenster.
+
+Goud handelt bijna 24 uur per dag op werkdagen, met een korte dagelijkse
+onderbreking en het hele weekend dicht. Buiten die uren staat de status op
+`markt_gesloten` en gebeurt er niets; dat is geen storing en hervat vanzelf.
+
+### Waarom het vaste venster eruit is
+
+Het venster van 7:00-20:00 UTC was een *proxy*. De redenering erachter: buiten
+de Londen/New York-overlap is de spread breder en de beweging kleiner. Maar
+allebei die dingen worden elders directer gemeten:
+
+- `max_spread` weigert bij een te brede spread
+- de volatiliteitscontrole weigert als de markt te stil is om de kosten terug
+  te verdienen
+
+Die kijken naar wat er werkelijk gebeurt in plaats van naar de klok. Gemeten
+over een etmaal simulatiedata: 63 kandidaten zonder venster tegen 58 met - maar
+de bot vond ook kansen in uur 5 en 6, vóór de Londense opening, die het vaste
+venster had weggegooid terwijl er beweging was.
+
+### Eén uitzondering waar je op moet letten
+
+Bij een databron zonder echte bied- en laatprijs - simulator, Yahoo, Stooq - is
+de spread een **aanname**, en dan is `max_spread` een vergelijking met een
+constante die nooit afgaat. Hij filtert dus niets.
+
+In dat geval wordt de volatiliteitsdrempel automatisch strenger gezet
+(0,85x mediaan in plaats van 0,6x), want anders is er zonder tijdvenster geen
+enkele rem op handelen in dunne uren - precies waar spreads in werkelijkheid
+uitlopen. In de testrun werden daardoor 112 evaluaties geweigerd op
+`volatility_regime`.
+
+Wil je het venster toch terug, dan staat de schakelaar **Beperk tot een vast
+tijdvenster** bij de opties. Let op: dat verandert de vingerafdruk en begint dus
+een nieuwe run.

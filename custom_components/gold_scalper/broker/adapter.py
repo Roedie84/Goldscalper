@@ -69,6 +69,13 @@ class VenuePosition:
     take_profit: float | None = None
     unrealised_pnl: float | None = None
     open_time: datetime | None = None
+    #: Ons eigen ordernummer, zoals meegegeven bij het plaatsen.
+    #:
+    #: Hierop rust de bescherming tegen dubbele orders: valt de verbinding weg
+    #: vóór het antwoord, dan is dit de enige manier om vast te stellen of jóuw
+    #: order is uitgevoerd. Zonder dit veld is opnieuw sturen een gok die je
+    #: positie kan verdubbelen.
+    comment: str | None = None
 
 
 @dataclass(slots=True)
