@@ -115,3 +115,30 @@ def test_halt_still_outranks_closed_market():
     state, _ = _status(data(market_open=False,
                             risk={"state": "halted", "halt_reason": "x"}))
     assert state == "noodstop"
+
+
+def test_warmup_progress_is_reported_with_eta():
+    """Tijdens het opwarmen gebeurt er niets zichtbaars; dan moet je wel weten
+    hoe lang het nog duurt."""
+    state, text = _status(data(warmup={
+        "bars": 12, "needed": 60, "remaining": 48,
+        "ready": False, "eta_minutes": 240,
+    }))
+    assert state == "opwarmen"
+    assert "12 van 60" in text
+    assert "4 uur" in text
+    assert "geen datapunten" in text
+
+
+def test_warmup_in_minutes_when_short():
+    _, text = _status(data(warmup={
+        "bars": 55, "needed": 60, "remaining": 5,
+        "ready": False, "eta_minutes": 25,
+    }))
+    assert "25 minuten" in text
+
+
+def test_ready_warmup_does_not_block_the_status():
+    state, _ = _status(data(warmup={"bars": 60, "needed": 60, "ready": True,
+                                    "remaining": 0, "eta_minutes": 0}))
+    assert state != "opwarmen"

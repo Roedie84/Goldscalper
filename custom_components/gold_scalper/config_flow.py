@@ -24,7 +24,8 @@ from .broker.oanda import OandaVenue
 from .broker.public_data import PublicDataVenue
 from .broker.stooq import StooqVenue
 from .const import (
-    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_ENFORCE_TRADING_HOURS,
+    CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
+    CONF_ENFORCE_TRADING_HOURS,
     CONF_REGIME_SWITCHING, CONF_SHOW_PANEL, DEFAULT_ASSUMED_SPREAD,
     PUBLIC_SYMBOLS, VENUE_PUBLIC, VENUE_STOOQ, STOOQ_SYMBOLS, STOOQ_TIMEFRAMES,
     CONF_API_KEY, CONF_EPIC, CONF_IDENTIFIER, CONF_PASSWORD, DEFAULT_EPIC,
@@ -574,6 +575,13 @@ class GoldScalperOptionsFlow(OptionsFlow):
                 _number(0.1, 0.95, 0.05, slider=True),
             # Standaard uit: handelen wanneer de markt open is. Zie de
             # toelichting bij ScalpConfig.enforce_trading_hours.
+            # Zie de toelichting bij CONF_BUILD_FROM_QUOTES: brokers rekenen
+            # historie per datapunt af en dat quotum is snel op.
+            vol.Required(
+                CONF_BUILD_FROM_QUOTES,
+                default=default(CONF_BUILD_FROM_QUOTES, False),
+            ): BooleanSelector(),
+
             vol.Required(
                 CONF_ENFORCE_TRADING_HOURS,
                 default=default(CONF_ENFORCE_TRADING_HOURS, False),

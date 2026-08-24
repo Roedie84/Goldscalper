@@ -39,6 +39,15 @@ def build_status(d: dict) -> tuple[str, str]:
             "De goudmarkt is gesloten. Handel hervat automatisch bij opening; "
             "dit is geen storing."
         )
+    warmup = d.get("warmup")
+    if warmup and not warmup.get("ready"):
+        eta = warmup["eta_minutes"]
+        duur = f"{eta // 60} uur en {eta % 60} minuten" if eta >= 60 else f"{eta} minuten"
+        return "opwarmen", (
+            f"Bars worden opgebouwd uit live koersen: {warmup['bars']} van "
+            f"{warmup['needed']}. Nog ongeveer {duur}. Er wordt geen historie "
+            "bij de broker opgevraagd, dus dit kost geen datapunten."
+        )
     if not d.get("enabled"):
         return "uitgeschakeld", (
             "Handel staat uit. Zet de schakelaar 'Handel actief' aan om te beginnen."

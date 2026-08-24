@@ -35,7 +35,7 @@ def _flat(text: str) -> str:
     return flat.replace('" "', "").replace('""', "")
 
 
-def test_warmup_tries_progressively_smaller_counts():
+def test_warmup_tries_progressively_larger_counts():
     body = _warmup_body()
     assert "attempts" in body
     assert "WARMUP_CANDLES" in body and "MIN_WARMUP_CANDLES" in body
@@ -72,8 +72,13 @@ def test_both_warmup_paths_use_the_helper():
     assert COORDINATOR.count("_fetch_warmup()") >= 2
 
 
-def test_attempts_descend():
-    """Oplopend proberen zou zinloos zijn: de eerste poging moet de ruimste zijn."""
+def test_attempts_ascend():
+    """Klein beginnen en opschalen.
+
+    Andersom - groot beginnen en afbouwen - verbruikt bij elke mislukte poging
+    opnieuw datapunten uit het quotum van de broker, en juist de eerste poging
+    is dan de duurste. IG's demo-quotum was daardoor binnen een dag op.
+    """
     from gold_scalper.const import MIN_WARMUP_CANDLES, WARMUP_CANDLES
 
     line = next(
@@ -91,6 +96,28 @@ def test_attempts_descend():
             numbers.append(MIN_WARMUP_CANDLES)
         else:
             numbers.append(int(token))
-    assert numbers == sorted(numbers, reverse=True), numbers
-    assert numbers[0] == WARMUP_CANDLES
-    assert numbers[-1] == MIN_WARMUP_CANDLES
+    assert numbers == sorted(numbers), numbers
+    assert numbers[0] == MIN_WARMUP_CANDLES
+    assert numbers[-1] == WARMUP_CANDLES
+
+
+def test_quota_error_stops_immediately():
+    """Verder proberen verbruikt alleen meer van een quotum dat al op is."""
+    body = _flat(_warmup_body())
+    assert "allowance" in body
+    assert "break" in _warmup_body()
+
+
+def test_candles_are_only_fetched_when_a_bar_can_have_closed():
+    """Elke cyclus candles ophalen is op M5 voor 98% verspilling, en brokers
+    rekenen per datapunt af."""
+    assert "_bar_due" in COORDINATOR
+    update = COORDINATOR.split("async def _maybe_update_candles")[1][:400]
+    assert "_bar_due()" in update
+
+
+def test_bar_lengths_cover_every_offered_timeframe():
+    from gold_scalper.const import TIMEFRAMES
+    from gold_scalper.coordinator import GoldScalperCoordinator
+    for timeframe in TIMEFRAMES:
+        assert timeframe in GoldScalperCoordinator._BAR_SECONDS, timeframe

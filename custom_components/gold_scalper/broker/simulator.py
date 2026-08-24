@@ -39,6 +39,10 @@ from .adapter import (
 
 _LOGGER = logging.getLogger(__name__)
 
+#: Aantal punten waarop een candle intern wordt bemonsterd. Een echte bar
+#: bevat honderden ticks; te grof bemonsteren onderschat high en low.
+SUBSAMPLES = 60
+
 SECONDS = {
     "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
     "1h": 3600, "4h": 14400, "1d": 86400,
@@ -208,9 +212,16 @@ class SimulatorVenue(ExecutionVenue):
         ts, o, h, l, c, v = [], [], [], [], [], []
         for i in range(count - 1, -1, -1):
             start = last_closed - i * step
-            # Vier sub-samples per candle geven een geloofwaardige high/low
-            # zonder dat het duur wordt.
-            samples = [self.price_at(start + step * f) for f in (0.0, 0.25, 0.5, 0.75, 1.0)]
+            # Dicht bemonsteren binnen de candle. Vijf punten leek genoeg maar
+            # onderschat de high en low stelselmatig: een echte bar bevat
+            # honderden ticks. Dat maakt de ATR te laag, en de ATR is precies
+            # het getal waar de kostenpoort op steunt - een te lage ATR laat de
+            # strategie denken dat een beweging de kosten niet dekt terwijl dat
+            # wel zo is, of andersom.
+            samples = [
+                self.price_at(start + step * i / SUBSAMPLES)
+                for i in range(SUBSAMPLES + 1)
+            ]
             ts.append(start)
             o.append(round(samples[0], 3))
             c.append(round(samples[-1], 3))

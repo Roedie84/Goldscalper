@@ -38,7 +38,8 @@ from .broker.paper import CONTRACT_SIZE, BrokerCosts, PaperBroker
 from .broker.paper import Quote as PaperQuote
 from .broker.risk import RiskLimits, RiskManager, TradingState
 from .const import (
-    CONF_ACCOUNT_ID, CONF_API_KEY, CONF_ASSUMED_SPREAD, CONF_ENFORCE_TRADING_HOURS,
+    CONF_ACCOUNT_ID, CONF_API_KEY, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
+    CONF_ENFORCE_TRADING_HOURS,
     CONF_EPIC, CONF_IDENTIFIER, CONF_PASSWORD, DEFAULT_EPIC, VENUE_CAPITAL, VENUE_IG,
     CONF_REGIME_SWITCHING, DEFAULT_ASSUMED_SPREAD, VENUE_PUBLIC,
     VENUE_STOOQ,
@@ -60,6 +61,7 @@ from .storage.database import MODE_LIVE, MODE_PAPER, TradeDatabase
 from .storage.state import RuntimeState, StateStore
 from .storage.latency import LatencyBudget, LatencyTracker, install_buffered_signals
 from .strategy.scalping import STRATEGY_VERSION, ScalpConfig, evaluate
+from .strategy.aggregator import QuoteAggregator
 from .strategy.streaming import StreamState
 
 _LOGGER = logging.getLogger(__name__)
@@ -251,6 +253,9 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         #: Aantal candles dat sinds de vorige positiecontrole is afgesloten.
         self._bars_since_last_check: int = 1
         self._new_bars_this_cycle: int = 0
+        #: Bars zelf opbouwen in plaats van historie opvragen.
+        self._build_from_quotes: bool = options.get(CONF_BUILD_FROM_QUOTES, False)
+        self._aggregator: QuoteAggregator | None = None
         self._enabled: bool = False
         self._store = StateStore(hass, entry.entry_id)
         self._state = RuntimeState()
@@ -345,6 +350,25 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
         # Historie opwarmen. Zonder dit begint elke herstart met een blinde
         # periode van 60 candles - bij 1m een heel uur.
+        if self._build_from_quotes:
+            self._aggregator = QuoteAggregator.from_dict(
+                self._state.bars or {}, self.timeframe
+            )
+            self._candles = await self._warmup_from_quotes()
+            if self._candles is not None:
+                self.state = StreamState()
+                await self.hass.async_add_executor_job(
+                    self.state.warm_up, self._candles
+                )
+                self._last_bar_ts = self._candles.timestamp[-1]
+            _LOGGER.info(
+                "Opwarmen uit live koersen: %d bars beschikbaar",
+                self._aggregator.bar_count,
+            )
+            await self._reconcile()
+            await self._refresh_gate()
+            return
+
         try:
             self._candles = await self._fetch_warmup()
             self.state = StreamState()
@@ -360,6 +384,19 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         await self._reconcile()
         await self._refresh_gate()
 
+    async def _warmup_from_quotes(self) -> Candles | None:
+        """Bouw bars op uit de koersen die toch al binnenkomen.
+
+        Geeft None zolang er te weinig bars zijn. De integratie draait dan
+        gewoon door en meldt via de statussensor hoe lang het nog duurt; falen
+        zou hier onterecht zijn, want er is niets mis.
+        """
+        if self._aggregator is None:
+            return None
+        if self._aggregator.bar_count < MIN_WARMUP_CANDLES:
+            return None
+        return self._aggregator.candles(WARMUP_CANDLES * 2)
+
     async def _fetch_warmup(self) -> Candles:
         """Haal historie op, en vraag minder als de broker weigert.
 
@@ -372,7 +409,12 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         wilt en afbouwen tot wat je krijgt: liever een kortere historie dan een
         integratie die niet opstart.
         """
-        attempts = [WARMUP_CANDLES, 250, 150, 100, MIN_WARMUP_CANDLES]
+        # Klein beginnen en alleen opschalen als het lukt. Andersom - groot
+        # beginnen en afbouwen - verbruikt bij elke mislukte poging opnieuw
+        # datapunten uit het quotum van de broker, en juist de eerste poging is
+        # dan de duurste.
+        attempts = [MIN_WARMUP_CANDLES, 120, 250, WARMUP_CANDLES]
+        best: Candles | None = None
         last_error: Exception | None = None
 
         for count in attempts:
@@ -382,22 +424,35 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 )
             except VenueError as err:
                 last_error = err
+                if "allowance" in str(err) or "quotum" in str(err).lower():
+                    # Verder proberen verbruikt alleen meer van een quotum dat
+                    # al op is.
+                    _LOGGER.error("Datalimiet van de broker bereikt: %s", err)
+                    break
                 _LOGGER.debug("Opwarmen met %d candles faalde: %s", count, err)
                 continue
 
             if len(candles) >= MIN_WARMUP_CANDLES:
-                if count != WARMUP_CANDLES:
-                    _LOGGER.warning(
-                        "Opwarmen met %d candles gelukt nadat %d werd geweigerd. "
-                        "Langetermijnindicatoren zijn met minder historie minder "
-                        "betrouwbaar.", len(candles), WARMUP_CANDLES,
-                    )
-                return candles
+                best = candles
+                if len(candles) < count:
+                    # De broker gaf minder dan gevraagd: meer vragen heeft geen
+                    # zin en kost alleen datapunten.
+                    break
+                continue
 
             last_error = VenueError(
                 f"Slechts {len(candles)} candles ontvangen bij een aanvraag van "
                 f"{count}; minimaal {MIN_WARMUP_CANDLES} nodig."
             )
+
+        if best is not None:
+            if len(best) < WARMUP_CANDLES:
+                _LOGGER.warning(
+                    "Opgewarmd met %d candles in plaats van %d. "
+                    "Langetermijnindicatoren zijn met minder historie minder "
+                    "betrouwbaar.", len(best), WARMUP_CANDLES,
+                )
+            return best
 
         raise VenueError(
             f"Kon geen bruikbare historie ophalen voor {self.symbol} op "
@@ -501,6 +556,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self._state.day_start_balance = self.risk.state.day_start_balance
         self._state.trades_today = self.risk.state.trades_today
         self._state.run_id = self.run_id
+        if self._aggregator is not None:
+            self._state.bars = self._aggregator.to_dict()
         await self._store.async_save(self._state)
 
     async def async_prepare_shutdown(self) -> dict:
@@ -581,8 +638,11 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         now = datetime.now(timezone.utc)
         tick_age = (now - quote.time).total_seconds()
 
-        # -- nieuwe candle? -------------------------------------------------- #
-        await self._maybe_update_candles()
+        # -- bars bijwerken --------------------------------------------------- #
+        if self._build_from_quotes:
+            await self._update_from_quote(quote)
+        else:
+            await self._maybe_update_candles()
         self._bars_since_last_check = max(1, self._new_bars_this_cycle)
         budget.mark("candles")
 
@@ -624,6 +684,11 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         open_positions = await self._open_positions()
 
         # -- signaal --------------------------------------------------------- #
+        # Zelfgebouwde bars onderschatten de uitersten; zonder correctie is de
+        # kostenpoort te streng en mis je kansen.
+        if self._build_from_quotes and self._aggregator is not None:
+            self.strategy_cfg.atr_correction = self._aggregator.correction
+
         signal = None
         if self._candles is not None and len(self._candles) >= 60:
             signal = await self.hass.async_add_executor_job(
@@ -719,6 +784,11 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "lifecycle": self.lifecycle.as_dict(),
             "latency": self.latency.stats(),
             "executor_notes": self.executor_notes,
+            "warmup": (
+                self._aggregator.progress(MIN_WARMUP_CANDLES)
+                if self._aggregator is not None else None
+            ),
+            "build_from_quotes": self._build_from_quotes,
             "mode": self.mode.value,
             "requested_mode": self.requested_mode.value,
             "mode_override_reason": self.mode_override_reason,
@@ -764,9 +834,66 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             self._candles = None
             self._last_bar_ts = 0
 
-    async def _maybe_update_candles(self) -> None:
-        """Haal nieuwe candles op als er een bar is afgesloten."""
+    #: Lengte van een bar per tijdsframe, in seconden.
+    _BAR_SECONDS = {
+        "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+        "1h": 3600, "4h": 14400, "1d": 86400, "1w": 604800,
+    }
+
+    def _bar_due(self) -> bool:
+        """Kan er sinds de vorige bar een nieuwe zijn afgesloten?
+
+        Zonder deze controle vroeg elke cyclus candles op, ook als er niets
+        nieuws kon zijn: bij een verversing van twintig seconden op M5 is dat
+        98% verspilling. Brokers rekenen historische koersen per datapunt af,
+        en IG's demo-quotum was daardoor binnen een dag op.
+        """
+        if self._last_bar_ts <= 0:
+            return True
+        length = self._BAR_SECONDS.get(self.timeframe, 60)
+        elapsed = datetime.now(timezone.utc).timestamp() - self._last_bar_ts
+        # Marge van een paar seconden: brokers publiceren een bar niet altijd
+        # exact op het hele moment.
+        return elapsed >= (length + 3)
+
+    async def _update_from_quote(self, quote: VenueQuote) -> None:
+        """Voeg de koers toe aan de zelfgebouwde reeks."""
         self._new_bars_this_cycle = 0
+        if self._aggregator is None:
+            self._aggregator = QuoteAggregator(self.timeframe)
+
+        # Op de mid werken: bid of ask zou elke indicator een halve spread
+        # laten schuiven.
+        closed = self._aggregator.add(quote.mid, quote.time)
+        if not closed:
+            return
+
+        self._new_bars_this_cycle = 1
+        if self._aggregator.bar_count < MIN_WARMUP_CANDLES:
+            return
+
+        fresh = self._aggregator.candles(WARMUP_CANDLES * 2)
+        if self._candles is None:
+            self._candles = fresh
+            self.state = StreamState()
+            await self.hass.async_add_executor_job(self.state.warm_up, fresh)
+            _LOGGER.info(
+                "Opwarmen voltooid: %d zelfgebouwde bars", len(fresh)
+            )
+        else:
+            index = len(fresh) - 1
+            self.state.push_candle(
+                fresh.open[index], fresh.high[index], fresh.low[index],
+                fresh.close[index], fresh.volume[index],
+            )
+            self._candles = fresh
+        self._last_bar_ts = fresh.timestamp[-1]
+
+    async def _maybe_update_candles(self) -> None:
+        """Haal nieuwe candles op als er een bar afgesloten kan zijn."""
+        self._new_bars_this_cycle = 0
+        if self._candles is not None and not self._bar_due():
+            return
         try:
             fresh = await self.venue.candles(self.symbol, self.timeframe, 3)
         except VenueError as err:

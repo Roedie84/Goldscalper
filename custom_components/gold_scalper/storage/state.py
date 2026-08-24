@@ -50,6 +50,9 @@ class RuntimeState:
     day_start_balance: float | None = None
     trades_today: int = 0
     run_id: int | None = None
+    #: Zelfgebouwde bars, zodat de opwarmfase een herstart overleeft. Zonder
+    #: dit kost elke update opnieuw uren voordat de analyse iets kan zeggen.
+    bars: dict | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -80,6 +80,13 @@ class ScalpConfig:
     #: werkelijkheid juist uitlopen. De volatiliteitscontrole wordt dan
     #: strenger gezet als vervanging.
     real_spread: bool = True
+    #: Correctie op de gemeten ATR.
+    #:
+    #: Bij bars die uit periodieke koersen zijn opgebouwd vallen high en low te
+    #: krap uit, waardoor de ATR wordt onderschat. Onbehandeld maakt dat de
+    #: kostenpoort te streng: hij denkt dat een beweging de kosten niet dekt
+    #: terwijl dat wel zo is.
+    atr_correction: float = 1.0
     #: Drempel voor de samengestelde scalpscore.
     entry_threshold: float = 0.45
     #: Kies per marktregime tussen trendvolgend en contrair, in plaats van
@@ -298,7 +305,7 @@ def evaluate(
 
     # --- De kostenpoort ------------------------------------------------------
     a = atr(candles, 14)
-    atr_value = a[-1] or 0.0
+    atr_value = (a[-1] or 0.0) * cfg.atr_correction
     if atr_value <= 0:
         return reject("no_atr", "ATR is nul; kan geen doelen bepalen")
 

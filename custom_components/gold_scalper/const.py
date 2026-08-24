@@ -26,6 +26,13 @@ CONF_MAX_SPREAD: Final = "max_spread"
 CONF_MIN_EDGE_MULTIPLE: Final = "min_edge_multiple"
 CONF_ENTRY_THRESHOLD: Final = "entry_threshold"
 CONF_REGIME_SWITCHING: Final = "regime_switching"
+#: Bars opbouwen uit live koersen in plaats van historie opvragen.
+#:
+#: Brokers rekenen historische koersen per datapunt af; op een demo-account is
+#: dat quotum binnen een dag op. Met deze stand wordt er nooit historie
+#: opgevraagd, ten koste van een opwarmperiode en iets minder nauwkeurige bars.
+CONF_BUILD_FROM_QUOTES: Final = "build_from_quotes"
+
 CONF_ENFORCE_TRADING_HOURS: Final = "enforce_trading_hours"
 CONF_TRADING_START_HOUR: Final = "trading_start_hour"
 CONF_TRADING_END_HOUR: Final = "trading_end_hour"
