@@ -73,7 +73,7 @@
       "invalid_token": "Het API-token wordt geweigerd.",
       "invalid_account": "Account-ID onbekend, of het hoort bij de andere omgeving (practice tegenover live).",
       "insufficient_history": "Te weinig historie voor een zinnige analyse; minimaal 60 candles nodig.",
-      "fetch_failed": "De databron gaf een fout. Details staan onder het formulier en in het logboek."
+      "fetch_failed": "De databron gaf een fout. Details staan onder het formulier en in het logboek. Klopt de epic niet, dan staat daar een lijst met instrumenten die jouw account wél kent."
     },
     "abort": {
       "already_configured": "Dit instrument is al ingesteld voor dit account.",

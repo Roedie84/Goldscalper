@@ -222,6 +222,25 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "fetch_failed"
                 detail = str(err)
 
+                # Als de verbinding staat maar het instrument niet klopt, is
+                # de nuttigste hulp een lijst van wat dit account wél kent.
+                # Epics zijn niet te raden en verschillen per account.
+                if "epic" in str(err).lower() or "instrument" in str(err).lower():
+                    try:
+                        found = await venue.search_markets("gold")
+                    except VenueError:
+                        found = []
+                    goud = [
+                        m for m in found
+                        if m.get("epic") and "GOLD" in str(m["epic"]).upper()
+                    ][:8]
+                    if goud:
+                        detail += "\n\nGevonden bij jouw account:\n" + "\n".join(
+                            f"  {m['epic']}  -  {m.get('name') or ''} "
+                            f"({m.get('status') or '?'})"
+                            for m in goud
+                        )
+
             if not errors:
                 data = {**user_input, CONF_VENUE: broker, CONF_MODE: "paper"}
                 if self.source == SOURCE_RECONFIGURE:

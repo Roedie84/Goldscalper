@@ -349,3 +349,58 @@ def test_wrong_environment_endpoint_is_explained():
         403, {"errorCode": "endpoint.unavailable.for.api-key"}
     )
     assert "omgeving" in message
+
+
+# ---------------- gesloten markt en epic zoeken ----------------
+
+CLOSED = ({"snapshot": {"marketStatus": "CLOSED", "bid": None, "offer": None}}, 200)
+
+
+def test_closed_market_without_prices_is_not_an_error():
+    """Goud sluit dagelijks kort en het hele weekend. Daar een fout op gooien
+    laat de integratie 's avonds falen en vereist handmatig herstel."""
+    venue = ig({"/markets/": MARKET})
+    asyncio.run(venue.quote())          # eerst een geldige koers zien
+    venue._session.routes = {"/markets/": CLOSED}
+    q = asyncio.run(venue.quote())
+    assert q.tradeable is False
+    assert q.mid == pytest.approx(3300.25)   # laatst bekende koers
+
+
+def test_closed_market_without_any_history_explains_itself():
+    venue = ig({"/markets/": CLOSED})
+    with pytest.raises(VenueError, match="gesloten"):
+        asyncio.run(venue.quote())
+
+
+def test_open_market_without_prices_points_at_the_epic():
+    """Markt open maar geen quote: dan is de epic vrijwel zeker fout."""
+    payload = ({"snapshot": {"marketStatus": "TRADEABLE"}}, 200)
+    with pytest.raises(VenueError, match="epic"):
+        asyncio.run(ig({"/markets/": payload}).quote())
+
+
+@pytest.mark.parametrize("status", ["CLOSED", "OFFLINE", "SUSPENDED", "EDITS_ONLY"])
+def test_all_closed_statuses_are_recognised(status):
+    venue = ig({"/markets/": MARKET})
+    asyncio.run(venue.quote())
+    venue._session.routes = {
+        "/markets/": ({"snapshot": {"marketStatus": status}}, 200)
+    }
+    assert asyncio.run(venue.quote()).tradeable is False
+
+
+def test_search_markets_returns_epics():
+    """Epics zijn niet te raden en verschillen per account."""
+    payload = ({"markets": [
+        {"epic": "CS.D.CFDGOLD.CFDGC.IP", "instrumentName": "Spot Gold",
+         "instrumentType": "COMMODITIES", "marketStatus": "TRADEABLE",
+         "bid": 3300.1, "offer": 3300.4},
+        {"epic": "CS.D.CFEGOLD.CFE.IP", "instrumentName": "Gold Futures",
+         "marketStatus": "CLOSED"},
+    ]}, 200)
+    found = asyncio.run(ig({"/markets": payload}).search_markets("gold"))
+    assert [m["epic"] for m in found] == [
+        "CS.D.CFDGOLD.CFDGC.IP", "CS.D.CFEGOLD.CFE.IP"
+    ]
+    assert found[0]["name"] == "Spot Gold"

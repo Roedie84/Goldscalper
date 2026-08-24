@@ -103,6 +103,10 @@ class IgStyleVenue(ExecutionVenue):
         self._token: str | None = None
         self._account_id: str | None = None
         self._lock = asyncio.Lock()
+        #: Laatst bekende koers, om een gesloten markt te overbruggen zonder
+        #: de integratie te laten falen.
+        self._last_known_price: float | None = None
+        self._last_known_spread: float = 0.0
 
     # -- sessie -------------------------------------------------------------- #
 
@@ -307,23 +311,77 @@ class IgStyleVenue(ExecutionVenue):
 
     # -- marktdata ----------------------------------------------------------- #
 
+    #: Marktstatussen waarin er geen bied- en laatprijs is, maar er ook niets
+    #: mis is. IG publiceert dan simpelweg geen quote.
+    CLOSED_STATUSES = frozenset({
+        "CLOSED", "EDITS_ONLY", "OFFLINE", "SUSPENDED",
+        "AUCTION", "AUCTION_NO_EDIT", "ON_AUCTION", "ON_AUCTION_NO_EDITS",
+    })
+
     async def quote(self, symbol: str | None = None) -> VenueQuote:
         epic = symbol or self.epic
         payload = await self._request("GET", f"/markets/{epic}", version="3")
         snapshot = payload.get("snapshot") or {}
+        status = str(snapshot.get("marketStatus", "TRADEABLE")).upper()
+
         bid = snapshot.get("bid")
         ask = snapshot.get("offer") or snapshot.get("ask")
+
         if bid is None or ask is None:
+            # Bij een gesloten markt levert IG een snapshot zonder prijzen. Dat
+            # is geen storing: goud sluit dagelijks kort en het hele weekend.
+            # Hier een fout gooien zou de integratie 's avonds laten falen en
+            # 's ochtends handmatig herstel vereisen.
+            last = snapshot.get("netChange") is not None or status in self.CLOSED_STATUSES
+            if status in self.CLOSED_STATUSES or last:
+                fallback = self._last_known_price
+                if fallback is None:
+                    raise VenueError(
+                        f"De markt voor '{epic}' is gesloten ({status}) en er is nog "
+                        "geen eerdere koers bekend. Probeer het opnieuw zodra de "
+                        "handel opent."
+                    )
+                half = self._last_known_spread / 2.0
+                return VenueQuote(
+                    bid=round(fallback - half, 3), ask=round(fallback + half, 3),
+                    time=datetime.now(timezone.utc), tradeable=False,
+                )
             raise VenueError(
-                f"Geen bied- of laatprijs voor '{epic}'. Controleer of dit de juiste "
-                "epic is; gebruik het zoekendpunt van je broker om hem te vinden."
+                f"Geen bied- of laatprijs voor '{epic}' terwijl de markt op "
+                f"'{status}' staat. Waarschijnlijk klopt de epic niet voor dit "
+                "account. Zoek de juiste met de zoekfunctie van de adapter."
             )
-        status = str(snapshot.get("marketStatus", "TRADEABLE")).upper()
+
+        self._last_known_price = (float(bid) + float(ask)) / 2.0
+        self._last_known_spread = float(ask) - float(bid)
         return VenueQuote(
             bid=float(bid), ask=float(ask),
             time=datetime.now(timezone.utc),
-            tradeable=status in ("TRADEABLE", "OPEN"),
+            tradeable=status not in self.CLOSED_STATUSES,
         )
+
+    async def search_markets(self, term: str = "gold") -> list[dict]:
+        """Zoek instrumenten bij de broker.
+
+        Bestaat omdat epics niet te raden zijn en per account kunnen
+        verschillen. In plaats van codes uit een documentatiepagina over te
+        typen kun je zo vragen wat jóuw account werkelijk kent.
+        """
+        payload = await self._request(
+            "GET", "/markets", version="1", params={"searchTerm": term}
+        )
+        out = []
+        for market in payload.get("markets", []):
+            out.append({
+                "epic": market.get("epic"),
+                "name": market.get("instrumentName"),
+                "type": market.get("instrumentType"),
+                "status": market.get("marketStatus"),
+                "bid": market.get("bid"),
+                "offer": market.get("offer"),
+                "expiry": market.get("expiry"),
+            })
+        return out
 
     async def candles(self, symbol: str, timeframe: str, count: int) -> Candles:
         if timeframe not in self.resolutions:

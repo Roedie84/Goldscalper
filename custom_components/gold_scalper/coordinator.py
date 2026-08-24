@@ -566,7 +566,15 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         try:
             quote = await self.venue.quote(self.symbol)
         except VenueError as err:
-            raise UpdateFailed(f"Geen koers beschikbaar: {err}") from err
+            # Bij een gesloten markt zonder eerdere koers is er niets mis; dan
+            # wachten tot de handel opent in plaats van blijven falen. HA zou
+            # anders elke cyclus een foutmelding loggen voor een situatie die
+            # zichzelf oplost.
+            if "gesloten" in str(err).lower() and self._last_quote is not None:
+                quote = self._last_quote
+                _LOGGER.debug("Markt gesloten; laatst bekende koers aangehouden")
+            else:
+                raise UpdateFailed(f"Geen koers beschikbaar: {err}") from err
         self._last_quote = quote
         budget.mark("quote")
 
