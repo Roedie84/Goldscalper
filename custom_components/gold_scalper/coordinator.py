@@ -39,6 +39,8 @@ from .broker.paper import Quote as PaperQuote
 from .broker.risk import RiskLimits, RiskManager, TradingState
 from .const import (
     CONF_ACCOUNT_ID, CONF_API_KEY, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
+    CONF_NOTIFY_CRITICAL, CONF_NOTIFY_HOURLY, CONF_NOTIFY_SERVICE,
+    CONF_NOTIFY_SKIP_QUIET, NOTIFY_NONE,
     CONF_ENFORCE_TRADING_HOURS,
     CONF_EPIC, CONF_IDENTIFIER, CONF_PASSWORD, DEFAULT_EPIC, VENUE_CAPITAL, VENUE_IG,
     CONF_REGIME_SWITCHING, DEFAULT_ASSUMED_SPREAD, VENUE_PUBLIC,
@@ -57,6 +59,8 @@ from .const import (
 from .learning.analysis import evaluate_threshold, measure_execution, regime_performance
 from .learning.postmortem import analyse_losses
 from .lifecycle import DrainPolicy, LifecycleController
+from .notify import Notifier, NotifierConfig
+from .status import build_status
 from .modes import LiveGate, ModeLockedError, TradingMode, require_live_unlocked
 from .storage import performance
 from .storage.database import MODE_LIVE, MODE_PAPER, TradeDatabase
@@ -232,6 +236,32 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         )
         #: Cyclusteller voor de periodieke positiecontrole.
         self._audit_counter = 0
+        #: Posities zoals ze deze cyclus bij de broker stonden. Aan het begin
+        #: van elke cyclus gewist, en na elke order verversd.
+        self._positions_cache: list | None = None
+
+        service = options.get(CONF_NOTIFY_SERVICE, NOTIFY_NONE)
+        self.notifier = Notifier(hass, NotifierConfig(
+            service=None if service in (NOTIFY_NONE, "", None) else service,
+            hourly=options.get(CONF_NOTIFY_HOURLY, True),
+            critical=options.get(CONF_NOTIFY_CRITICAL, True),
+            skip_quiet_hours=options.get(CONF_NOTIFY_SKIP_QUIET, True),
+        ))
+        #: Vorige risicostand, om een overgang naar noodstop te herkennen.
+        self._previous_risk_state: str | None = None
+        #: Posities zoals ze deze cyclus bij de broker stonden. Aan het begin
+        #: van elke cyclus gewist, en na elke order verversd.
+        self._positions_cache: list | None = None
+
+        service = options.get(CONF_NOTIFY_SERVICE, NOTIFY_NONE)
+        self.notifier = Notifier(hass, NotifierConfig(
+            service=None if service in (NOTIFY_NONE, "", None) else service,
+            hourly=options.get(CONF_NOTIFY_HOURLY, True),
+            critical=options.get(CONF_NOTIFY_CRITICAL, True),
+            skip_quiet_hours=options.get(CONF_NOTIFY_SKIP_QUIET, True),
+        ))
+        #: Vorige risicostand, om een overgang naar noodstop te herkennen.
+        self._previous_risk_state: str | None = None
         self.executor_notes: list[str] = []
 
         self.lifecycle = LifecycleController(DrainPolicy.WAIT_THEN_CLOSE)
@@ -294,6 +324,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self._enabled = self._state.enabled
         if self._state.halted:
             self.risk.halt(self._state.halt_reason or "noodstop uit vorige sessie")
+        self.risk.state.resumes_today = self._state.resumes_today
         self.risk.state.consecutive_losses = self._state.consecutive_losses
         if self._state.day and self._state.day_start_balance is not None:
             from datetime import date as _date
@@ -631,6 +662,61 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         "assumed_spread": "assumed_spread",
     }
 
+    async def _notify(self, stats: dict) -> None:
+        """Stuur meldingen bij een toestandsovergang of op het hele uur.
+
+        Op de *overgang* melden en niet op de toestand: een noodstop duurt tot
+        je hem opheft, en zonder dit onderscheid zou elke cyclus dezelfde
+        waarschuwing versturen.
+        """
+        if not self.notifier.enabled:
+            return
+
+        payload = {
+            "stats": stats,
+            "status": build_status({**(self.data or {}), "stats": stats}),
+        }
+
+        risk_state = self.risk.state.state.value
+        if risk_state == "halted" and self._previous_risk_state != "halted":
+            used = self.risk.state.resumes_today
+            allowed = self.risk.limits.max_resumes_per_day
+            await self.notifier.alert(
+                "halt",
+                "Gold Scalper: NOODSTOP",
+                f"{self.risk.state.halt_reason}\n\n"
+                f"Handel ligt stil tot je hervat. Vandaag {used} van {allowed} "
+                "hervattingen gebruikt.",
+            )
+        elif risk_state != "halted" and self._previous_risk_state == "halted":
+            self.notifier.clear("halt")
+            await self.notifier.alert(
+                "resumed", "Gold Scalper: hervat",
+                "De noodstop is opgeheven; er wordt weer gehandeld.",
+                critical=False,
+            )
+        self._previous_risk_state = risk_state
+
+        if self.lifecycle.state.value == "diverged":
+            await self.notifier.alert(
+                "diverged", "Gold Scalper: posities kloppen niet",
+                "Database en broker zijn het oneens over open posities. "
+                "Handel is geblokkeerd tot dit is opgelost.",
+            )
+        else:
+            self.notifier.clear("diverged")
+
+        if self.executor_notes and any(
+            "zonder stop" in note.lower() for note in self.executor_notes
+        ):
+            await self.notifier.alert(
+                "unprotected", "Gold Scalper: positie zonder stop",
+                "\n".join(self.executor_notes[:3]),
+            )
+
+        if self.notifier.hourly_due():
+            await self.notifier.send_hourly(payload)
+
     def _fingerprint_material(self, config: dict) -> dict:
         """Hash van alles wat het handelsgedrag bepaalt.
 
@@ -743,6 +829,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self._state.day = self.risk.state.day.isoformat()
         self._state.day_start_balance = self.risk.state.day_start_balance
         self._state.trades_today = self.risk.state.trades_today
+        self._state.resumes_today = self.risk.state.resumes_today
         self._state.run_id = self.run_id
         if self._aggregator is not None:
             self._state.bars = self._aggregator.to_dict()
@@ -759,17 +846,50 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             await self._close_position(position, "handmatig")
         await self.async_request_refresh()
 
-    async def async_resume(self) -> None:
-        """Hervat na een noodstop. Bewust handmatig."""
-        self.risk.manual_resume()
+    async def async_resume(self) -> bool:
+        """Hervat na een noodstop. Bewust handmatig.
+
+        Geeft het huidige saldo mee zodat de daglimiet vanaf nu telt; anders
+        zou de volgende cyclus dezelfde overschrijding zien en meteen weer
+        stoppen.
+        """
+        balance = self.starting_balance
+        if self.paper is not None:
+            balance = self.paper.balance
+        elif self.mode.places_orders:
+            try:
+                snapshot = await self.venue.account()
+                balance = snapshot.equity
+            except VenueError as err:
+                _LOGGER.warning(
+                    "Kon het saldo niet ophalen voor het nieuwe dagijkpunt: %s. "
+                    "Er wordt gerekend met de startbalans.", err,
+                )
+
+        allowed, message = self.risk.manual_resume(balance)
+        if not allowed:
+            _LOGGER.warning("Hervatten geweigerd: %s", message)
+            return False
+
         await self._persist()
         await self._reconcile()
         await self.async_request_refresh()
+        return True
 
     # -- posities ----------------------------------------------------------- #
 
-    async def _open_positions(self) -> list:
+    async def _open_positions(self, refresh: bool = False) -> list:
         """Open posities, uit de bron die ze werkelijk houdt.
+
+        Binnen één cyclus wordt het antwoord hergebruikt. Zodra de posities bij
+        de broker staan in plaats van in de papersimulatie, kost elke aanroep
+        een netwerkverzoek van rond de honderd milliseconde - en de lus deed er
+        vier per cyclus. Dat verviervoudigde de cyclustijd en leverde bij tien
+        seconden verversen vierentwintig verzoeken per minuut op, precies waar
+        rate limits vandaan komen.
+
+        ``refresh`` forceert een verse ophaling; nodig na het openen of sluiten
+        van een positie, want dan is het antwoord verouderd.
 
         In demomodus staan de posities bij de broker, niet in de
         papersimulatie. Hier op LIVE toetsen in plaats van op places_orders
@@ -778,13 +898,20 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         bij, allemaal dezelfde kant op. Vier gestapelde longs in een dalende
         markt.
         """
-        if self.mode.places_orders:
-            return await self.venue.positions(self.symbol)
-        return self.paper.open_positions if self.paper else []
+        if not self.mode.places_orders:
+            # De papersimulatie houdt ze in het geheugen; cachen heeft geen zin.
+            return self.paper.open_positions if self.paper else []
+
+        if not refresh and self._positions_cache is not None:
+            return self._positions_cache
+
+        self._positions_cache = await self.venue.positions(self.symbol)
+        return self._positions_cache
 
     async def _close_position(self, position, reason: str) -> None:
         if self.mode.places_orders:
             await self.venue.close(position.ticket)
+            self._positions_cache = None
             return
         if self.paper and self._last_quote:
             self.paper.close_position(position, self._paper_quote(self._last_quote), reason)
@@ -816,6 +943,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
     async def _async_update_data(self) -> dict:
         budget = LatencyBudget()
         budget.mark("start")
+        self._positions_cache = None
 
         try:
             quote = await self.venue.quote(self.symbol)
@@ -962,6 +1090,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # halverwege afgaat mag niet verloren gaan als HA daarna hardhandig
         # stopt.
         await self._persist()
+        await self._notify(stats)
 
         columns = ("timestamp", "open", "high", "low", "close", "volume")
         candle_lengths = (
@@ -1198,6 +1327,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                     stop_loss=signal.stop_loss, take_profit=signal.take_profit,
                 )
                 self.executor_notes = notes[-10:]
+                # Na het plaatsen is de gecachte lijst verouderd.
+                self._positions_cache = None
                 for note in notes:
                     _LOGGER.info("Uitvoering: %s", note)
                 if not result.success:

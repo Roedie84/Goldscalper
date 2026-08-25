@@ -216,3 +216,42 @@ def test_password_fields_are_masked():
     for name in ("api_key", "password"):
         field = next(k for k in schema if str(k) == name)
         assert schema[field].config["type"] == "password"
+
+
+def test_notify_fields_are_in_the_options():
+    result = asyncio.run(_options_for("ig").async_step_init())
+    fields = {str(k) for k in result["data_schema"].schema}
+    assert {"notify_service", "notify_hourly", "notify_critical",
+            "notify_skip_quiet"} <= fields
+
+
+def test_notify_dropdown_lists_real_services():
+    """Overtypen van een servicenaam gaat mis, en dat merk je pas als er een
+    melding had moeten uitgaan."""
+    options = _options_for("ig")
+    options.hass.services.async_services.return_value = {
+        "notify": {
+            "persistent_notification": None,
+            "mobile_app_iphone_van_ruud": None,
+        }
+    }
+    result = asyncio.run(options.async_step_init())
+    schema = result["data_schema"].schema
+    field = next(k for k in schema if str(k) == "notify_service")
+    choices = schema[field].config["options"]
+    assert "mobile_app_iphone_van_ruud" in choices
+    # Mobiele apps bovenaan: dat is wat je zoekt.
+    assert choices.index("mobile_app_iphone_van_ruud") < choices.index(
+        "persistent_notification"
+    )
+    assert choices[0] == "geen"
+
+
+def test_notify_dropdown_survives_a_broken_service_registry():
+    options = _options_for("ig")
+    options.hass.services.async_services.side_effect = RuntimeError("stuk")
+    result = asyncio.run(options.async_step_init())
+    field = next(
+        k for k in result["data_schema"].schema if str(k) == "notify_service"
+    )
+    assert result["data_schema"].schema[field].config["options"] == ["geen"]

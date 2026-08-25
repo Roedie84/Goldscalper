@@ -49,6 +49,9 @@ class RuntimeState:
     day: str | None = None
     day_start_balance: float | None = None
     trades_today: int = 0
+    #: Handmatige hervattingen vandaag; begrensd zodat de daglimiet geen
+    #: suggestie wordt.
+    resumes_today: int = 0
     run_id: int | None = None
     #: Zelfgebouwde bars, zodat de opwarmfase een herstart overleeft. Zonder
     #: dit kost elke update opnieuw uren voordat de analyse iets kan zeggen.

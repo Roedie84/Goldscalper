@@ -25,6 +25,8 @@ from .broker.public_data import PublicDataVenue
 from .broker.stooq import StooqVenue
 from .const import (
     CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
+    CONF_NOTIFY_CRITICAL, CONF_NOTIFY_HOURLY, CONF_NOTIFY_SERVICE,
+    CONF_NOTIFY_SKIP_QUIET, NOTIFY_NONE,
     CONF_ENFORCE_TRADING_HOURS,
     CONF_REGIME_SWITCHING, CONF_SHOW_PANEL, DEFAULT_ASSUMED_SPREAD,
     PUBLIC_SYMBOLS, VENUE_PUBLIC, VENUE_STOOQ, STOOQ_SYMBOLS, STOOQ_TIMEFRAMES,
@@ -538,6 +540,21 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class GoldScalperOptionsFlow(OptionsFlow):
+    def _notify_services(self) -> list[str]:
+        """Beschikbare notify-diensten, met de mobiele apps bovenaan.
+
+        Uit Home Assistant zelf halen in plaats van laten intypen: een
+        verkeerd overgetypte servicenaam merk je pas als er een melding had
+        moeten uitgaan, en dat is precies het moment waarop je hem nodig had.
+        """
+        try:
+            services = sorted(self.hass.services.async_services().get("notify", {}))
+        except Exception:  # noqa: BLE001 - de flow mag hier niet op stuklopen
+            services = []
+        mobile = [s for s in services if s.startswith("mobile_app_")]
+        overige = [s for s in services if not s.startswith("mobile_app_")]
+        return [NOTIFY_NONE, *mobile, *overige]
+
     """Strategie- en risico-instellingen bijstellen zonder herinstalleren."""
 
     async def async_step_init(
@@ -648,6 +665,30 @@ class GoldScalperOptionsFlow(OptionsFlow):
             vol.Required(
                 CONF_REGIME_SWITCHING,
                 default=default(CONF_REGIME_SWITCHING, True),
+            ): BooleanSelector(),
+
+            # De keuzelijst wordt uit de werkelijk beschikbare notify-diensten
+            # gevuld. Overtypen van een servicenaam gaat mis, en je merkt dat
+            # pas als er een melding uit had moeten gaan.
+            vol.Required(
+                CONF_NOTIFY_SERVICE,
+                default=default(CONF_NOTIFY_SERVICE, NOTIFY_NONE),
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=self._notify_services(),
+                    mode=SelectSelectorMode.DROPDOWN,
+                    custom_value=True,
+                )
+            ),
+            vol.Required(
+                CONF_NOTIFY_HOURLY, default=default(CONF_NOTIFY_HOURLY, True)
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_NOTIFY_SKIP_QUIET,
+                default=default(CONF_NOTIFY_SKIP_QUIET, True),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_NOTIFY_CRITICAL, default=default(CONF_NOTIFY_CRITICAL, True)
             ): BooleanSelector(),
 
             vol.Required(CONF_SHOW_PANEL, default=default(CONF_SHOW_PANEL, True)):

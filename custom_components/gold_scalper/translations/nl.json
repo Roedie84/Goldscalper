@@ -105,7 +105,11 @@
           "regime_switching": "Kies per marktregime (aanbevolen)",
           "enforce_trading_hours": "Beperk tot een vast tijdvenster",
           "build_from_quotes": "Bars opbouwen uit live koersen (geen historie opvragen)",
-          "max_spread_atr_ratio": "Maximale spread als deel van de ATR"
+          "max_spread_atr_ratio": "Maximale spread als deel van de ATR",
+          "notify_service": "Meldingen sturen naar (notify-dienst van je telefoon)",
+          "notify_hourly": "Elk uur een samenvatting",
+          "notify_skip_quiet": "Uurbericht overslaan als er niets gebeurde",
+          "notify_critical": "Noodstop als kritieke melding (komt door stille stand heen)"
         }
       }
     },

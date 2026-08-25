@@ -44,6 +44,14 @@ CONF_MAX_CONSECUTIVE_LOSSES: Final = "max_consecutive_losses"
 CONF_EQUITY_FLOOR_PCT: Final = "equity_floor_pct"
 
 CONF_SHOW_PANEL: Final = "show_panel"
+
+#: Naar welke notify-dienst meldingen gaan, bijvoorbeeld
+#: "mobile_app_iphone_van_ruud". Leeg betekent geen meldingen.
+CONF_NOTIFY_SERVICE: Final = "notify_service"
+CONF_NOTIFY_HOURLY: Final = "notify_hourly"
+CONF_NOTIFY_CRITICAL: Final = "notify_critical"
+CONF_NOTIFY_SKIP_QUIET: Final = "notify_skip_quiet"
+NOTIFY_NONE: Final = "geen"
 CONF_DRAIN_POLICY: Final = "drain_policy"
 CONF_STARTING_BALANCE: Final = "starting_balance"
 

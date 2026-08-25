@@ -180,3 +180,72 @@ def test_config_attributes_actually_exist():
                 line = coordinator[: match.start()].count("\n") + 1
                 offenders.append(f"coordinator.py:{line}  {prefix}.{attribute}")
     assert offenders == [], "\n".join(offenders)
+
+
+def test_broker_positions_are_fetched_once_per_cycle():
+    """Vier aanroepen naar de broker per cyclus verviervoudigde de cyclustijd
+    zodra de posities daar stonden in plaats van in de papersimulatie: bij tien
+    seconden verversen zijn dat vierentwintig verzoeken per minuut, precies waar
+    rate limits vandaan komen."""
+    source = (PKG / "coordinator.py").read_text(encoding="utf-8")
+    body = source.split("async def _open_positions")[1].split("\n    async def ")[0]
+    assert "_positions_cache" in body, "geen cache binnen de cyclus"
+    assert "refresh" in body, "geen manier om de cache te verversen"
+
+
+def test_cache_is_cleared_at_the_start_of_a_cycle():
+    """Een cache die een cyclus overleeft, laat de bot handelen op posities van
+    tien seconden geleden."""
+    source = (PKG / "coordinator.py").read_text(encoding="utf-8")
+    update = source.split("async def _async_update_data")[1][:600]
+    assert "self._positions_cache = None" in update
+
+
+def test_cache_is_cleared_after_placing_or_closing():
+    source = (PKG / "coordinator.py").read_text(encoding="utf-8")
+    close = source.split("async def _close_position")[1].split("\n    def ")[0]
+    assert "_positions_cache = None" in close, (
+        "na sluiten blijft de gecachte lijst verouderd achter"
+    )
+
+
+def test_home_assistant_imports_resolve():
+    """Vangt namen die uit de verkeerde Home Assistant-module worden gehaald.
+
+    Een zoek-en-vervangactie op `from homeassistant.core import HomeAssistant`
+    raakte de langere regel `... import HomeAssistant, ServiceCall` en
+    verplaatste ServiceCall naar `exceptions`. Dat is syntactisch correct en
+    pyflakes ziet het niet; de integratie viel er pas bij het laden op om.
+    """
+    pytest.importorskip("homeassistant", reason="Home Assistant niet geïnstalleerd")
+    import importlib
+
+    problems = []
+    for path in PKG.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if not (node.module or "").startswith("homeassistant"):
+                continue
+            try:
+                module = importlib.import_module(node.module)
+            except Exception:
+                # Sommige componenten laten zich niet importeren zonder een
+                # draaiende Home Assistant. Dat is geen fout in onze code, en
+                # zo'n geval als probleem melden maakt de test onbruikbaar.
+                continue
+            for alias in node.names:
+                if hasattr(module, alias.name):
+                    continue
+                # Een submodule is pas een attribuut ná het importeren; dat is
+                # geen fout maar hoe pakketten werken.
+                try:
+                    importlib.import_module(f"{node.module}.{alias.name}")
+                    continue
+                except Exception:
+                    pass
+                problems.append(
+                    f"{path.name}:{node.lineno}  {node.module}.{alias.name}"
+                )
+    assert problems == [], "\n".join(problems)

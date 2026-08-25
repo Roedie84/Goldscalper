@@ -72,6 +72,12 @@ class RiskLimits:
     #: Maximale tijd zonder nieuwe tick voordat de bot de dataverbinding
     #: als dood beschouwt en posities sluit.
     max_data_staleness_seconds: int = 30
+    #: Hoe vaak je per dag mag hervatten na een noodstop.
+    #:
+    #: Onbeperkt hervatten maakt van de daglimiet een suggestie: je kunt dan
+    #: telkens opnieuw hetzelfde percentage verliezen. Twee keer geeft ruimte
+    #: om een storing te herstellen zonder de rem te ondermijnen.
+    max_resumes_per_day: int = 2
 
 
 @dataclass(slots=True)
@@ -82,6 +88,8 @@ class RiskState:
     day: date = field(default_factory=lambda: datetime.now(timezone.utc).date())
     day_start_balance: float = 0.0
     trades_today: int = 0
+    #: Aantal handmatige hervattingen vandaag.
+    resumes_today: int = 0
     consecutive_losses: int = 0
     paused_until: datetime | None = None
     halt_reason: str | None = None
@@ -118,6 +126,7 @@ class RiskManager:
             )
             self.state.day = now.date()
             self.state.day_start_balance = balance
+            self.state.resumes_today = 0
             self.state.trades_today = 0
             self.state.consecutive_losses = 0
             # HALTED overleeft de dagwissel bewust: een noodstop hoort niet
@@ -276,17 +285,57 @@ class RiskManager:
         )
         _LOGGER.error("NOODSTOP: %s. Handmatige herstart vereist.", reason)
 
-    def manual_resume(self) -> None:
-        """Alleen aan te roepen door een mens die weet wat er gebeurd is."""
-        _LOGGER.warning("Handmatige hervatting na: %s", self.state.halt_reason)
+    def manual_resume(self, balance: float | None = None) -> tuple[bool, str]:
+        """Hervat na een noodstop, met een nieuw dagijkpunt.
+
+        Zonder dat ijkpunt is hervatten zinloos: de volgende cyclus rekent het
+        dagverlies opnieuw uit vanaf hetzelfde beginsaldo, ziet nog steeds een
+        overschrijding, en stopt meteen weer. Een hervatknop die faalt in
+        precies het geval waarvoor hij bestaat, is geen hervatknop.
+
+        Er zit wel een rem op. Onbeperkt hervatten maakt van de daglimiet een
+        suggestie: je kunt dan elke keer opnieuw twee procent verliezen. Na
+        ``max_resumes_per_day`` weigert hij, en dan is wachten tot morgen de
+        enige uitweg - wat bij een slechte dag ook de juiste is.
+        """
+        if self.state.resumes_today >= self.limits.max_resumes_per_day:
+            message = (
+                f"Al {self.state.resumes_today} keer hervat vandaag; de limiet is "
+                f"{self.limits.max_resumes_per_day}. Verder hervatten zou van de "
+                "daglimiet een suggestie maken. Wacht tot morgen."
+            )
+            _LOGGER.warning(message)
+            return False, message
+
+        previous = self.state.halt_reason
+        self.state.resumes_today += 1
         self.state.state = TradingState.RUNNING
         self.state.halt_reason = None
         self.state.consecutive_losses = 0
+
+        if balance is not None:
+            # Het dagverlies wordt voortaan vanaf hier gemeten. Het verlies dat
+            # al geleden is blijft in de database staan en telt gewoon mee in de
+            # resultaten; alleen de noodrem begint opnieuw.
+            verloren = self.state.day_start_balance - balance
+            self.state.day_start_balance = balance
+            _LOGGER.warning(
+                "Handmatige hervatting na: %s. Dagijkpunt verzet naar %.2f "
+                "(%.2f al verloren vandaag, hervatting %d van %d).",
+                previous, balance, verloren,
+                self.state.resumes_today, self.limits.max_resumes_per_day,
+            )
+        else:
+            _LOGGER.warning("Handmatige hervatting na: %s", previous)
+
+        return True, "Hervat."
 
     def as_dict(self) -> dict:
         return {
             "state": self.state.state.value,
             "trades_today": self.state.trades_today,
+            "resumes_today": self.state.resumes_today,
+            "max_resumes_per_day": self.limits.max_resumes_per_day,
             "consecutive_losses": self.state.consecutive_losses,
             "day_start_balance": round(self.state.day_start_balance, 2),
             "halt_reason": self.state.halt_reason,

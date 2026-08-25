@@ -22,10 +22,20 @@ def build_status(d: dict) -> tuple[str, str]:
     risk = (d.get("risk") or {}).get("state")
 
     if risk == "halted":
-        return "noodstop", (
-            f"Noodstop: {(d.get('risk') or {}).get('halt_reason')}. "
-            "Roep gold_scalper.resume aan na controle."
-        )
+        risk_data = d.get("risk") or {}
+        used = risk_data.get("resumes_today", 0)
+        allowed = risk_data.get("max_resumes_per_day", 2)
+        if used >= allowed:
+            extra = (
+                f" Vandaag al {used} van de {allowed} hervattingen gebruikt; "
+                "verder hervatten kan pas morgen."
+            )
+        else:
+            extra = (
+                f" Roep gold_scalper.resume aan na controle "
+                f"({used} van {allowed} hervattingen gebruikt vandaag)."
+            )
+        return "noodstop", f"Noodstop: {risk_data.get('halt_reason')}.{extra}"
     if risk == "paused":
         return "gepauzeerd", "Tijdelijke pauze na een reeks verliezers."
     if lifecycle == "diverged":

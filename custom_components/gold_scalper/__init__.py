@@ -7,6 +7,7 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
@@ -64,7 +65,11 @@ def _register_services(hass: HomeAssistant) -> None:
 
     async def resume(call: ServiceCall) -> None:
         for coordinator in _coordinators():
-            await coordinator.async_resume()
+            if not await coordinator.async_resume():
+                raise HomeAssistantError(
+                    "Hervatten geweigerd: de daglimiet is vandaag al te vaak "
+                    "opnieuw gezet. Wacht tot morgen."
+                )
 
     async def generate_report(call: ServiceCall) -> None:
         from .dashboard.report import write_report

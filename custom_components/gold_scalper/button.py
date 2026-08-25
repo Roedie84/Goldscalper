@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from homeassistant.components.button import ButtonEntity
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -62,7 +63,14 @@ class ResumeButton(GoldScalperEntity, ButtonEntity):
         self._attr_unique_id = f"{entry.entry_id}_resume"
 
     async def async_press(self) -> None:
-        await self.coordinator.async_resume()
+        # De uitkomst niet weggooien: bij een geweigerde hervatting gebeurt er
+        # anders zichtbaar niets, en dan blijf je drukken.
+        if not await self.coordinator.async_resume():
+            raise HomeAssistantError(
+                "Hervatten geweigerd: de daglimiet is al te vaak opnieuw gezet. "
+                "Verder hervatten zou van de limiet een suggestie maken. "
+                "Wacht tot morgen."
+            )
 
 
 class ReportButton(GoldScalperEntity, ButtonEntity):

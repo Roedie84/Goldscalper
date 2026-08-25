@@ -361,3 +361,68 @@ def test_no_code_path_treats_demo_as_paper():
         "gebruik mode.places_orders in plaats van een toets op LIVE:\n"
         + "\n".join(offenders)
     )
+
+
+# ---------------- hervatten na een noodstop ----------------
+
+def test_resume_rebaselines_the_day():
+    """Zonder nieuw ijkpunt is hervatten zinloos: de volgende cyclus rekent
+    het dagverlies opnieuw uit vanaf hetzelfde beginsaldo en stopt meteen weer.
+    """
+    rm = fresh(max_daily_loss_pct=2.0)
+    rm.can_open(**args(balance=9740.0, equity=9740.0, starting_balance=10000.0))
+    assert rm.state.state is TradingState.HALTED
+
+    ok, _ = rm.manual_resume(balance=9740.0)
+    assert ok
+    assert rm.state.day_start_balance == 9740.0
+
+    # Nu mag hij weer, want er is sindsdien niets verloren.
+    allowed, _ = rm.can_open(
+        **args(balance=9740.0, equity=9740.0, starting_balance=10000.0)
+    )
+    assert allowed, "hervatten leverde meteen weer een noodstop op"
+
+
+def test_resume_without_balance_still_works():
+    rm = fresh()
+    rm.halt("test")
+    ok, _ = rm.manual_resume()
+    assert ok and rm.state.state is TradingState.RUNNING
+
+
+def test_resuming_is_capped_per_day():
+    """Onbeperkt hervatten maakt van de daglimiet een suggestie: je kunt dan
+    telkens opnieuw hetzelfde percentage verliezen."""
+    rm = fresh(max_resumes_per_day=2)
+    for i in range(2):
+        rm.halt(f"poging {i}")
+        ok, _ = rm.manual_resume(balance=9500.0 - i * 100)
+        assert ok
+
+    rm.halt("derde keer")
+    ok, message = rm.manual_resume(balance=9300.0)
+    assert not ok
+    assert "morgen" in message
+    assert rm.state.state is TradingState.HALTED
+
+
+def test_new_day_restores_the_resume_budget():
+    from datetime import timedelta
+    rm = fresh(max_resumes_per_day=1)
+    rm.halt("x")
+    rm.manual_resume(balance=9800.0)
+    rm.halt("y")
+    assert not rm.manual_resume(balance=9800.0)[0]
+
+    rm.can_open(**args(now=NOW + timedelta(days=1), balance=9800.0))
+    assert rm.state.resumes_today == 0
+
+
+def test_resume_count_is_visible():
+    rm = fresh(max_resumes_per_day=2)
+    rm.halt("x")
+    rm.manual_resume(balance=9900.0)
+    data = rm.as_dict()
+    assert data["resumes_today"] == 1
+    assert data["max_resumes_per_day"] == 2
