@@ -120,7 +120,9 @@
           "scale_with_confidence": "Meer inzetten bij een sterker signaal",
           "pyramid_enabled": "Bijkopen bij bevestiging (pyramiden)",
           "pyramid_trigger_atr": "Bijkopen vanaf winst in ATR",
-          "pyramid_max_additions": "Maximaal aantal toevoegingen"
+          "pyramid_max_additions": "Maximaal aantal toevoegingen",
+          "use_schedule": "Handelstijden controleren tegen een eigen rooster",
+          "close_buffer_minutes": "Geen nieuwe posities zoveel minuten voor sluiting"
         }
       }
     },

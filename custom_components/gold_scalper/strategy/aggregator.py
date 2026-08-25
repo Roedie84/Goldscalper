@@ -103,12 +103,26 @@ class QuoteAggregator:
 
     # -- opbouwen ------------------------------------------------------------ #
 
-    def add(self, price: float, moment: datetime | None = None) -> bool:
+    def add(
+        self, price: float, moment: datetime | None = None,
+        tradeable: bool = True,
+    ) -> bool:
         """Voeg een koers toe. Geeft True als er een bar is afgesloten.
 
         Er wordt bewust met de mid gewerkt en niet met bid of ask: anders
         krijgt elke indicator een halve spread aan vertekening mee.
+
+        **Bij een gesloten markt wordt er niets toegevoegd.** Dat lijkt een
+        detail maar is het niet: een weekend van achtenveertig uur levert
+        vijfhonderd bars op met exact dezelfde prijs. Die verdringen de
+        werkelijke historie, de ATR zakt naar nul, en maandagochtend blokkeert
+        de kostenpoort elke trade - want een doel van nul dekt nooit de kosten.
+
+        Een gat in de reeks is hier het juiste gedrag. De markt bewóóg niet;
+        doen alsof er bars waren zou een verzinsel zijn.
         """
+        if not tradeable:
+            return False
         moment = moment or datetime.now(timezone.utc)
         timestamp = int(moment.timestamp())
         start = (timestamp // self.bar_seconds) * self.bar_seconds

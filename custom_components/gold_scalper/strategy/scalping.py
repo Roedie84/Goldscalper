@@ -387,7 +387,16 @@ def evaluate(
                 "er zou toch niets gebeuren",
                 score, direction,
             )
-        if open_position_side and direction != open_position_side:
+        if not open_position_side:
+            # Richting onbekend: dan is "zelfde richting" een aanname die je
+            # niet kunt doen. Liever eerlijk zeggen dat het niet vast te
+            # stellen is dan een label dat toevallig klopt.
+            return reject(
+                "max_positions_richting_onbekend",
+                f"Positie open, richting onbekend; signaal {score:+.3f}.",
+                score, direction,
+            )
+        if direction != open_position_side:
             return reject(
                 "max_positions_tegengesteld",
                 f"Positie open in de andere richting, maar het signaal wijst "

@@ -44,6 +44,9 @@ def build_status(d: dict) -> tuple[str, str]:
         )
     if lifecycle == "draining":
         return "afwikkelen", "Bezig met afwikkelen voor een herstart."
+    note = d.get("schedule_note")
+    if note:
+        return "rooster_wijkt_af", note
     if d.get("market_open") is False:
         return "markt_gesloten", (
             "De goudmarkt is gesloten. Handel hervat automatisch bij opening; "

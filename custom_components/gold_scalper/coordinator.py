@@ -29,6 +29,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .analysis.signals import Candles
 from .broker.adapter import ExecutionVenue, VenueError, VenueQuote
 from .broker.execution_safety import BrokerLimits, SafeExecutor
+from .broker.reconcile_audit import compare_positions
+from .broker.schedule import SPOT_GOLD, cross_check, minutes_until_close
 from .broker.exits import ExitConfig, ExitManager
 from .broker.ig_capital import CapitalVenue, IgVenue
 from .broker.oanda import OandaVenue
@@ -41,6 +43,7 @@ from .broker.risk import RiskLimits, RiskManager, TradingState
 from .const import (
     CONF_ACCOUNT_ID, CONF_API_KEY, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
     CONF_NOTIFY_CRITICAL, CONF_NOTIFY_HOURLY, CONF_NOTIFY_SERVICE,
+    CONF_CLOSE_BUFFER_MINUTES, CONF_USE_SCHEDULE,
     CONF_NOTIFY_SKIP_QUIET, CONF_PYRAMID_ENABLED, CONF_PYRAMID_MAX_ADDITIONS,
     CONF_PYRAMID_TRIGGER_ATR, CONF_RISK_BASED_SIZING, CONF_RISK_PER_TRADE_PCT,
     CONF_SCALE_WITH_CONFIDENCE, CONF_STOP_LOSS_ATR, CONF_STOP_LOSS_USD,
@@ -291,6 +294,12 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self.robustness: dict = {}
         self.periods: dict = {}
         self.backtest: dict = {}
+        self.audit: dict = {}
+        self._use_schedule: bool = options.get(CONF_USE_SCHEDULE, True)
+        self._close_buffer: int = _as_int(
+            options.get(CONF_CLOSE_BUFFER_MINUTES), 10
+        )
+        self.schedule_note: str | None = None
         self.last_sizing: dict = {}
 
         service = options.get(CONF_NOTIFY_SERVICE, NOTIFY_NONE)
@@ -333,6 +342,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self.robustness: dict = {}
         self.periods: dict = {}
         self.backtest: dict = {}
+        self.audit: dict = {}
         self.last_sizing: dict = {}
 
         service = options.get(CONF_NOTIFY_SERVICE, NOTIFY_NONE)
@@ -1105,20 +1115,32 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             await self._manage_open_positions(quote, now)
         budget.mark("exits")
 
+        # -- rooster als tweede bron ------------------------------------------ #
+        #
+        # Niet alleen op het veld van de broker vertrouwen. Klopt dat veld niet,
+        # dan handelt de bot op verouderde koersen zonder dat iets het merkt.
+        # Bij onenigheid wint 'gesloten': een gemiste kans kost niets, handelen
+        # op een koers van uren geleden kan alles kosten.
+        tradeable = quote.tradeable
+        self.schedule_note = None
+        if self._use_schedule:
+            tradeable, note = cross_check(quote.tradeable, SPOT_GOLD, now)
+            if note:
+                self.schedule_note = note
+                _LOGGER.warning("Handelstijden: %s", note)
+
         # -- periodieke controle op onbeschermde posities --------------------- #
         # Een stop kan verdwijnen doordat een wijziging half doorkwam of doordat
         # de broker hem introk. Zonder controle merk je dat pas als het geld weg
         # is. Elke tiende cyclus volstaat; vaker belast de broker-API onnodig.
-        if self.mode.places_orders and open_positions_precheck:
+        # Niet vergelijken bij een gesloten markt: er kan niets bewegen, dus
+        # elk verschil is er een van vóór de sluiting. Wel blijven controleren
+        # zou alleen ruis opleveren in het weekend.
+        if self.mode.places_orders and open_positions_precheck and quote.tradeable:
             self._audit_counter += 1
             if self._audit_counter >= 10:
                 self._audit_counter = 0
-                problems = await self.executor.audit_positions(self.symbol)
-                if problems:
-                    self.executor_notes = problems
-                    self.risk.halt(
-                        "onbeschermde positie gevonden: " + problems[0]
-                    )
+                await self._audit_against_broker()
 
         # -- boekhouding ----------------------------------------------------- #
         if self.paper:
@@ -1174,10 +1196,24 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                     open_positions=len(open_positions),
                     volume=self.units / CONTRACT_SIZE,
                     spread=quote.spread, last_tick_age=tick_age,
-                    market_open=quote.tradeable,
+                    market_open=tradeable,
                     atr=self.state.atr.value,
                 )
                 reject_reason = None if allowed else f"risico: {why}"
+
+                # Kort voor sluiting geen nieuwe posities. Een trade met een
+                # tijdslimiet van vijf minuten die om 22:58 opengaat, wordt door
+                # de sluiting overvallen: je zit dan tot de volgende sessie
+                # vast, en die opent met een gat waar geen stop tussen zit.
+                if allowed and self._use_schedule and self._close_buffer > 0:
+                    resterend = minutes_until_close(SPOT_GOLD, now)
+                    if resterend is not None and resterend <= self._close_buffer:
+                        allowed = False
+                        reject_reason = (
+                            f"nog {resterend:.0f} minuten tot sluiting; een "
+                            "nieuwe positie zou door de sluiting worden "
+                            "overvallen"
+                        )
 
             if reject_reason is None and signal.should_trade:
                 await self._open_position(signal, quote, now)
@@ -1277,6 +1313,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "sizing": self.last_sizing,
             "periods": self.periods,
             "backtest": self.backtest,
+            "audit": self.audit,
+            "schedule_note": self.schedule_note,
             "run_changed_because": self.run_changed_because,
             "adopted_defaults": self.adopted_defaults,
             "learning": {
@@ -1361,7 +1399,9 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
         # Op de mid werken: bid of ask zou elke indicator een halve spread
         # laten schuiven.
-        closed = self._aggregator.add(quote.mid, quote.time)
+        # Bij een gesloten markt niets toevoegen: een weekend levert anders
+        # honderden bars met dezelfde prijs op, en die drukken de ATR naar nul.
+        closed = self._aggregator.add(quote.mid, quote.time, quote.tradeable)
         if not closed:
             return
 
@@ -1467,7 +1507,14 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 if action.kind == "close":
                     await self._close_position(position, action.reason[:60])
                 elif action.kind == "modify_stop" and self.mode.places_orders:
-                    await self.venue.modify_stop(ticket, action.new_stop)
+                    # Het doel meegeven: het PUT-endpoint vervangt beide
+                    # niveaus, dus zonder deze waarde wist elke stopverplaatsing
+                    # je take-profit. Meegeven scheelt bovendien een extra
+                    # verzoek om hem eerst op te halen.
+                    await self.venue.modify_stop(
+                        ticket, action.new_stop,
+                        take_profit=getattr(position, "take_profit", None),
+                    )
                 elif action.kind == "modify_stop":
                     position.stop_loss = action.new_stop
                 elif action.kind == "partial_close":
@@ -1640,7 +1687,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             # Eerst de stop verplaatsen, dan pas bijkopen. Andersom sta je
             # kortstondig met een grotere positie achter een te ruime stop, en
             # precies dan kan de verbinding wegvallen.
-            await self.venue.modify_stop(ticket, decision.new_stop)
+            await self.venue.modify_stop(
+                ticket, decision.new_stop,
+                take_profit=getattr(position, "take_profit", None),
+            )
             result, notes = await self.executor.open_protected(
                 self.symbol,
                 getattr(position, "side", "buy"),

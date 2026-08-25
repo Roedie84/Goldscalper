@@ -48,6 +48,11 @@ CONF_REGIME_SWITCHING: Final = "regime_switching"
 #: opgevraagd, ten koste van een opwarmperiode en iets minder nauwkeurige bars.
 CONF_BUILD_FROM_QUOTES: Final = "build_from_quotes"
 
+#: Kruiscontrole op de handelstijden: vertrouw niet alleen op de broker.
+CONF_USE_SCHEDULE: Final = "use_schedule"
+#: Geen nieuwe posities in de laatste minuten voor sluiting.
+CONF_CLOSE_BUFFER_MINUTES: Final = "close_buffer_minutes"
+
 CONF_ENFORCE_TRADING_HOURS: Final = "enforce_trading_hours"
 CONF_TRADING_START_HOUR: Final = "trading_start_hour"
 CONF_TRADING_END_HOUR: Final = "trading_end_hour"
@@ -120,6 +125,11 @@ DEFAULT_UPDATE_SECONDS: Final = 20
 MIN_UPDATE_SECONDS: Final = 10
 
 DEFAULT_UNITS: Final = 1.0        # ounces
+#: Ounces per lot bij XAU/USD. Stond eerder in twee modules apart gedefinieerd;
+#: twee kopieën van hetzelfde getal kunnen uit elkaar lopen, en dan reken je in
+#: de ene helft van de code met een andere eenheid dan in de andere.
+CONTRACT_SIZE: Final = 100.0
+
 DEFAULT_MAX_UNITS: Final = 5.0
 DEFAULT_STARTING_BALANCE: Final = 10_000.0
 

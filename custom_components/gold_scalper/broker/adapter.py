@@ -154,7 +154,9 @@ class ExecutionVenue(ABC):
     async def close(self, ticket: str, units: float | None = None) -> OrderResult:
         """Sluit een positie geheel of gedeeltelijk."""
 
-    async def modify_target(self, ticket: str, take_profit: float) -> OrderResult:
+    async def modify_target(
+        self, ticket: str, take_profit: float, stop_loss: float | None = None
+    ) -> OrderResult:
         """Pas het winstdoel van een open positie aan.
 
         Standaard niet ondersteund: niet elke venue kent losse doelen. Een
@@ -165,7 +167,9 @@ class ExecutionVenue(ABC):
         )
 
     @abstractmethod
-    async def modify_stop(self, ticket: str, stop_loss: float) -> OrderResult:
+    async def modify_stop(
+        self, ticket: str, stop_loss: float, take_profit: float | None = None
+    ) -> OrderResult:
         """Verplaats de stop-loss. Nodig voor break-even en trailing."""
 
     async def close_all(self, symbol: str | None = None) -> list[OrderResult]:

@@ -192,9 +192,18 @@ class IgStyleVenue(ExecutionVenue):
     def _extract_account_id(self, payload: dict) -> str | None:
         return payload.get("currentAccountId") or payload.get("accountId")
 
+    def _close_path(self, ticket: str) -> str:
+        """Pad voor het sluiten van een positie.
+
+        Bij IG loopt dat via het OTC-endpoint zonder ticket in het pad; het
+        dealId zit in de body. Capital.com verwacht het ticket wél in het pad.
+        """
+        return self._order_path
+
     async def _request(
         self, method: str, path: str, version: str = "1",
-        timeout: ClientTimeout | None = None, **kwargs,
+        timeout: ClientTimeout | None = None,
+        headers_extra: dict | None = None, **kwargs,
     ):
         """Verzoek met automatische herlogin bij een verlopen sessie."""
         async with self._lock:
@@ -203,9 +212,12 @@ class IgStyleVenue(ExecutionVenue):
 
         for attempt in (1, 2):
             try:
+                headers = self._headers(version)
+                if headers_extra:
+                    headers.update(headers_extra)
                 async with self._session.request(
                     method, f"{self._base}{path}",
-                    headers=self._headers(version),
+                    headers=headers,
                     timeout=timeout or TIMEOUT, **kwargs,
                 ) as response:
                     if response.status in (401, 403) and attempt == 1:
@@ -599,34 +611,133 @@ class IgStyleVenue(ExecutionVenue):
         )
 
     async def close(self, ticket: str, units: float | None = None) -> OrderResult:
+        """Sluit een positie, geheel of gedeeltelijk.
+
+        ``units`` werd eerder geaccepteerd en genegeerd. Elke "deelsluiting"
+        sloot daarmee de héle positie, terwijl de administratie de helft
+        boekte - het tegenovergestelde van wat de functie belooft, en een
+        verschil dat je pas ontdekt als je de brokerinterface naast je
+        rapportage legt.
+
+        Wordt ``units`` niet opgegeven, dan wordt de huidige omvang opgehaald;
+        IG eist dat veld. Zonder omvang meesturen zou de aanvraag falen of, bij
+        een toekomstige API-versie, alles sluiten.
+        """
         if not self.supports_trading:
             raise TradingDisabledError("Handel staat uit voor deze venue.")
+
+        size = units
+        direction = None
+        for position in await self.positions():
+            if str(position.ticket) == str(ticket):
+                if size is None:
+                    size = position.units
+                # Sluiten gebeurt met de tegengestelde richting.
+                direction = "SELL" if position.side == "buy" else "BUY"
+                if units is not None and units > position.units:
+                    raise VenueError(
+                        f"Kan {units} sluiten van een positie van "
+                        f"{position.units}; dat is meer dan er openstaat."
+                    )
+                break
+
+        if size is None or direction is None:
+            raise VenueError(
+                f"Positie {ticket} niet gevonden bij de broker; sluiten "
+                "afgebroken in plaats van blind een aanvraag te sturen."
+            )
+
+        # POST met de header ``_method: DELETE`` in plaats van een echte
+        # DELETE. Dat is wat IG voorschrijft, en met reden: een DELETE met
+        # inhoud wordt onderweg door proxies en tussenlagen gestript. Raakt de
+        # body kwijt, dan weet de broker niet hoeveel je wilt sluiten - en dan
+        # sluit hij niets, of alles.
         payload = await self._request(
-            "DELETE", f"{self._order_path}/{ticket}", version="1",
+            "POST", self._close_path(ticket), version="1",
+            json={
+                "dealId": str(ticket),
+                "direction": direction,
+                "size": round(size, 2),
+                "orderType": "MARKET",
+            },
+            headers_extra={"_method": "DELETE"},
             timeout=ORDER_TIMEOUT,
         )
         reference = payload.get("dealReference")
-        return OrderResult(success=bool(reference), ticket=ticket)
+        return OrderResult(success=bool(reference), ticket=ticket, units=size)
 
-    async def modify_stop(self, ticket: str, stop_loss: float) -> OrderResult:
+    async def modify_stop(
+        self, ticket: str, stop_loss: float, take_profit: float | None = None
+    ) -> OrderResult:
+        """Verplaats de stop, met behoud van het doel.
+
+        Het PUT-endpoint vervangt de *hele* set niveaus. Alleen ``stopLevel``
+        meesturen wist daarmee je take-profit - zichtbaar doordat de limiet in
+        de brokerinterface even een waarde toont en daarna weer leeg is.
+
+        Erger nog in combinatie met de doelverificatie: die plaatst hem dan
+        opnieuw, waarna de volgende stopverplaatsing hem weer wist. Een lus die
+        bij elke break-even en elke trailing stop een extra API-aanroep kost.
+
+        Wordt ``take_profit`` niet meegegeven, dan wordt het huidige niveau
+        eerst opgehaald. Dat kost een verzoek, maar minder dan het doel
+        kwijtraken.
+        """
         if not self.supports_trading:
             raise TradingDisabledError("Handel staat uit voor deze venue.")
+
+        if take_profit is None:
+            try:
+                for position in await self.positions():
+                    if str(position.ticket) == str(ticket):
+                        take_profit = position.take_profit
+                        break
+            except VenueError as err:
+                _LOGGER.debug("Kon het huidige doel niet ophalen: %s", err)
+
+        body: dict = {"stopLevel": round(stop_loss, 2)}
+        if take_profit is not None:
+            body["limitLevel"] = round(take_profit, 2)
+
         payload = await self._request(
             "PUT", f"{self._order_path}/{ticket}", version="2",
-            json={"stopLevel": round(stop_loss, 2)}, timeout=ORDER_TIMEOUT,
+            json=body, timeout=ORDER_TIMEOUT,
         )
         return OrderResult(
             success=bool(payload.get("dealReference")), ticket=ticket,
             error=None if payload.get("dealReference") else "Stop niet aangepast",
         )
 
-    async def modify_target(self, ticket: str, take_profit: float) -> OrderResult:
-        """Zet of verplaats het winstdoel. Bij IG heet dat veld limitLevel."""
+    async def modify_target(
+        self, ticket: str, take_profit: float, stop_loss: float | None = None
+    ) -> OrderResult:
+        """Verplaats het doel, met behoud van de stop.
+
+        Spiegelbeeld van modify_stop: het endpoint vervangt beide niveaus, dus
+        alleen het doel meesturen zou de stop wissen. En een positie zonder
+        stop is het enige scenario met in principe onbegrensd verlies.
+
+        Bij IG heet het doelveld ``limitLevel``.
+        """
         if not self.supports_trading:
             raise TradingDisabledError("Handel staat uit voor deze venue.")
+
+        if stop_loss is None:
+            try:
+                for position in await self.positions():
+                    if str(position.ticket) == str(ticket):
+                        stop_loss = position.stop_loss
+                        break
+            except VenueError as err:
+                _LOGGER.debug("Kon de huidige stop niet ophalen: %s", err)
+
+        body: dict = {"limitLevel": round(take_profit, 2)}
+        if stop_loss is not None:
+            body["stopLevel"] = round(stop_loss, 2)
+
         payload = await self._request(
             "PUT", f"{self._order_path}/{ticket}", version="2",
-            json={"limitLevel": round(take_profit, 2)}, timeout=ORDER_TIMEOUT,
+            json=body, timeout=ORDER_TIMEOUT,
         )
         return OrderResult(
             success=bool(payload.get("dealReference")), ticket=ticket,
@@ -732,6 +843,8 @@ class IgVenue(IgStyleVenue):
 
 
 class CapitalVenue(IgStyleVenue):
+    """Capital.com. Zelfde vorm als IG, met twee afwijkingen in het sluiten."""
+
     """Capital.com. Zelfde vorm als IG, maar bevestigt direct."""
 
     name = "capital"
@@ -745,6 +858,38 @@ class CapitalVenue(IgStyleVenue):
         "30m": "MINUTE_30", "1h": "HOUR", "4h": "HOUR_4", "1d": "DAY",
     }
     _order_path = "/positions"
+
+    def _close_path(self, ticket: str) -> str:
+        """Capital.com verwacht het ticket in het pad, IG in de body."""
+        return f"{self._order_path}/{ticket}"
+
+    async def close(self, ticket: str, units: float | None = None) -> OrderResult:
+        """Capital.com sluit met een gewone DELETE zonder body.
+
+        Gedeeltelijk sluiten kent hun API niet op dit endpoint. Dat stil
+        negeren zou hetzelfde probleem geven als bij IG - de administratie
+        boekt de helft, de broker sluit alles - dus wordt het geweigerd.
+        """
+        if not self.supports_trading:
+            raise TradingDisabledError("Handel staat uit voor deze venue.")
+
+        if units is not None:
+            for position in await self.positions():
+                if str(position.ticket) == str(ticket):
+                    if abs(position.units - units) > 0.001:
+                        raise VenueError(
+                            "Capital.com kan een positie niet gedeeltelijk "
+                            f"sluiten. Gevraagd: {units} van {position.units}."
+                        )
+                    break
+
+        payload = await self._request(
+            "DELETE", self._close_path(ticket), version="1",
+            timeout=ORDER_TIMEOUT,
+        )
+        return OrderResult(
+            success=bool(payload.get("dealReference")), ticket=ticket
+        )
 
     def _order_body(self, epic, side, units, stop_loss, take_profit, comment) -> dict:
         # Capital.com kent 'expiry' en 'currencyCode' niet op deze manier.

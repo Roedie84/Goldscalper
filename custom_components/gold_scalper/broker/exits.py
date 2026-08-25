@@ -37,7 +37,9 @@ from datetime import datetime
 
 _LOGGER = logging.getLogger(__name__)
 
-CONTRACT_SIZE = 100.0
+# Uit const.py: één definitie, zodat de twee helften van de code
+# niet met verschillende eenheden kunnen gaan rekenen.
+from ..const import CONTRACT_SIZE
 
 
 @dataclass(slots=True)

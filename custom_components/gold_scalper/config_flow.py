@@ -28,6 +28,7 @@ from .validation import reward_risk_warning
 from .const import (
     CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
     CONF_NOTIFY_CRITICAL, CONF_NOTIFY_HOURLY, CONF_NOTIFY_SERVICE,
+    CONF_CLOSE_BUFFER_MINUTES, CONF_USE_SCHEDULE,
     CONF_NOTIFY_SKIP_QUIET, CONF_PYRAMID_ENABLED, CONF_PYRAMID_MAX_ADDITIONS,
     CONF_PYRAMID_TRIGGER_ATR, CONF_RISK_BASED_SIZING, CONF_RISK_PER_TRADE_PCT,
     CONF_SCALE_WITH_CONFIDENCE, CONF_STOP_LOSS_ATR, CONF_STOP_LOSS_USD,
@@ -767,6 +768,15 @@ class GoldScalperOptionsFlow(OptionsFlow):
                 CONF_BUILD_FROM_QUOTES,
                 default=default(CONF_BUILD_FROM_QUOTES, False),
             ): BooleanSelector(),
+
+            # Rooster als tweede bron naast het marketState-veld van de broker.
+            vol.Required(
+                CONF_USE_SCHEDULE, default=default(CONF_USE_SCHEDULE, True)
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_CLOSE_BUFFER_MINUTES,
+                default=default(CONF_CLOSE_BUFFER_MINUTES, 10),
+            ): _number(0, 60, 5, "min", slider=True),
 
             vol.Required(
                 CONF_ENFORCE_TRADING_HOURS,
