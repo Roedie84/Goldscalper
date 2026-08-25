@@ -267,3 +267,26 @@ def test_no_classes_fabricated_from_dicts():
                     and len(node.args) == 3):
                 offenders.append(f"{path.name}:{node.lineno}")
     assert offenders == [], "\n".join(offenders)
+
+
+def test_no_stale_metatrader_instructions():
+    """Meldingen die de gebruiker leest mogen niet naar MetaTrader of
+    verzonnen commando's verwijzen. Deze integratie draait op IG, Capital of
+    OANDA; 'sluit ze handmatig in MT5 of gebruik /close_all' stuurt je naar
+    software die je niet hebt en een commando dat niet bestaat.
+    """
+    offenders = []
+    for path in PKG.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            text = node.value
+            # Alleen instructies aan de gebruiker; SQL-schema's en docstrings
+            # mogen de oude naamgeving benoemen omdat de kolom zo heet.
+            if len(text) > 400 or "CREATE TABLE" in text:
+                continue
+            if "MT5" in text or "/close_all" in text or "MetaTrader" in text:
+                offenders.append(f"{path.name}:{node.lineno}  {text[:60]}")
+    assert offenders == [], "\n".join(offenders)

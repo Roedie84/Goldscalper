@@ -404,3 +404,53 @@ def test_search_markets_returns_epics():
         "CS.D.CFDGOLD.CFDGC.IP", "CS.D.CFEGOLD.CFE.IP"
     ]
     assert found[0]["name"] == "Spot Gold"
+
+
+# ---------------- timeouts ----------------
+
+def test_quotes_get_a_short_timeout():
+    """Bij een pollinterval van tien seconden is een koers die na veertien
+    seconden binnenkomt al verouderd voordat je hem gebruikt."""
+    from gold_scalper.broker.ig_capital import ORDER_TIMEOUT, QUOTE_TIMEOUT
+    assert QUOTE_TIMEOUT.total <= 8
+    assert QUOTE_TIMEOUT.connect is not None
+
+
+def test_orders_get_a_longer_timeout():
+    """Bij een order is afbreken juist gevaarlijk: je weet dan niet of hij is
+    uitgevoerd."""
+    from gold_scalper.broker.ig_capital import ORDER_TIMEOUT, QUOTE_TIMEOUT
+    assert ORDER_TIMEOUT.total > QUOTE_TIMEOUT.total * 2
+
+
+def test_quote_uses_the_quote_timeout():
+    from gold_scalper.broker.ig_capital import QUOTE_TIMEOUT
+    venue = ig({"/markets/": MARKET})
+    asyncio.run(venue.quote())
+    call = next(c for c in venue._session.calls if "markets" in c["url"])
+    assert call["timeout"] is QUOTE_TIMEOUT
+
+
+def test_order_uses_the_order_timeout():
+    from gold_scalper.broker.ig_capital import ORDER_TIMEOUT
+    routes = {"/markets/": MARKET, "/positions": ({"dealReference": "D1"}, 200)}
+    venue = capital(routes)
+    asyncio.run(venue.place_order("GOLD", "buy", 1.0, stop_loss=3299.0))
+    call = next(c for c in venue._session.calls if c["method"] == "POST"
+                and "positions" in c["url"])
+    assert call["timeout"] is ORDER_TIMEOUT
+
+
+def test_timeout_message_names_the_request():
+    """Zonder afvangen komt een timeout door als een kale asyncio-fout, zonder
+    te vertellen welk verzoek het betrof."""
+    class Hanging(FakeSession):
+        def request(self, method, url, **kw):
+            raise TimeoutError()
+
+    venue = IgVenue(Hanging({}), "key", "gebruiker", "pass")
+    with pytest.raises(VenueError) as excinfo:
+        asyncio.run(venue.quote())
+    message = str(excinfo.value)
+    assert "markets" in message
+    assert "niet binnen" in message

@@ -255,3 +255,17 @@ def test_notify_dropdown_survives_a_broken_service_registry():
         k for k in result["data_schema"].schema if str(k) == "notify_service"
     )
     assert result["data_schema"].schema[field].config["options"] == ["geen"]
+
+
+def test_resume_limit_is_in_the_options_form():
+    result = asyncio.run(_options_for("ig").async_step_init())
+    fields = {str(k) for k in result["data_schema"].schema}
+    assert "max_resumes_per_day" in fields
+
+
+def test_resume_limit_accepts_zero():
+    """Nul is een geldige keuze: dan duurt een noodstop tot morgen."""
+    result = asyncio.run(_options_for("ig").async_step_init())
+    schema = result["data_schema"].schema
+    field = next(k for k in schema if str(k) == "max_resumes_per_day")
+    assert schema[field].config["min"] == 0

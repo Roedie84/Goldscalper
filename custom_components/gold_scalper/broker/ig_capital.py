@@ -53,7 +53,21 @@ from .adapter import (
 
 _LOGGER = logging.getLogger(__name__)
 
-TIMEOUT = ClientTimeout(total=20)
+#: Timeouts per soort verzoek. Eén waarde voor alles deugt niet: een koers en
+#: een order hebben een heel verschillende urgentie.
+#:
+#: **Koersen: kort.** Bij een pollinterval van tien seconden is een koers die
+#: na veertien seconden binnenkomt al verouderd voordat je hem gebruikt. Beter
+#: afbreken en de volgende cyclus afwachten dan de lus laten wachten op data
+#: die je toch niet meer wilt.
+QUOTE_TIMEOUT = ClientTimeout(total=6, connect=3)
+
+#: **Orders: langer.** Hier is afbreken juist gevaarlijk: je weet dan niet of
+#: de order is uitgevoerd. Liever wachten en een duidelijk antwoord krijgen.
+ORDER_TIMEOUT = ClientTimeout(total=25, connect=5)
+
+#: Alles daartussen: sessies, accountgegevens, historie.
+TIMEOUT = ClientTimeout(total=15, connect=5)
 
 
 class IgStyleVenue(ExecutionVenue):
@@ -178,7 +192,10 @@ class IgStyleVenue(ExecutionVenue):
     def _extract_account_id(self, payload: dict) -> str | None:
         return payload.get("currentAccountId") or payload.get("accountId")
 
-    async def _request(self, method: str, path: str, version: str = "1", **kwargs):
+    async def _request(
+        self, method: str, path: str, version: str = "1",
+        timeout: ClientTimeout | None = None, **kwargs,
+    ):
         """Verzoek met automatische herlogin bij een verlopen sessie."""
         async with self._lock:
             if not self._cst:
@@ -188,7 +205,8 @@ class IgStyleVenue(ExecutionVenue):
             try:
                 async with self._session.request(
                     method, f"{self._base}{path}",
-                    headers=self._headers(version), timeout=TIMEOUT, **kwargs,
+                    headers=self._headers(version),
+                    timeout=timeout or TIMEOUT, **kwargs,
                 ) as response:
                     if response.status in (401, 403) and attempt == 1:
                         # Sessie verlopen. Capital.com doet dat na tien minuten
@@ -203,6 +221,17 @@ class IgStyleVenue(ExecutionVenue):
                     return payload
             except VenueError:
                 raise
+            except TimeoutError as err:
+                # Zonder deze tak komt een timeout door als een kale
+                # asyncio-fout, zonder te vertellen welk verzoek het betrof of
+                # hoe lang hij heeft gewacht.
+                limit = (timeout or TIMEOUT).total
+                raise VenueError(
+                    f"{self.name.upper()} antwoordde niet binnen {limit}s op "
+                    f"{method} {path}. Bij koersen is dat geen ramp - de "
+                    "volgende cyclus probeert opnieuw - maar bij herhaling wijst "
+                    "het op een trage verbinding of drukte bij de broker."
+                ) from err
             except ClientError as err:
                 raise VenueError(
                     f"Netwerkfout richting broker: {type(err).__name__}: {err}"
@@ -320,7 +349,9 @@ class IgStyleVenue(ExecutionVenue):
 
     async def quote(self, symbol: str | None = None) -> VenueQuote:
         epic = symbol or self.epic
-        payload = await self._request("GET", f"/markets/{epic}", version="3")
+        payload = await self._request(
+            "GET", f"/markets/{epic}", version="3", timeout=QUOTE_TIMEOUT
+        )
         snapshot = payload.get("snapshot") or {}
         status = str(snapshot.get("marketStatus", "TRADEABLE")).upper()
 
@@ -530,7 +561,10 @@ class IgStyleVenue(ExecutionVenue):
 
         body = self._order_body(epic, side, units, stop_loss, take_profit, comment)
         sent = time.perf_counter()
-        payload = await self._request("POST", self._order_path, version="2", json=body)
+        payload = await self._request(
+            "POST", self._order_path, version="2", json=body,
+            timeout=ORDER_TIMEOUT,
+        )
         latency = (time.perf_counter() - sent) * 1000
 
         return await self._confirm(payload, requested, latency, comment)
@@ -569,6 +603,7 @@ class IgStyleVenue(ExecutionVenue):
             raise TradingDisabledError("Handel staat uit voor deze venue.")
         payload = await self._request(
             "DELETE", f"{self._order_path}/{ticket}", version="1",
+            timeout=ORDER_TIMEOUT,
         )
         reference = payload.get("dealReference")
         return OrderResult(success=bool(reference), ticket=ticket)
@@ -578,7 +613,7 @@ class IgStyleVenue(ExecutionVenue):
             raise TradingDisabledError("Handel staat uit voor deze venue.")
         payload = await self._request(
             "PUT", f"{self._order_path}/{ticket}", version="2",
-            json={"stopLevel": round(stop_loss, 2)},
+            json={"stopLevel": round(stop_loss, 2)}, timeout=ORDER_TIMEOUT,
         )
         return OrderResult(
             success=bool(payload.get("dealReference")), ticket=ticket,

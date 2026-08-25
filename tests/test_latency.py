@@ -62,3 +62,30 @@ def test_failed_flush_is_counted_not_silent():
     w = BufferedWriter(boom, max_buffer=2, max_age_seconds=999)
     w.add((1,)); w.add((2,))
     assert w.dropped == 2
+
+
+def test_percentiles_need_enough_samples():
+    """Bij negen metingen is de 'p99' gewoon het maximum. Dat presenteren als
+    percentiel geeft schijnzekerheid: één uitschieter van 14 seconden ziet
+    eruit als een betrouwbaar getal over de staart."""
+    from gold_scalper.storage.latency import LatencyBudget, LatencyTracker
+
+    def _tracker(count: int):
+        tracker = LatencyTracker()
+        for i in range(count):
+            budget = LatencyBudget()
+            budget.mark("start")
+            budget.stages["quote"] = budget.stages["start"] + 0.1
+            budget._order.append("quote")
+            tracker.record(budget)
+        return tracker.stats()["start->quote"]
+
+    few = _tracker(9)
+    assert "p90" not in few and "p99" not in few
+    assert "median" in few and "max" in few
+
+    some = _tracker(30)
+    assert "p90" in some and "p99" not in some
+
+    many = _tracker(150)
+    assert "p90" in many and "p99" in many

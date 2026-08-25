@@ -25,6 +25,12 @@ CONF_MAX_UNITS: Final = "max_units"
 CONF_MAX_SPREAD: Final = "max_spread"
 CONF_MAX_SPREAD_ATR: Final = "max_spread_atr_ratio"
 CONF_MIN_EDGE_MULTIPLE: Final = "min_edge_multiple"
+
+#: Doel en stop als vast bedrag in USD per ounce; nul = meeschalen met de ATR.
+CONF_TAKE_PROFIT_USD: Final = "take_profit_usd"
+CONF_STOP_LOSS_USD: Final = "stop_loss_usd"
+CONF_TAKE_PROFIT_ATR: Final = "take_profit_atr"
+CONF_STOP_LOSS_ATR: Final = "stop_loss_atr"
 CONF_ENTRY_THRESHOLD: Final = "entry_threshold"
 CONF_REGIME_SWITCHING: Final = "regime_switching"
 #: Bars opbouwen uit live koersen in plaats van historie opvragen.
@@ -41,6 +47,7 @@ CONF_TRADING_END_HOUR: Final = "trading_end_hour"
 CONF_MAX_DAILY_LOSS_PCT: Final = "max_daily_loss_pct"
 CONF_MAX_TRADES_PER_DAY: Final = "max_trades_per_day"
 CONF_MAX_CONSECUTIVE_LOSSES: Final = "max_consecutive_losses"
+CONF_MAX_RESUMES_PER_DAY: Final = "max_resumes_per_day"
 CONF_EQUITY_FLOOR_PCT: Final = "equity_floor_pct"
 
 CONF_SHOW_PANEL: Final = "show_panel"

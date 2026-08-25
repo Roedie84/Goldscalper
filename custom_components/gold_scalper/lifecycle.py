@@ -179,8 +179,8 @@ class LifecycleController:
                 message=(
                     f"{len(orphaned)} positie(s) staan open bij de broker maar zijn "
                     "onbekend in de database. Deze worden door niemand bewaakt. "
-                    "Sluit ze handmatig in MT5 of gebruik /close_all, en start daarna "
-                    "opnieuw."
+                    "Sluit ze bij je broker of gebruik de knop 'Alles sluiten', "
+                    "en hervat daarna met gold_scalper.resume."
                 ),
             )
             self._transition(LifecycleState.DIVERGED, "onbekende posities bij broker")

@@ -110,13 +110,20 @@ class LatencyTracker:
                 def pct(p: float) -> float:
                     return round(ordered[min(n - 1, int(n * p))], 3)
 
-                out[stage] = {
+                # Een percentiel bij weinig waarnemingen is misleidend: bij
+                # negen metingen is de "p99" gewoon het maximum, en dan
+                # presenteer je één uitschieter als een betrouwbaar getal.
+                # Liever weglaten dan schijnzekerheid geven.
+                entry = {
                     "samples": n,
                     "median": pct(0.5),
-                    "p90": pct(0.9),
-                    "p99": pct(0.99),
                     "max": round(ordered[-1], 3),
                 }
+                if n >= 20:
+                    entry["p90"] = pct(0.9)
+                if n >= 100:
+                    entry["p99"] = pct(0.99)
+                out[stage] = entry
             return out
 
     def slowest_stage(self) -> tuple[str, float] | None:

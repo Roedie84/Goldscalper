@@ -485,3 +485,37 @@ def test_coordinator_passes_the_gate_directly():
               / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
     assert 'type("G"' not in source
     assert "require_live_unlocked(self.mode, self.gate)" in source
+
+
+def test_resume_limit_of_zero_blocks_every_resume():
+    """Nul betekent: een noodstop duurt tot morgen. Dat is een verdedigbare
+    keuze voor wie zichzelf niet wil kunnen overrulen."""
+    rm = fresh(max_resumes_per_day=0)
+    rm.halt("dagverlies")
+    ok, message = rm.manual_resume(balance=9800.0)
+    assert not ok
+    assert "morgen" in message
+    assert rm.state.state is TradingState.HALTED
+
+
+def test_higher_resume_limit_is_respected():
+    rm = fresh(max_resumes_per_day=5)
+    for _ in range(5):
+        rm.halt("x")
+        assert rm.manual_resume(balance=9800.0)[0]
+    rm.halt("x")
+    assert not rm.manual_resume(balance=9800.0)[0]
+
+
+def test_resume_limit_is_configurable_from_the_options():
+    """Vangt het geval waarin de instelling er wel is maar nooit aankomt."""
+    from pathlib import Path
+
+    pkg = Path(__file__).resolve().parent.parent / "custom_components" / "gold_scalper"
+    coordinator = (pkg / "coordinator.py").read_text(encoding="utf-8")
+    flow = (pkg / "config_flow.py").read_text(encoding="utf-8")
+
+    assert "max_resumes_per_day=_as_int(" in coordinator, (
+        "de instelling bereikt de RiskLimits niet"
+    )
+    assert "CONF_MAX_RESUMES_PER_DAY" in flow, "het veld staat niet in de opties"

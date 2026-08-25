@@ -40,14 +40,15 @@ from .broker.risk import RiskLimits, RiskManager, TradingState
 from .const import (
     CONF_ACCOUNT_ID, CONF_API_KEY, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
     CONF_NOTIFY_CRITICAL, CONF_NOTIFY_HOURLY, CONF_NOTIFY_SERVICE,
-    CONF_NOTIFY_SKIP_QUIET, NOTIFY_NONE,
+    CONF_NOTIFY_SKIP_QUIET, CONF_STOP_LOSS_ATR, CONF_STOP_LOSS_USD,
+    CONF_TAKE_PROFIT_ATR, CONF_TAKE_PROFIT_USD, NOTIFY_NONE,
     CONF_ENFORCE_TRADING_HOURS,
     CONF_EPIC, CONF_IDENTIFIER, CONF_PASSWORD, DEFAULT_EPIC, VENUE_CAPITAL, VENUE_IG,
     CONF_REGIME_SWITCHING, DEFAULT_ASSUMED_SPREAD, VENUE_PUBLIC,
     VENUE_STOOQ,
     CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
     DEFAULT_SIM_SEED, DEFAULT_SIM_SPREAD, DEFAULT_VENUE, VENUE_SIMULATOR, CONF_ENTRY_THRESHOLD, CONF_ENVIRONMENT, CONF_EQUITY_FLOOR_PCT,
-    CONF_MAX_CONSECUTIVE_LOSSES, CONF_MAX_DAILY_LOSS_PCT, CONF_MAX_SPREAD, CONF_MAX_SPREAD_ATR,
+    CONF_MAX_CONSECUTIVE_LOSSES, CONF_MAX_DAILY_LOSS_PCT, CONF_MAX_RESUMES_PER_DAY, CONF_MAX_SPREAD, CONF_MAX_SPREAD_ATR,
     CONF_MAX_TRADES_PER_DAY, CONF_MAX_UNITS, CONF_MIN_EDGE_MULTIPLE, CONF_MODE,
     CONF_STARTING_BALANCE, CONF_SYMBOL, CONF_TIMEFRAME, CONF_TOKEN,
     CONF_TRADING_END_HOUR, CONF_TRADING_START_HOUR, CONF_UNITS, CONF_UPDATE_SECONDS,
@@ -199,6 +200,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             max_spread_atr_ratio=options.get(CONF_MAX_SPREAD_ATR, 0.35),
             min_edge_multiple=options.get(CONF_MIN_EDGE_MULTIPLE, 2.0),
             entry_threshold=options.get(CONF_ENTRY_THRESHOLD, 0.45),
+            take_profit_atr=options.get(CONF_TAKE_PROFIT_ATR, 1.5),
+            stop_loss_atr=options.get(CONF_STOP_LOSS_ATR, 1.0),
+            take_profit_usd=options.get(CONF_TAKE_PROFIT_USD, 0.0),
+            stop_loss_usd=options.get(CONF_STOP_LOSS_USD, 0.0),
             regime_switching=options.get(CONF_REGIME_SWITCHING, True),
             enforce_trading_hours=options.get(CONF_ENFORCE_TRADING_HOURS, False),
             # Alleen een broker levert een echte bied/laat-spread; publieke
@@ -221,6 +226,9 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 ),
                 equity_floor_pct=options.get(CONF_EQUITY_FLOOR_PCT, 80.0),
                 max_volume=options.get(CONF_MAX_UNITS, DEFAULT_MAX_UNITS) / CONTRACT_SIZE,
+                max_resumes_per_day=_as_int(
+                    options.get(CONF_MAX_RESUMES_PER_DAY), 2
+                ),
             ),
             self.starting_balance,
         )
@@ -249,6 +257,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         ))
         #: Vorige risicostand, om een overgang naar noodstop te herkennen.
         self._previous_risk_state: str | None = None
+        #: Opeenvolgende cycli die langer duurden dan het pollinterval.
+        self._slow_cycles = 0
         #: Posities zoals ze deze cyclus bij de broker stonden. Aan het begin
         #: van elke cyclus gewist, en na elke order verversd.
         self._positions_cache: list | None = None
@@ -262,6 +272,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         ))
         #: Vorige risicostand, om een overgang naar noodstop te herkennen.
         self._previous_risk_state: str | None = None
+        #: Opeenvolgende cycli die langer duurden dan het pollinterval.
+        self._slow_cycles = 0
         self.executor_notes: list[str] = []
 
         self.lifecycle = LifecycleController(DrainPolicy.WAIT_THEN_CLOSE)
@@ -656,6 +668,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         "min_edge_multiple": "min_edge_multiple",
         "max_spread": "max_spread",
         "max_spread_atr_ratio": "max_spread_atr_ratio",
+        "take_profit": "take_profit_usd",
+        "stop_loss": "stop_loss_usd",
         "enforce_hours": "enforce_trading_hours",
         "trading_hours": "trading_start_hour",
         "units": "units",
@@ -747,6 +761,13 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             ),
             "max_spread": self.strategy_cfg.max_spread,
             "max_spread_atr_ratio": self.strategy_cfg.max_spread_atr_ratio,
+            "take_profit": (
+                self.strategy_cfg.take_profit_usd
+                or self.strategy_cfg.take_profit_atr
+            ),
+            "stop_loss": (
+                self.strategy_cfg.stop_loss_usd or self.strategy_cfg.stop_loss_atr
+            ),
             # De modus hoort erbij: papertrades hebben gemodelleerde kosten,
             # demotrades gemeten. Die in één bewijsfase mengen zou de hele
             # uitkomst waardeloos maken - juist het verschil tussen die twee
@@ -1089,6 +1110,23 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # Elke cyclus bewaren, niet alleen bij afsluiten: een noodstop die
         # halverwege afgaat mag niet verloren gaan als HA daarna hardhandig
         # stopt.
+        # Een cyclus die langer duurt dan het pollinterval betekent dat de
+        # volgende al had moeten beginnen. Eén keer is ruis; herhaling niet.
+        cycle_ms = budget.total_ms() or 0.0
+        if cycle_ms > self.update_interval.total_seconds() * 1000:
+            self._slow_cycles += 1
+            if self._slow_cycles in (5, 25, 100):
+                _LOGGER.warning(
+                    "%d cycli duurden langer dan het verversingsinterval "
+                    "(laatste %.0f ms tegen %.0f ms interval). Overweeg een "
+                    "ruimer interval; sneller pollen levert bij bars van %s "
+                    "toch geen nieuwe signalen op.",
+                    self._slow_cycles, cycle_ms,
+                    self.update_interval.total_seconds() * 1000, self.timeframe,
+                )
+        else:
+            self._slow_cycles = 0
+
         await self._persist()
         await self._notify(stats)
 

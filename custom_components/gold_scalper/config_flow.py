@@ -26,7 +26,8 @@ from .broker.stooq import StooqVenue
 from .const import (
     CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
     CONF_NOTIFY_CRITICAL, CONF_NOTIFY_HOURLY, CONF_NOTIFY_SERVICE,
-    CONF_NOTIFY_SKIP_QUIET, NOTIFY_NONE,
+    CONF_NOTIFY_SKIP_QUIET, CONF_STOP_LOSS_ATR, CONF_STOP_LOSS_USD,
+    CONF_TAKE_PROFIT_ATR, CONF_TAKE_PROFIT_USD, NOTIFY_NONE,
     CONF_ENFORCE_TRADING_HOURS,
     CONF_REGIME_SWITCHING, CONF_SHOW_PANEL, DEFAULT_ASSUMED_SPREAD,
     PUBLIC_SYMBOLS, VENUE_PUBLIC, VENUE_STOOQ, STOOQ_SYMBOLS, STOOQ_TIMEFRAMES,
@@ -35,7 +36,7 @@ from .const import (
     CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
     DEFAULT_SIM_SEED, DEFAULT_SIM_SPREAD, DEFAULT_VENUE, VENUES,
     VENUE_OANDA, VENUE_SIMULATOR, CONF_ENTRY_THRESHOLD, CONF_ENVIRONMENT, CONF_EQUITY_FLOOR_PCT,
-    CONF_MAX_CONSECUTIVE_LOSSES, CONF_MAX_DAILY_LOSS_PCT, CONF_MAX_SPREAD, CONF_MAX_SPREAD_ATR,
+    CONF_MAX_CONSECUTIVE_LOSSES, CONF_MAX_DAILY_LOSS_PCT, CONF_MAX_RESUMES_PER_DAY, CONF_MAX_SPREAD, CONF_MAX_SPREAD_ATR,
     CONF_MAX_TRADES_PER_DAY, CONF_MAX_UNITS, CONF_MIN_EDGE_MULTIPLE, CONF_MODE,
     CONF_STARTING_BALANCE, CONF_SYMBOL, CONF_TIMEFRAME, CONF_TOKEN,
     CONF_TRADING_END_HOUR, CONF_TRADING_START_HOUR, CONF_UNITS, CONF_UPDATE_SECONDS,
@@ -540,6 +541,35 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class GoldScalperOptionsFlow(OptionsFlow):
+    def _atr_hint(self) -> str:
+        """Wat de huidige ATR betekent voor doel en stop.
+
+        Zonder dit getal is een vast bedrag in dollars een slag in de lucht:
+        tien dollar is ruim bij een ATR van 2 en krap bij een ATR van 12.
+        """
+        from .const import DOMAIN
+
+        try:
+            coordinator = (self.hass.data.get(DOMAIN) or {}).get(
+                self.config_entry.entry_id
+            )
+            atr = (coordinator.data or {}).get("atr") if coordinator else None
+        except Exception:  # noqa: BLE001
+            atr = None
+
+        if not atr:
+            return (
+                "Laat de USD-velden op nul om doel en stop met de volatiliteit "
+                "mee te laten schalen."
+            )
+        return (
+            f"De ATR is nu {atr:.2f}. Met de huidige multipliers is het doel "
+            f"{atr * 1.5:.2f} en de stop {atr * 1.0:.2f} USD per ounce. "
+            "Vul je een vast bedrag in, dan schaalt dat niet mee: bij een "
+            "rustige markt haal je het doel nooit, bij een onrustige markt "
+            "word je uit de stop geschud."
+        )
+
     def _notify_services(self) -> list[str]:
         """Beschikbare notify-diensten, met de mobiele apps bovenaan.
 
@@ -620,6 +650,22 @@ class GoldScalperOptionsFlow(OptionsFlow):
             ): _number(0.05, 1.0, 0.05, slider=True),
             vol.Required(CONF_MAX_SPREAD, default=default(CONF_MAX_SPREAD, 3.00)):
                 _number(0.05, 20.0, 0.05, "USD"),
+            # Doel en stop. Nul bij de USD-velden betekent: meeschalen met de
+            # ATR, wat bijna altijd de betere keuze is. Zie de toelichting bij
+            # ScalpConfig.take_profit_usd.
+            vol.Required(
+                CONF_TAKE_PROFIT_ATR, default=default(CONF_TAKE_PROFIT_ATR, 1.5)
+            ): _number(0.5, 5.0, 0.1, slider=True),
+            vol.Required(
+                CONF_STOP_LOSS_ATR, default=default(CONF_STOP_LOSS_ATR, 1.0)
+            ): _number(0.3, 3.0, 0.1, slider=True),
+            vol.Required(
+                CONF_TAKE_PROFIT_USD, default=default(CONF_TAKE_PROFIT_USD, 0.0)
+            ): _number(0.0, 100.0, 0.5, "USD"),
+            vol.Required(
+                CONF_STOP_LOSS_USD, default=default(CONF_STOP_LOSS_USD, 0.0)
+            ): _number(0.0, 100.0, 0.5, "USD"),
+
             vol.Required(CONF_MIN_EDGE_MULTIPLE,
                          default=default(CONF_MIN_EDGE_MULTIPLE, 2.0)):
                 _number(1.0, 6.0, 0.1, slider=True),
@@ -653,6 +699,13 @@ class GoldScalperOptionsFlow(OptionsFlow):
             vol.Required(CONF_MAX_TRADES_PER_DAY,
                          default=default(CONF_MAX_TRADES_PER_DAY, 100)):
                 _number(1, 2000, 1),
+            # Hoe vaak je een noodstop mag opheffen voordat je tot morgen moet
+            # wachten. Nul betekent: helemaal niet, dan is de dag altijd voorbij.
+            vol.Required(
+                CONF_MAX_RESUMES_PER_DAY,
+                default=default(CONF_MAX_RESUMES_PER_DAY, 2),
+            ): _number(0, 20, 1, slider=True),
+
             vol.Required(CONF_MAX_CONSECUTIVE_LOSSES,
                          default=default(CONF_MAX_CONSECUTIVE_LOSSES, 5)):
                 _number(2, 20, 1, slider=True),

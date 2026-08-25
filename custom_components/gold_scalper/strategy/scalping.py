@@ -64,6 +64,22 @@ class ScalpConfig:
     #: Doelwinst en stop als veelvoud van de ATR.
     take_profit_atr: float = 1.5
     stop_loss_atr: float = 1.0
+
+    #: Vaste doel- en stopafstand in USD per ounce, in plaats van een veelvoud
+    #: van de ATR. Nul betekent: de ATR-multiplier gebruiken.
+    #:
+    #: Vaste afstanden passen zich niet aan de markt aan, en dat snijdt twee
+    #: kanten op. Bij een rustige markt (ATR 2) is een doel van 10 vrijwel
+    #: onbereikbaar en doe je niets. Bij een onrustige markt (ATR 12) is een
+    #: stop van 5 binnen een halve bar geraakt en word je er stelselmatig
+    #: uitgeschud.
+    #:
+    #: De ATR-variant schaalt mee: hetzelfde percentage van de beweging, of
+    #: goud nu 2 of 12 dollar per bar aflegt. Vaste bedragen zijn daarom
+    #: alleen zinvol als je een reden hebt die losstaat van de volatiliteit -
+    #: bijvoorbeeld een vast bedrag dat je per trade wilt riskeren.
+    take_profit_usd: float = 0.0
+    stop_loss_usd: float = 0.0
     #: Maximale positieduur in seconden; scalps die blijven hangen zijn verliezers.
     max_hold_seconds: int = 300
     #: Positiegrootte in lots.
@@ -367,7 +383,17 @@ def evaluate(
             "eet de spread te veel van de beweging op."
         )
 
-    expected_move = atr_value * cfg.take_profit_atr
+    # Vaste afstand wint als hij is ingesteld; anders schaalt hij met de ATR.
+    expected_move = (
+        cfg.take_profit_usd if cfg.take_profit_usd > 0
+        else atr_value * cfg.take_profit_atr
+    )
+    stop_distance = (
+        cfg.stop_loss_usd if cfg.stop_loss_usd > 0
+        else atr_value * cfg.stop_loss_atr
+    )
+    components["target_usd"] = round(expected_move, 3)
+    components["stop_usd"] = round(stop_distance, 3)
     # Kosten per ounce: spread (één keer per round trip) + slippage (beide
     # zijden) + commissie omgerekend naar per ounce.
     commission_per_oz = (cfg.commission_per_lot_per_side * 2) / CONTRACT_SIZE
@@ -392,11 +418,11 @@ def evaluate(
 
     if direction == 1:
         entry = ask
-        stop = entry - atr_value * cfg.stop_loss_atr
+        stop = entry - stop_distance
         target = entry + expected_move
     else:
         entry = bid
-        stop = entry + atr_value * cfg.stop_loss_atr
+        stop = entry + stop_distance
         target = entry - expected_move
 
     # Als de structuur een duidelijker ongeldigheidsniveau aanwijst dan de ATR,

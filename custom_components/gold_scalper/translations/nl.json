@@ -85,7 +85,7 @@
     "step": {
       "init": {
         "title": "Gold Scalper afstellen",
-        "description": "Strategie- en risico-instellingen. Modus paper simuleert de kosten; modus demo plaatst echte orders op je demo-account en meet de kosten in plaats van ze te modelleren. Live vereist een geslaagde bewijsfase.",
+        "description": "Strategie- en risico-instellingen.\n\n{atr_hint}",
         "data": {
           "mode": "Modus",
           "update_seconds": "Verversingsinterval",
@@ -109,7 +109,12 @@
           "notify_service": "Meldingen sturen naar (notify-dienst van je telefoon)",
           "notify_hourly": "Elk uur een samenvatting",
           "notify_skip_quiet": "Uurbericht overslaan als er niets gebeurde",
-          "notify_critical": "Noodstop als kritieke melding (komt door stille stand heen)"
+          "notify_critical": "Noodstop als kritieke melding (komt door stille stand heen)",
+          "take_profit_atr": "Doel als veelvoud van de ATR",
+          "stop_loss_atr": "Stop als veelvoud van de ATR",
+          "take_profit_usd": "Doel als vast bedrag (0 = ATR gebruiken)",
+          "stop_loss_usd": "Stop als vast bedrag (0 = ATR gebruiken)",
+          "max_resumes_per_day": "Hervattingen per dag na een noodstop (0 = geen)"
         }
       }
     },
