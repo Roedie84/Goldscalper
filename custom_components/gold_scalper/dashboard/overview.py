@@ -96,6 +96,13 @@ a.button{display:block;text-align:center;text-decoration:none;
   font-size:13px;letter-spacing:.1em;text-transform:uppercase;font-weight:600}
 a.button:active{opacity:.75}
 
+.money{padding:10px 13px;margin-bottom:16px;font-size:11.5px;
+  letter-spacing:.04em;line-height:1.5}
+.money.paper{background:%(ground_deep)s;border-left:4px solid %(assay)s;
+  color:%(ink_soft)s}
+.money.paper::first-line{font-weight:600;color:%(assay)s}
+.money.real{background:%(reject)s;color:%(ground)s;font-weight:600;
+  border-left:4px solid %(ink)s}
 .notice{background:%(ground_deep)s;border-left:3px solid %(metal)s;
   padding:11px 13px;font-size:12px;line-height:1.5;margin-bottom:18px}
 footer{margin-top:26px;font-size:10.5px;color:%(ink_soft)s;line-height:1.6}
@@ -197,6 +204,22 @@ def build_overview(
             f'<span>{_esc(name.replace("_", " "))}</span></div>'
         )
 
+    # Papermodus of echt geld: dit hoort de eerste regel te zijn die je leest.
+    # Wie een trade ziet verschijnen en zijn brokeraccount ongewijzigd vindt,
+    # moet niet hoeven zoeken naar de verklaring.
+    real_money = bool(data.get("uses_real_money"))
+    if real_money:
+        money_banner = (
+            '<div class="money real">ECHT GELD &middot; deze bot plaatst orders '
+            'bij je broker</div>'
+        )
+    else:
+        money_banner = (
+            '<div class="money paper">PAPIERHANDEL &middot; koersen zijn echt, '
+            'trades zijn gesimuleerd. Er gaat geen geld om en je brokeraccount '
+            'verandert niet.</div>'
+        )
+
     now = datetime.now(tz or timezone.utc)
     refresh = (
         f'<meta http-equiv="refresh" content="{int(refresh_seconds)}">'
@@ -215,6 +238,8 @@ def build_overview(
   <h1>Gold Scalper</h1>
   <span>{now.strftime("%H:%M")}</span>
 </div>
+
+{money_banner}
 
 <div class="status" style="--c:{colour}">
   <div class="label">{_esc(label)}</div>

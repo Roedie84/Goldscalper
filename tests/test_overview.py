@@ -129,3 +129,31 @@ def test_adopted_defaults_are_explained():
 
 def test_no_notice_when_nothing_changed():
     assert 'class="notice"' not in build_overview(data(), REPORT)
+
+
+def test_paper_mode_is_stated_plainly():
+    """Wie een trade ziet verschijnen en zijn brokeraccount ongewijzigd vindt,
+    moet niet hoeven zoeken naar de verklaring."""
+    html = build_overview(data(uses_real_money=False), REPORT)
+    assert "PAPIERHANDEL" in html
+    assert "geen geld" in html
+    assert "brokeraccount verandert niet" in html
+
+
+def test_real_money_is_unmistakable():
+    html = build_overview(data(uses_real_money=True), REPORT)
+    assert "ECHT GELD" in html
+    assert "orders bij je broker" in html
+    # Alarmkleur, niet dezelfde rustige tint als papermodus
+    assert "A6483A" in html.upper()
+
+
+def test_default_is_paper_when_unknown():
+    """Bij twijfel de veilige uitspraak doen, niet de alarmerende."""
+    html = build_overview(data(), REPORT)
+    assert "PAPIERHANDEL" in html
+
+
+def test_money_banner_comes_before_the_status():
+    html = build_overview(data(), REPORT)
+    assert html.index("PAPIERHANDEL") < html.index('class="status"')

@@ -125,3 +125,10 @@ def test_compute_for_run_accepts_preloaded_trades(tmp_path):
     run = db.start_run("paper", "v", "XAU_USD", {}, 1000.0)
     stats = compute_for_run(db, run, [])
     assert stats["trades"] == 0
+
+
+def test_report_states_whether_money_is_involved(empty_db):
+    db, run = empty_db
+    html = build_report(db, run)
+    assert "Papierhandel" in html
+    assert "niets naar je broker" in html

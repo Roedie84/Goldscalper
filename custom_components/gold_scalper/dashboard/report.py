@@ -484,6 +484,8 @@ h1{margin:0;font-size:19px;font-weight:600;letter-spacing:.22em;text-transform:u
 .stamp-fineness{font-size:38px;font-weight:600;line-height:1.05;margin:2px 0}
 .stamp-sub{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;opacity:.8}
 
+.mode-line{margin:18px 0 0;padding:10px 14px;background:%(ground_deep)s;
+  border-left:4px solid %(assay)s;font-size:12px;color:%(ink_soft)s;line-height:1.5}
 .verdict{border-left:3px solid var(--vc,%(ink_soft)s);padding:14px 18px;margin:26px 0;
   background:%(ground_deep)s}
 .verdict h2{margin:0 0 8px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;
@@ -644,6 +646,13 @@ def build_report(
     label = now.tzname() or "UTC"
     generated = now.strftime(f"%d-%m-%Y %H:%M:%S {label}")
 
+    mode_line = (
+        "Papierhandel: de koersen zijn echt, de trades gesimuleerd. "
+        "Er is niets naar je broker gestuurd en je account is ongewijzigd."
+        if (run.get("mode") or "paper") != "live"
+        else "LIVE: deze cijfers horen bij orders die werkelijk zijn geplaatst."
+    )
+
     # Automatisch verversen via meta-refresh in plaats van JavaScript: het
     # rapport blijft daarmee scriptvrij, wat van belang is omdat het paneel
     # zonder authenticatie bereikbaar is.
@@ -673,6 +682,8 @@ def build_report(
   </div>
   {_stamp(stats, gate)}
 </header>
+
+<p class="mode-line">{mode_line}</p>
 
 <div class="verdict" style="--vc:{vc}">
   <h2>Oordeel</h2>

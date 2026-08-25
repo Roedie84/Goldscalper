@@ -88,6 +88,14 @@ class GoldScalperOverviewView(HomeAssistantView):
         payload = dict(coordinator.data)
         payload["status"] = build_status(payload)
         payload["symbol"] = coordinator.symbol
+        # Eén bron van waarheid voor de vraag of er echt geld omgaat: live
+        # modus én poort open én schakelaar aan én de venue mag handelen.
+        payload["uses_real_money"] = bool(
+            coordinator.mode.uses_real_money
+            and (coordinator.gate or {}).get("unlocked")
+            and coordinator.enabled
+            and getattr(coordinator.venue, "supports_trading", False)
+        )
 
         try:
             refresh = int(request.query.get("refresh", DEFAULT_REFRESH_SECONDS))
