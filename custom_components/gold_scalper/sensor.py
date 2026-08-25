@@ -16,6 +16,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DISCLAIMER, DOMAIN
 from .coordinator import GoldScalperCoordinator
 from .entity import GoldScalperEntity
+from .modes import TradingMode
 from .status import build_status
 
 
@@ -172,7 +173,11 @@ SENSORS: tuple[ScalperSensor, ...] = (
     ),
     ScalperSensor(
         key="mode", name="Modus", icon="mdi:shield-check",
-        device_class=SensorDeviceClass.ENUM, options=["backtest", "paper", "live"],
+        # Uit de enum halen in plaats van overtypen. Een handmatige lijst
+        # loopt uit de pas zodra er een modus bijkomt, en Home Assistant
+        # weigert dan de hele sensor met een ValueError.
+        device_class=SensorDeviceClass.ENUM,
+        options=[m.value for m in TradingMode],
         # De werkelijk actieve modus, niet wat er in de opties staat.
         value_fn=lambda d: d.get("mode"),
         attrs_fn=lambda d: {
