@@ -153,6 +153,8 @@ SENSORS: tuple[ScalperSensor, ...] = (
             "proposals": (d.get("learning") or {}).get("proposals", []),
             "regimes": (d.get("learning") or {}).get("regimes", {}),
             "losses": (d.get("learning") or {}).get("losses", {}),
+            "robustness": (d.get("learning") or {}).get("robustness", {}),
+            "sizing": d.get("sizing", {}),
             "note": (
                 "Verliezen worden geordend naar oorzaak, niet gebruikt om "
                 "omstandigheden te vermijden: bij een trefkans van 40% zijn "

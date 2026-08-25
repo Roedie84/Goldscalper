@@ -28,7 +28,8 @@ from .validation import reward_risk_warning
 from .const import (
     CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
     CONF_NOTIFY_CRITICAL, CONF_NOTIFY_HOURLY, CONF_NOTIFY_SERVICE,
-    CONF_NOTIFY_SKIP_QUIET, CONF_STOP_LOSS_ATR, CONF_STOP_LOSS_USD,
+    CONF_NOTIFY_SKIP_QUIET, CONF_RISK_BASED_SIZING, CONF_RISK_PER_TRADE_PCT,
+    CONF_SCALE_WITH_CONFIDENCE, CONF_STOP_LOSS_ATR, CONF_STOP_LOSS_USD,
     CONF_TAKE_PROFIT_ATR, CONF_TAKE_PROFIT_USD, NOTIFY_NONE,
     CONF_ENFORCE_TRADING_HOURS,
     CONF_REGIME_SWITCHING, CONF_SHOW_PANEL, DEFAULT_ASSUMED_SPREAD,
@@ -694,6 +695,21 @@ class GoldScalperOptionsFlow(OptionsFlow):
                 _number(MIN_UPDATE_SECONDS, 3600, 5, "s"),
             vol.Required(CONF_UNITS, default=default(CONF_UNITS, DEFAULT_UNITS)):
                 _number(0.1, 100, 0.1, "oz"),
+            # Risicogestuurde grootte: de inzet volgt uit de stopafstand, zodat
+            # elke trade hetzelfde bedrag riskeert. Zie sizing.py.
+            vol.Required(
+                CONF_RISK_BASED_SIZING,
+                default=default(CONF_RISK_BASED_SIZING, False),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_RISK_PER_TRADE_PCT,
+                default=default(CONF_RISK_PER_TRADE_PCT, 0.5),
+            ): _number(0.05, 3.0, 0.05, "%", slider=True),
+            vol.Required(
+                CONF_SCALE_WITH_CONFIDENCE,
+                default=default(CONF_SCALE_WITH_CONFIDENCE, False),
+            ): BooleanSelector(),
+
             vol.Required(CONF_MAX_UNITS, default=default(CONF_MAX_UNITS, DEFAULT_MAX_UNITS)):
                 _number(0.1, 1000, 0.1, "oz"),
             vol.Required(CONF_STARTING_BALANCE,

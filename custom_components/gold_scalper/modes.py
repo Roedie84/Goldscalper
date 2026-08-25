@@ -114,7 +114,10 @@ class LiveGate:
         self.min_days = min_days
         self.min_active_days = min_active_days
 
-    def evaluate(self, stats: dict, run: dict, daily: list[dict]) -> GateResult:
+    def evaluate(
+        self, stats: dict, run: dict, daily: list[dict],
+        robustness: dict | None = None,
+    ) -> GateResult:
         checks: dict[str, bool] = {}
         reasons: list[str] = []
 
@@ -197,6 +200,26 @@ class LiveGate:
                 )
         else:
             checks["winst_goed_verdeeld"] = False
+
+        # Consistentie over de tijd. Vijfhonderd trades die allemaal in
+        # dezelfde marktsituatie zijn genomen bewijzen niets over een andere:
+        # de aantalseis meet hoeveelheid, deze toets meet betekenis.
+        verdict = (robustness or {}).get("verdict")
+        if verdict == "houdbaar":
+            checks["houdt_stand_over_tijd"] = True
+        else:
+            checks["houdt_stand_over_tijd"] = False
+            if verdict is None:
+                reasons.append(
+                    "consistentie over de tijd nog niet vastgesteld; daarvoor "
+                    "zijn minstens 90 gesloten trades nodig"
+                )
+            else:
+                toelichting = (robustness or {}).get("explanation", "")
+                reasons.append(
+                    f"consistentietoets: {verdict}. "
+                    + toelichting.split("\n")[0]
+                )
 
         unlocked = all(checks.values())
         summary = (

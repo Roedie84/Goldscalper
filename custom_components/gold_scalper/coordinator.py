@@ -41,7 +41,8 @@ from .broker.risk import RiskLimits, RiskManager, TradingState
 from .const import (
     CONF_ACCOUNT_ID, CONF_API_KEY, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
     CONF_NOTIFY_CRITICAL, CONF_NOTIFY_HOURLY, CONF_NOTIFY_SERVICE,
-    CONF_NOTIFY_SKIP_QUIET, CONF_STOP_LOSS_ATR, CONF_STOP_LOSS_USD,
+    CONF_NOTIFY_SKIP_QUIET, CONF_RISK_BASED_SIZING, CONF_RISK_PER_TRADE_PCT,
+    CONF_SCALE_WITH_CONFIDENCE, CONF_STOP_LOSS_ATR, CONF_STOP_LOSS_USD,
     CONF_TAKE_PROFIT_ATR, CONF_TAKE_PROFIT_USD, NOTIFY_NONE,
     CONF_ENFORCE_TRADING_HOURS,
     CONF_EPIC, CONF_IDENTIFIER, CONF_PASSWORD, DEFAULT_EPIC, VENUE_CAPITAL, VENUE_IG,
@@ -69,7 +70,9 @@ from .storage.database import MODE_LIVE, MODE_PAPER, Trade, TradeDatabase
 from .storage.state import RuntimeState, StateStore
 from .storage.latency import LatencyBudget, LatencyTracker, install_buffered_signals
 from .strategy.scalping import STRATEGY_VERSION, ScalpConfig, evaluate
+from .learning.robustness import evaluate_robustness
 from .strategy.aggregator import QuoteAggregator
+from .strategy.sizing import SizingConfig, position_size
 from .strategy.streaming import StreamState
 
 _LOGGER = logging.getLogger(__name__)
@@ -260,6 +263,16 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         #: van elke cyclus gewist, en na elke order verversd.
         self._positions_cache: list | None = None
 
+        self.sizing = SizingConfig(
+            fixed_units=self.units,
+            risk_based=options.get(CONF_RISK_BASED_SIZING, False),
+            risk_per_trade_pct=options.get(CONF_RISK_PER_TRADE_PCT, 0.5),
+            scale_with_confidence=options.get(CONF_SCALE_WITH_CONFIDENCE, False),
+            max_units=options.get(CONF_MAX_UNITS, DEFAULT_MAX_UNITS),
+        )
+        self.robustness: dict = {}
+        self.last_sizing: dict = {}
+
         service = options.get(CONF_NOTIFY_SERVICE, NOTIFY_NONE)
         self.notifier = Notifier(hass, NotifierConfig(
             service=None if service in (NOTIFY_NONE, "", None) else service,
@@ -274,6 +287,16 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         #: Posities zoals ze deze cyclus bij de broker stonden. Aan het begin
         #: van elke cyclus gewist, en na elke order verversd.
         self._positions_cache: list | None = None
+
+        self.sizing = SizingConfig(
+            fixed_units=self.units,
+            risk_based=options.get(CONF_RISK_BASED_SIZING, False),
+            risk_per_trade_pct=options.get(CONF_RISK_PER_TRADE_PCT, 0.5),
+            scale_with_confidence=options.get(CONF_SCALE_WITH_CONFIDENCE, False),
+            max_units=options.get(CONF_MAX_UNITS, DEFAULT_MAX_UNITS),
+        )
+        self.robustness: dict = {}
+        self.last_sizing: dict = {}
 
         service = options.get(CONF_NOTIFY_SERVICE, NOTIFY_NONE)
         self.notifier = Notifier(hass, NotifierConfig(
@@ -595,6 +618,13 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             regime_performance, trades
         )
 
+        # Houdt het resultaat stand over de tijd, of komt het uit één periode?
+        # De bewijsfase telt trades; dit toetst of ze iets betekenen.
+        robust = await self.hass.async_add_executor_job(
+            evaluate_robustness, trades
+        )
+        self.robustness = robust.as_dict()
+
         # Verliezen ordenen naar oorzaak. Niet om omstandigheden te vermijden -
         # dat filtert de winnaars mee weg - maar om te zien of ze aan het
         # exitontwerp liggen of aan de markt.
@@ -827,7 +857,9 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         )
         run = await self.hass.async_add_executor_job(self.db.get_run, self.run_id)
         daily = performance.daily_breakdown(trades)
-        self.gate = LiveGate().evaluate(stats, run or {}, daily).as_dict()
+        self.gate = LiveGate().evaluate(
+            stats, run or {}, daily, self.robustness
+        ).as_dict()
 
         # De venue mag alleen handelen als álles klopt: live modus, poort open,
         # en de gebruiker heeft de schakelaar bewust omgezet.
@@ -1185,6 +1217,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 if self._aggregator is not None else None
             ),
             "build_from_quotes": self._build_from_quotes,
+            "sizing": self.last_sizing,
             "run_changed_because": self.run_changed_because,
             "adopted_defaults": self.adopted_defaults,
             "learning": {
@@ -1192,6 +1225,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 "proposals": self.proposals,
                 "regimes": self.regime_stats,
                 "losses": self.postmortem,
+                "robustness": self.robustness,
             },
             "mode": self.mode.value,
             "requested_mode": self.requested_mode.value,
@@ -1377,6 +1411,19 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
     async def _open_position(self, signal, quote: VenueQuote, now: datetime) -> None:
         side = "buy" if signal.direction == 1 else "sell"
         try:
+            # Grootte bepalen vóór de order. Bij risicogestuurde schaling
+            # volgt hij uit de stopafstand, zodat elke trade hetzelfde bedrag
+            # riskeert ongeacht de volatiliteit.
+            equity = self.paper.equity if self.paper else self.starting_balance
+            entry_price = quote.ask if side == "buy" else quote.bid
+            sized = position_size(
+                self.sizing, equity, entry_price, signal.stop_loss,
+                signal.score, self.strategy_cfg.entry_threshold,
+            )
+            units = sized.units
+            self.last_sizing = sized.as_dict()
+            _LOGGER.debug("Ordergrootte: %s", sized.reason)
+
             if self.mode.places_orders:
                 # De poort geldt alleen voor echt geld. Op demo is er niets te
                 # beschermen behalve de kwaliteit van je meting, en juist die
@@ -1387,7 +1434,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 # Via de veiligheidslaag: garandeert een stop, voorkomt een
                 # tweede order na een verbroken verbinding.
                 result, notes = await self.executor.open_protected(
-                    self.symbol, side, self.units, quote.mid,
+                    self.symbol, side, units, quote.mid,
                     stop_loss=signal.stop_loss, take_profit=signal.take_profit,
                 )
                 self.executor_notes = notes[-10:]
@@ -1407,7 +1454,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 await self._record_broker_open(result, signal, quote, side, now)
             elif self.paper:
                 self.paper.open_position(
-                    side, self.units / CONTRACT_SIZE, self._paper_quote(quote),
+                    side, units / CONTRACT_SIZE, self._paper_quote(quote),
                     signal.stop_loss, signal.take_profit,
                     signal.score, signal.confidence, None, signal.reason,
                 )

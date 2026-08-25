@@ -114,7 +114,10 @@
           "stop_loss_atr": "Stop als veelvoud van de ATR",
           "take_profit_usd": "Doel als vast bedrag (0 = ATR gebruiken)",
           "stop_loss_usd": "Stop als vast bedrag (0 = ATR gebruiken)",
-          "max_resumes_per_day": "Hervattingen per dag na een noodstop (0 = geen)"
+          "max_resumes_per_day": "Hervattingen per dag na een noodstop (0 = geen)",
+          "risk_based_sizing": "Grootte uit risico berekenen (i.p.v. vaste ounces)",
+          "risk_per_trade_pct": "Risico per trade in % van het vermogen",
+          "scale_with_confidence": "Meer inzetten bij een sterker signaal"
         }
       }
     },
