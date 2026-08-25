@@ -1319,7 +1319,9 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 # De poort geldt alleen voor echt geld. Op demo is er niets te
                 # beschermen behalve de kwaliteit van je meting, en juist die
                 # meting is het doel.
-                require_live_unlocked(self.mode, type("G", (), self.gate)())
+                # Het dict rechtstreeks doorgeven; de controle kent beide
+                # vormen. Er hoeft geen klasse uit gefabriceerd te worden.
+                require_live_unlocked(self.mode, self.gate)
                 # Via de veiligheidslaag: garandeert een stop, voorkomt een
                 # tweede order na een verbroken verbinding.
                 result, notes = await self.executor.open_protected(

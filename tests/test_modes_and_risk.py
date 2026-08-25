@@ -426,3 +426,62 @@ def test_resume_count_is_visible():
     data = rm.as_dict()
     assert data["resumes_today"] == 1
     assert data["max_resumes_per_day"] == 2
+
+
+# ---------------- de poortcontrole ----------------
+
+def test_gate_check_accepts_the_dict_form():
+    """De coordinator geeft het dict door, niet het GateResult. Eerder werd er
+    met type("G", (), gate)() een klasse uit gefabriceerd; die kreeg attributen
+    met de dict-namen, waardoor gate.reasons niet bestond en de foutmelding
+    zélf een AttributeError opgooide."""
+    from gold_scalper.modes import ModeLockedError, require_live_unlocked
+
+    gate = {
+        "unlocked": False,
+        "blocking_reasons": ["0 trades in de bewijsfase"],
+        "checks": {}, "summary": "vergrendeld",
+    }
+    with pytest.raises(ModeLockedError) as excinfo:
+        require_live_unlocked(TradingMode.LIVE, gate)
+    assert "0 trades" in str(excinfo.value)
+
+
+def test_gate_check_accepts_the_object_form():
+    from gold_scalper.modes import LiveGate, ModeLockedError, require_live_unlocked
+
+    result = LiveGate().evaluate({}, {}, [])
+    with pytest.raises(ModeLockedError):
+        require_live_unlocked(TradingMode.LIVE, result)
+
+
+def test_demo_is_never_blocked_by_the_gate():
+    """De poort beschermt tegen geldverlies. Op demo is er geen geld te
+    verliezen, en hij eist metingen die je zonder handelen nooit krijgt."""
+    from gold_scalper.modes import require_live_unlocked
+
+    require_live_unlocked(TradingMode.DEMO, {"unlocked": False, "blocking_reasons": []})
+    require_live_unlocked(TradingMode.PAPER, {"unlocked": False, "blocking_reasons": []})
+
+
+def test_unlocked_gate_lets_live_through():
+    from gold_scalper.modes import require_live_unlocked
+    require_live_unlocked(TradingMode.LIVE, {"unlocked": True, "blocking_reasons": []})
+
+
+def test_empty_reasons_still_produce_a_message():
+    """De foutmelding mag niet zelf omvallen als de redenlijst leeg is."""
+    from gold_scalper.modes import ModeLockedError, require_live_unlocked
+
+    with pytest.raises(ModeLockedError) as excinfo:
+        require_live_unlocked(TradingMode.LIVE, {"unlocked": False})
+    assert "onbekend" in str(excinfo.value)
+
+
+def test_coordinator_passes_the_gate_directly():
+    """Vangt de terugkeer van de klasse-uit-dict-truc."""
+    from pathlib import Path
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    assert 'type("G"' not in source
+    assert "require_live_unlocked(self.mode, self.gate)" in source

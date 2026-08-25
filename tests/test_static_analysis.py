@@ -249,3 +249,21 @@ def test_home_assistant_imports_resolve():
                     f"{path.name}:{node.lineno}  {node.module}.{alias.name}"
                 )
     assert problems == [], "\n".join(problems)
+
+
+def test_no_classes_fabricated_from_dicts():
+    """`type("G", (), some_dict)()` maakt een klasse met de sleutels van het
+    dict als attributen. Dat lijkt te werken tot de namen niet overeenkomen -
+    en dan gooit de foutmelding zélf een AttributeError, precies op het moment
+    dat je een duidelijke melding nodig had.
+    """
+    offenders = []
+    for path in PKG.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "type"
+                    and len(node.args) == 3):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert offenders == [], "\n".join(offenders)

@@ -214,16 +214,31 @@ class ModeLockedError(Exception):
     """Poging tot live handel terwijl de poort dicht is."""
 
 
-def require_live_unlocked(mode: TradingMode, gate: GateResult) -> None:
-    """Roep dit aan vóór elke echte order. Faalt luid in plaats van stil."""
-    # Demo plaatst echte orders en hoort dus dezelfde controles te doorlopen,
-    # op de poort na: die beschermt tegen geldverlies, niet tegen slechte
-    # metingen.
-    if not mode.places_orders:
+def require_live_unlocked(mode: TradingMode, gate: GateResult | dict) -> None:
+    """Roep dit aan vóór elke order met echt geld. Faalt luid in plaats van stil.
+
+    Alleen voor LIVE. De poort beschermt tegen geldverlies, en op een
+    demo-account is er geen geld te verliezen - daar is juist het meten het
+    doel, en de poort eist metingen die je zonder handelen nooit krijgt.
+
+    Accepteert zowel een GateResult als het dict eruit. Eerder werd op de
+    aanroepplek met ``type("G", (), self.gate)()`` een klasse uit het dict
+    gefabriceerd; dat leverde attributen op met de dict-namen, waardoor
+    ``gate.reasons`` niet bestond en de foutmelding zelf een fout opgooide.
+    """
+    if not mode.uses_real_money:
         return
-    if not gate.unlocked:
+
+    if isinstance(gate, dict):
+        unlocked = bool(gate.get("unlocked"))
+        reasons = list(gate.get("blocking_reasons") or [])
+    else:
+        unlocked = gate.unlocked
+        reasons = list(gate.reasons)
+
+    if not unlocked:
         raise ModeLockedError(
             "Live handel is vergrendeld:\n  - "
-            + "\n  - ".join(gate.reasons)
+            + "\n  - ".join(reasons or ["reden onbekend"])
             + "\n\nDe bewijsfase moet eerst slagen."
         )
