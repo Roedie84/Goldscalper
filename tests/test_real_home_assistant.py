@@ -269,3 +269,45 @@ def test_resume_limit_accepts_zero():
     schema = result["data_schema"].schema
     field = next(k for k in schema if str(k) == "max_resumes_per_day")
     assert schema[field].config["min"] == 0
+
+
+def test_options_form_carries_the_hint_placeholder():
+    """De vertaling gebruikt {atr_hint}; ontbreekt de placeholder, dan is de
+    beschrijving leeg of toont hij de accolades letterlijk.
+
+    Dit ging drie keer mis: de waarschuwing werd berekend, maar de aanroep,
+    de import en de placeholder ontbraken allemaal - en dan gebeurt er
+    zichtbaar niets.
+    """
+    result = asyncio.run(_options_for("ig").async_step_init())
+    assert "atr_hint" in (result.get("description_placeholders") or {})
+
+
+def test_warning_appears_after_an_upside_down_submit():
+    options = _options_for("ig")
+    submitted = {
+        "mode": "paper", "update_seconds": 20, "units": 1.0, "max_units": 5.0,
+        "starting_balance": 10000, "max_spread": 3.0,
+        "max_spread_atr_ratio": 0.35, "min_edge_multiple": 2.0,
+        "entry_threshold": 0.45, "trading_start_hour": 7,
+        "trading_end_hour": 20, "max_daily_loss_pct": 2.0,
+        "equity_floor_pct": 80, "max_trades_per_day": 100,
+        "max_consecutive_losses": 5, "max_resumes_per_day": 2,
+        "show_panel": True, "regime_switching": True,
+        "enforce_trading_hours": False, "build_from_quotes": True,
+        "notify_service": "geen", "notify_hourly": True,
+        "notify_skip_quiet": True, "notify_critical": True,
+        # De omgekeerde verhouding:
+        "take_profit_atr": 1.5, "stop_loss_atr": 1.0,
+        "take_profit_usd": 5.0, "stop_loss_usd": 10.0,
+    }
+    asyncio.run(options.async_step_init(submitted))
+    assert options._pending_warning is not None
+    assert "kleiner dan je stop" in options._pending_warning
+
+
+def test_a_sane_ratio_leaves_no_warning():
+    options = _options_for("ig")
+    options._pending_warning = None
+    asyncio.run(options.async_step_init())
+    assert options._pending_warning is None

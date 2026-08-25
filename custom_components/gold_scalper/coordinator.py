@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from homeassistant.config_entries import ConfigEntry
@@ -64,7 +65,7 @@ from .notify import Notifier, NotifierConfig
 from .status import build_status
 from .modes import LiveGate, ModeLockedError, TradingMode, require_live_unlocked
 from .storage import performance
-from .storage.database import MODE_LIVE, MODE_PAPER, TradeDatabase
+from .storage.database import MODE_LIVE, MODE_PAPER, Trade, TradeDatabase
 from .storage.state import RuntimeState, StateStore
 from .storage.latency import LatencyBudget, LatencyTracker, install_buffered_signals
 from .strategy.scalping import STRATEGY_VERSION, ScalpConfig, evaluate
@@ -99,6 +100,17 @@ def _as_int(value, fallback: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return fallback
+
+
+@dataclass(slots=True)
+class _TicketOnly:
+    """Minimale positieverwijzing voor het afsluiten van een verdwenen trade.
+
+    Alleen het ticketnummer is nodig; de rest staat al in de database. Een
+    klasse in plaats van een dict-truc, zodat de attribuutnaam vastligt.
+    """
+
+    ticket: str
 
 
 class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
@@ -933,6 +945,11 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         if self.mode.places_orders:
             await self.venue.close(position.ticket)
             self._positions_cache = None
+            if self._last_quote is not None:
+                await self._record_broker_close(
+                    position, self._last_quote, reason,
+                    datetime.now(timezone.utc),
+                )
             return
         if self.paper and self._last_quote:
             self.paper.close_position(position, self._paper_quote(self._last_quote), reason)
@@ -993,6 +1010,13 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         budget.mark("candles")
 
         open_positions_precheck = bool(await self._open_positions())
+
+        # Posities die de broker zélf sloot - op de server-side stop of het
+        # doel - verdwijnen zonder dat wij er iets van merken. Zonder deze
+        # afstemming blijft de rij eeuwig open in de database en telt hij
+        # nergens in mee, want de bewijsfase kijkt naar gesloten trades.
+        if self.mode.places_orders and quote.tradeable:
+            await self._settle_vanished_positions(quote, now)
 
         # -- open posities beheren, vóór alles anders ------------------------ #
         # Bij een gesloten markt niet ingrijpen: een stop verplaatsen of een
@@ -1374,6 +1398,13 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 if not result.success:
                     _LOGGER.warning("Order niet geplaatst: %s", result.error)
                     return
+
+                # Vastleggen in de database. Zonder dit verdwijnen orders die
+                # naar de broker gaan uit je eigen administratie: geen
+                # resultaat, geen kosten, geen verliesanalyse, en een
+                # bewijsfase die nooit vordert. Dat maakte de demomodus
+                # zinloos, want juist het meten was het doel.
+                await self._record_broker_open(result, signal, quote, side, now)
             elif self.paper:
                 self.paper.open_position(
                     side, self.units / CONTRACT_SIZE, self._paper_quote(quote),
@@ -1384,6 +1415,137 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             self._last_entry_ts = now.timestamp()
         except (ModeLockedError, VenueError) as err:
             _LOGGER.error("Openen mislukt: %s", err)
+
+    async def _settle_vanished_positions(
+        self, quote: VenueQuote, now: datetime
+    ) -> None:
+        """Sluit trades af die bij de broker niet meer bestaan."""
+        try:
+            live = await self._open_positions()
+        except VenueError as err:
+            _LOGGER.debug("Kon posities niet nakijken: %s", err)
+            return
+
+        live_tickets = {str(getattr(p, "ticket", "")) for p in live}
+        open_trades = await self.hass.async_add_executor_job(
+            self.db.open_trades, self.run_id
+        )
+
+        for trade in open_trades:
+            if not trade.broker_ticket:
+                continue
+            if str(trade.broker_ticket) in live_tickets:
+                continue
+
+            # De reden is niet met zekerheid vast te stellen; de broker vertelt
+            # niet waarom hij sloot. Afleiden uit waar de koers staat ten
+            # opzichte van stop en doel is het beste dat mogelijk is, en dat
+            # wordt als zodanig gemarkeerd.
+            reason = "broker_gesloten"
+            long = trade.side == "buy"
+            price = quote.bid if long else quote.ask
+            if trade.stop_loss and (
+                (long and price <= trade.stop_loss)
+                or (not long and price >= trade.stop_loss)
+            ):
+                reason = "stop_loss"
+            elif trade.take_profit and (
+                (long and price >= trade.take_profit)
+                or (not long and price <= trade.take_profit)
+            ):
+                reason = "take_profit"
+
+            await self._record_broker_close(
+                _TicketOnly(str(trade.broker_ticket)), quote, reason, now
+            )
+
+    async def _record_broker_open(
+        self, result, signal, quote: VenueQuote, side: str, now: datetime
+    ) -> None:
+        """Leg een order bij de broker vast als open trade."""
+        fill = result.fill_price or (quote.ask if side == "buy" else quote.bid)
+        mid = quote.mid
+        # Slippage meten in plaats van modelleren: dat is het hele punt van
+        # handelen op een demo-account.
+        expected = quote.ask if side == "buy" else quote.bid
+        slippage = abs(fill - expected)
+
+        trade = Trade(
+            run_id=self.run_id,
+            mode=self.mode.value,
+            symbol=self.symbol,
+            side=side,
+            volume=(result.units or self.units) / CONTRACT_SIZE,
+            open_time=now.isoformat(),
+            open_price=fill,
+            open_mid=mid,
+            open_spread=quote.spread,
+            open_slippage=round(slippage, 5),
+            stop_loss=signal.stop_loss,
+            take_profit=signal.take_profit,
+            signal_score=signal.score,
+            regime=(signal.components or {}).get("regime"),
+            broker_ticket=str(result.ticket) if result.ticket else None,
+        )
+        await self.hass.async_add_executor_job(self.db.insert_trade, trade)
+        _LOGGER.info(
+            "Trade vastgelegd: %s %s @ %.2f (ticket %s, slippage %.3f)",
+            side, self.symbol, fill, result.ticket, slippage,
+        )
+
+    async def _record_broker_close(
+        self, position, quote: VenueQuote, reason: str, now: datetime
+    ) -> None:
+        """Werk de open trade bij tot een gesloten trade.
+
+        Zonder dit blijft de rij eeuwig open staan en telt hij nergens in mee:
+        de bewijsfase kijkt naar gesloten trades.
+        """
+        ticket = str(getattr(position, "ticket", "") or "")
+        if not ticket:
+            return
+
+        open_trades = await self.hass.async_add_executor_job(
+            self.db.open_trades, self.run_id
+        )
+        trade = next(
+            (t for t in open_trades if str(t.broker_ticket) == ticket), None
+        )
+        if trade is None:
+            _LOGGER.debug(
+                "Positie %s gesloten maar niet in de database gevonden", ticket
+            )
+            return
+
+        long = trade.side == "buy"
+        exit_price = quote.bid if long else quote.ask
+        direction = 1.0 if long else -1.0
+        units = trade.volume * CONTRACT_SIZE
+
+        trade.close_time = now.isoformat()
+        trade.close_price = exit_price
+        trade.close_mid = quote.mid
+        trade.close_spread = quote.spread
+        trade.close_reason = reason
+        trade.duration_seconds = int(
+            (now - _as_datetime(trade.open_time, now)).total_seconds()
+        )
+        # Bruto op de mids: dat is de beweging die de strategie ving.
+        trade.gross_pnl = round(
+            (quote.mid - trade.open_mid) * direction * units, 4
+        )
+        # Netto op de werkelijke prijzen: daar zit de spread en de slippage in.
+        trade.net_pnl = round(
+            (exit_price - trade.open_price) * direction * units, 4
+        )
+        trade.total_cost = round(trade.gross_pnl - trade.net_pnl, 4)
+
+        await self.hass.async_add_executor_job(self.db.update_trade, trade)
+        self.risk.record_close(trade.net_pnl)
+        _LOGGER.info(
+            "Trade gesloten: %s, bruto %.2f, kosten %.2f, netto %.2f",
+            reason, trade.gross_pnl, trade.total_cost, trade.net_pnl,
+        )
 
     # -- afsluiten ---------------------------------------------------------- #
 

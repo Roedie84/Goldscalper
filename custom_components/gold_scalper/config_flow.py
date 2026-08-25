@@ -9,6 +9,7 @@ import voluptuous as vol
 from homeassistant.config_entries import (
     SOURCE_RECONFIGURE, ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow,
 )
+from homeassistant.components import persistent_notification
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
@@ -23,6 +24,7 @@ from .broker.ig_capital import CapitalVenue, IgVenue
 from .broker.oanda import OandaVenue
 from .broker.public_data import PublicDataVenue
 from .broker.stooq import StooqVenue
+from .validation import reward_risk_warning
 from .const import (
     CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
     CONF_NOTIFY_CRITICAL, CONF_NOTIFY_HOURLY, CONF_NOTIFY_SERVICE,
@@ -541,6 +543,29 @@ class GoldScalperConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class GoldScalperOptionsFlow(OptionsFlow):
+    #: Waarschuwing die bij het volgende formulier getoond wordt.
+    _pending_warning: str | None = None
+
+    def _current_atr(self) -> float | None:
+        """Huidige ATR, of None als die er niet is.
+
+        Het resultaat wordt bewust naar float gedwongen. Wat er uit
+        ``coordinator.data`` komt is niet gegarandeerd een getal - bij een
+        halve initialisatie of een testdubbel kan het van alles zijn - en dan
+        valt de hele optiepagina om op een opmaakfout, terwijl het slechts om
+        een hint gaat.
+        """
+        from .const import DOMAIN
+
+        try:
+            coordinator = (self.hass.data.get(DOMAIN) or {}).get(
+                self.config_entry.entry_id
+            )
+            raw = (coordinator.data or {}).get("atr") if coordinator else None
+            return float(raw) if isinstance(raw, (int, float)) else None
+        except Exception:  # noqa: BLE001
+            return None
+
     def _atr_hint(self) -> str:
         """Wat de huidige ATR betekent voor doel en stop.
 
@@ -549,14 +574,7 @@ class GoldScalperOptionsFlow(OptionsFlow):
         """
         from .const import DOMAIN
 
-        try:
-            coordinator = (self.hass.data.get(DOMAIN) or {}).get(
-                self.config_entry.entry_id
-            )
-            atr = (coordinator.data or {}).get("atr") if coordinator else None
-        except Exception:  # noqa: BLE001
-            atr = None
-
+        atr = self._current_atr()
         if not atr:
             return (
                 "Laat de USD-velden op nul om doel en stop met de volatiliteit "
@@ -587,6 +605,38 @@ class GoldScalperOptionsFlow(OptionsFlow):
 
     """Strategie- en risico-instellingen bijstellen zonder herinstalleren."""
 
+    @staticmethod
+    def _check_reward_risk(user_input: dict, atr: float | None) -> str | None:
+        """Waarschuw als de stop groter is dan het doel.
+
+        Dan riskeer je meer dan je wilt winnen, en moet je trefkans navenant
+        hoger liggen. Dat kan een bewuste keuze zijn - sommige strategieën
+        winnen vaak en klein - maar het is zelden wat iemand bedoelt, en de
+        rekensom is niet uit de losse velden af te lezen.
+        """
+        atr = atr or 0.0
+        doel = user_input.get(CONF_TAKE_PROFIT_USD) or (
+            atr * user_input.get(CONF_TAKE_PROFIT_ATR, 1.5)
+        )
+        stop = user_input.get(CONF_STOP_LOSS_USD) or (
+            atr * user_input.get(CONF_STOP_LOSS_ATR, 1.0)
+        )
+        if doel <= 0 or stop <= 0:
+            return None
+
+        verhouding = doel / stop
+        if verhouding >= 1.0:
+            return None
+
+        nodig = stop / (doel + stop) * 100.0
+        return (
+            f"Let op: je doel ({doel:.2f}) ligt onder je stop ({stop:.2f}), een "
+            f"verhouding van {verhouding:.2f}:1. Je riskeert dus meer dan je wilt "
+            f"winnen, en moet minstens {nodig:.0f}% van je trades winnen om quitte "
+            "te spelen - nog voor kosten. Bij de standaardverhouding van 1,5:1 is "
+            "dat 40%. Dit is opgeslagen; controleer of je het zo bedoelde."
+        )
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -597,6 +647,13 @@ class GoldScalperOptionsFlow(OptionsFlow):
                 errors[CONF_TRADING_START_HOUR] = "hours_inverted"
             if user_input[CONF_UNITS] > user_input[CONF_MAX_UNITS]:
                 errors[CONF_UNITS] = "units_above_cap"
+            # Technisch geldige instellingen die zelden bedoeld zijn: melden,
+            # niet blokkeren. Het is jouw keuze, maar wel een geïnformeerde.
+            warning = reward_risk_warning(user_input, self._current_atr())
+            if warning:
+                _LOGGER.warning("Gold Scalper: %s", warning)
+                self._pending_warning = warning
+
             if not errors:
                 return self.async_create_entry(data=user_input)
 
@@ -747,4 +804,11 @@ class GoldScalperOptionsFlow(OptionsFlow):
             vol.Required(CONF_SHOW_PANEL, default=default(CONF_SHOW_PANEL, True)):
                 BooleanSelector(),
         })
-        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+        # De waarschuwing van de vorige poging wint van de ATR-hint: die is
+        # dringender, en na één keer tonen weer weg.
+        hint = self._pending_warning or self._atr_hint()
+        self._pending_warning = None
+        return self.async_show_form(
+            step_id="init", data_schema=schema, errors=errors,
+            description_placeholders={"atr_hint": hint},
+        )
