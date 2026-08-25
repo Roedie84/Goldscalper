@@ -102,9 +102,35 @@ def test_gate_checks_are_shown_with_marks():
     assert "✓" in html and "✗" in html
 
 
-def test_rejection_reasons_are_listed():
+def test_rejection_reasons_are_listed_readably():
+    """De ruwe codes zeggen niets. 'signaal te zwak' wel."""
     html = build_overview(data(), REPORT)
-    assert "score_below_threshold" in html
+    assert "signaal te zwak" in html
+    assert "score_below_threshold" not in html
+
+
+def test_opposite_signal_is_named_as_such():
+    """Vastzitten in een positie terwijl je systeem het tegenovergestelde
+    denkt, is iets anders dan een herhaald signaal in dezelfde richting."""
+    html = build_overview(data(stats={
+        "net_pnl": 0.0, "total_costs": 0.0, "trades": 0, "run_id": 1,
+        "signals": {"evaluations": 100, "acted": 0, "rejections": {
+            "max_positions_tegengesteld": 12,
+            "max_positions_zelfde_richting": 40,
+        }},
+    }), REPORT)
+    assert "signaal tegengesteld" in html
+    assert "zelfde richting" in html
+
+
+def test_unknown_reason_is_shown_verbatim():
+    """Liever de ruwe code dan niets; een onbekende reden mag niet verdwijnen."""
+    html = build_overview(data(stats={
+        "net_pnl": 0.0, "total_costs": 0.0, "trades": 0, "run_id": 1,
+        "signals": {"evaluations": 10, "acted": 0,
+                    "rejections": {"iets_nieuws": 3}},
+    }), REPORT)
+    assert "iets_nieuws" in html
 
 
 def test_missing_values_do_not_break_the_page():

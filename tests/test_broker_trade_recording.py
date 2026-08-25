@@ -100,3 +100,48 @@ def test_close_reason_is_inferred_honestly():
     body = _method("_settle_vanished_positions")
     assert "broker_gesloten" in body
     assert "stop_loss" in body and "take_profit" in body
+
+
+def test_excursions_are_tracked_for_broker_positions():
+    """De verliesanalyse filtert op mfe; zonder die waarde slaat hij elke
+    demotrade over en meldt '0 verliezende trades' naast een performance die er
+    wél telt - dood in precies de modus die ertoe doet."""
+    assert "_track_excursion" in SOURCE
+    body = _method("_record_broker_close")
+    assert "trade.mfe" in body and "trade.mae" in body
+
+
+def test_tracking_happens_before_the_noop_check():
+    """Bij 'hold' gebeurt er verder niets, en dat is het grootste deel van de
+    tijd. Achteraf zijn de uitersten niet meer te achterhalen."""
+    body = _method("_manage_open_positions")
+    track = body.index("_track_excursion")
+    noop = body.index("if action.is_noop")
+    assert track < noop
+
+
+def test_excursion_uses_the_exit_price_not_the_mid():
+    """De beweging die je werkelijk had kunnen realiseren, niet de theoretische."""
+    body = _method("_track_excursion")
+    assert "quote.bid" in body and "quote.ask" in body
+
+
+def test_the_post_mortem_can_classify_a_broker_trade():
+    """Eind-tot-eind: een trade met uitersten moet een oorzaak krijgen."""
+    from gold_scalper.learning.postmortem import MIN_PATTERN, analyse_losses
+    from gold_scalper.storage.database import Trade
+
+    losers = [
+        Trade(
+            run_id=1, mode="demo", symbol="GOLD", side="buy", volume=0.1,
+            open_time=f"2026-08-25T10:{i % 60:02d}:00+00:00",
+            open_price=4665.0, open_mid=4665.0, open_spread=0.6,
+            close_time=f"2026-08-25T10:{i % 60:02d}:30+00:00",
+            net_pnl=-4.0, gross_pnl=-3.4, total_cost=0.6,
+            mfe=6.5, mae=-4.2, close_reason="stop_loss",
+        )
+        for i in range(MIN_PATTERN + 5)
+    ]
+    result = analyse_losses(losers, typical_atr=4.0)
+    assert result.losses == len(losers)
+    assert result.patterns, "geen enkel patroon herkend"

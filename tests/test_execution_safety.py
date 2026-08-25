@@ -194,3 +194,95 @@ def test_audit_is_quiet_when_everything_is_protected():
         open_price=3300.0, stop_loss=3299.0,
     ))
     assert asyncio.run(SafeExecutor(venue, LIMITS).audit_positions("XAU")) == []
+
+
+# ---------------- doel bij de broker ----------------
+
+class VenueWithoutTarget(FakeVenue):
+    """Vult de order maar zet het doel niet, zoals IG doet als het niveau te
+    dicht bij de markt ligt."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.target_calls = []
+
+    async def place_order(self, symbol, side, units, stop_loss=None,
+                          take_profit=None, comment=""):
+        # Doel bewust weglaten.
+        return await super().place_order(
+            symbol, side, units, stop_loss=stop_loss, comment=comment
+        )
+
+    async def modify_target(self, ticket, take_profit):
+        self.target_calls.append((ticket, take_profit))
+        for p in self.positions_list:
+            if p.ticket == ticket:
+                p.take_profit = take_profit
+        return OrderResult(success=True, ticket=ticket)
+
+
+def test_missing_target_is_placed_afterwards():
+    """Zonder deze controle blijft je winst onbeschermd als HA uitvalt."""
+    venue = VenueWithoutTarget()
+    executor = SafeExecutor(venue, LIMITS)
+    result, notes = asyncio.run(executor.open_protected(
+        "XAU", "buy", 1.0, 3300.0, stop_loss=3299.0, take_profit=3305.0
+    ))
+    assert result.success
+    assert venue.target_calls == [("T1", 3305.0)]
+    assert any("Doel achteraf" in n for n in notes)
+
+
+def test_a_missing_target_does_not_block_the_trade():
+    """Anders dan bij de stop: geen doel is hinderlijk, geen stop is
+    gevaarlijk. De trade mag doorgaan."""
+    class Stubborn(VenueWithoutTarget):
+        async def modify_target(self, ticket, take_profit):
+            raise VenueError("te dicht bij de markt")
+
+    venue = Stubborn()
+    result, notes = asyncio.run(
+        SafeExecutor(venue, LIMITS).open_protected(
+            "XAU", "buy", 1.0, 3300.0, stop_loss=3299.0, take_profit=3305.0
+        )
+    )
+    assert result.success, "een ontbrekend doel mag de trade niet blokkeren"
+    assert any("niet beschermd" in n for n in notes)
+
+
+def test_target_present_needs_no_action():
+    """Zet de venue het doel meteen goed, dan hoeft er niets te gebeuren."""
+    venue = VenueWithoutTarget()
+
+    async def _with_target(symbol, side, units, stop_loss=None,
+                           take_profit=None, comment=""):
+        position = VenuePosition(
+            ticket="T1", symbol=symbol, side=side, units=units,
+            open_price=3300.0, stop_loss=stop_loss, take_profit=take_profit,
+            comment=comment,
+        )
+        venue.positions_list.append(position)
+        return OrderResult(success=True, ticket="T1", fill_price=3300.0)
+
+    venue.place_order = _with_target
+    result, notes = asyncio.run(
+        SafeExecutor(venue, LIMITS).open_protected(
+            "XAU", "buy", 1.0, 3300.0, stop_loss=3299.0, take_profit=3305.0
+        )
+    )
+    assert result.success
+    assert venue.target_calls == []
+
+
+def test_a_venue_without_modify_target_does_not_crash():
+    """Blind aanroepen laat de hele orderafhandeling crashen op een adapter die
+    de methode niet heeft - een veel groter probleem dan een ontbrekend doel."""
+    venue = FakeVenue(attach_stop=True)
+    # FakeVenue kent modify_target niet.
+    assert not hasattr(venue, "modify_target")
+    result, notes = asyncio.run(
+        SafeExecutor(venue, LIMITS).open_protected(
+            "XAU", "buy", 1.0, 3300.0, stop_loss=3299.0, take_profit=3305.0
+        )
+    )
+    assert result.success

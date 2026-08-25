@@ -296,3 +296,120 @@ meeschalen.
 **Let op:** doel en stop zitten in de vingerafdruk van de run. Ze aanpassen
 begint een nieuwe bewijsfase, want trades met andere doelen zijn niet
 vergelijkbaar.
+
+## Backtest
+
+Ontwikkelhulpmiddelen → Acties → **Gold Scalper: Backtest draaien**.
+
+Hij laat de strategie over de bars lopen die de integratie zelf heeft
+verzameld, en vraagt dus geen datapunten op bij je broker. Je kunt spread,
+slippage en ordergrootte meegeven om te zien hoe gevoelig het resultaat daarvoor
+is.
+
+Het resultaat komt in het logboek, in het attribuut `backtest` van
+`sensor.<...>_resultaat_per_periode`, en als event `gold_scalper_backtest_done`
+zodat je er een melding aan kunt hangen.
+
+### Wat deze backtest wel en niet is
+
+Hij roept **dezelfde code aan als de live handel** - dezelfde `evaluate()`,
+dezelfde exitmanager. Dat is het belangrijkste kenmerk: een backtest die de
+strategie nabouwt, toetst de nabouw.
+
+Stops worden getoetst tegen de uitersten binnen de bar, niet tegen de
+slotkoers. En zijn stop en doel binnen dezelfde bar allebei geraakt, dan wint
+de stop - uit een candle valt niet af te leiden welke eerst kwam, en gokken op
+de gunstige volgorde is precies hoe een backtest zichzelf rijk rekent.
+
+Niet gemodelleerd: spread die verbreedt rond nieuws, requotes, partiële fills,
+latency tussen signaal en fill. Reken op minder dan de backtest laat zien, niet
+op meer.
+
+### De valkuil die niet technisch is
+
+Een backtest die je gebruikt om instellingen te kiezen, meet daarna niets meer:
+je hebt de uitkomst in de keuze gestopt. Wie twintig varianten probeert en de
+beste kiest, heeft de beste van twintig ruisuitkomsten gekozen.
+
+Draai hem, noteer de uitkomst, en verander daarna niets op grond van wat je
+zag. Wil je toch iets aanpassen, doe dat dan op grond van een reden die
+losstaat van de uitkomst - en draai daarna een nieuwe bewijsfase.
+
+## Resultaat per dag, week en maand
+
+`sensor.<...>_resultaat_per_periode` toont het resultaat van vandaag. In de
+attributen staan:
+
+| Attribuut | Inhoud |
+|---|---|
+| `vandaag`, `deze_week`, `deze_maand` | trades, bruto, kosten, netto, trefkans |
+| `dagen`, `weken`, `maanden` | de reeks, voor grafieken |
+| `reeksen` | langste winst- en verliesreeks, aandeel winstdagen, mediane dag |
+
+Bruto en kosten staan bewust apart. Een winstcijfer zonder de kostenkolom
+ernaast is misleidend, en juist die verhouding is bij scalping het hele verhaal.
+
+`reeksen` is de moeite waard om in de gaten te houden. Acht verliesdagen op rij
+is iets heel anders dan acht verspreid over twee maanden, ook als het totaal
+gelijk is - en het eerste is wat je in de praktijk moet kunnen volhouden.
+
+Alles wordt gegroepeerd op **lokale** kalenderdagen. Een trade van half twee 's
+nachts hoort bij die nacht zoals jij hem beleeft.
+
+## Bijkopen: pyramiden, niet middelen
+
+Bij de opties staat **Bijkopen bij bevestiging (pyramiden)**, standaard uit.
+
+### Het verschil met middelen
+
+Middelen is bijkopen als de koers tegen je in gaat, omdat het dan "goedkoper"
+is. Dat klopt rekenkundig en het is de snelste manier om een rekening leeg te
+maken:
+
+| Stap | Koers | Positie | Verlies |
+|---|---|---|---|
+| 0 | 4665 | 10 oz | 0 |
+| 1 | 4661 | 20 oz | -40 |
+| 2 | 4657 | 30 oz | -120 |
+| 3 | 4653 | 40 oz | -240 |
+| 4 | 4649 | 50 oz | **-400** |
+
+Je stop is geen enkele keer geraakt, en toch is je verlies vertienvoudigd. Het
+perverse eraan: negen van de tien keer herstelt de koers en kom je er beter
+uit. De tiende keer verlies je alles wat die negen opleverden.
+
+Pyramiden is het spiegelbeeld: bijkopen als de markt je **gelijk geeft**.
+
+### De regel die alles bijeenhoudt
+
+Elke toevoeging gaat gepaard met het verplaatsen van de stop, zodat het totale
+risico van de samengestelde positie niet groter wordt dan dat van de eerste.
+Kan de stop niet ver genoeg mee, dan gaat de toevoeging **niet door**.
+
+Zonder die koppeling is pyramiden gewoon een trager soort middelen.
+
+Bij een instap op 4665,85 met 10 ounce en een stop op 4661,84:
+
+| Koers | Actie | Positie | Stop | Risico |
+|---|---|---|---|---|
+| start | | 10 oz | 4661,84 | 40,10 |
+| 4670 | +5 oz | 15 oz | 4667,33 | 40,09 |
+| 4676 | +2,5 oz | 17,5 oz | 4675,16 | 14,77 |
+
+Je positie groeit met 75%, je risico blijft gelijk of daalt.
+
+### Verdere begrenzingen
+
+Elke volgende toevoeging is de helft van de vorige. Een piramide die naar boven
+breder wordt valt om: je grootste inzet zit dan op het hoogste punt, precies
+waar een trend het vaakst eindigt.
+
+En er zit minimaal 0,75 x ATR tussen twee toevoegingen. Zonder die afstand
+stapelen ze zich op één prijsniveau, en dan heb je geen piramide maar een grote
+positie met een dun excuus.
+
+### Wanneer aanzetten
+
+Niet nu. Pyramiden vergroot je inzet op de strategie, en dat is alleen zinvol
+als je weet dat er een edge is. Zet het aan als de bewijsfase geslaagd is, niet
+ervoor.
