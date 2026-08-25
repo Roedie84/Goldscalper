@@ -44,7 +44,7 @@ def test_reconcile_clean_start():
 
 def test_reconcile_matching_positions():
     c = LifecycleController()
-    r = asyncio.run(c.reconcile([{"ticket": 1}, {"ticket": 2}], [1, 2]))
+    r = asyncio.run(c.reconcile([{"ticket": 1}, {"ticket": 2}], ["1", "2"]))
     assert r.consistent and c.accepts_new_positions
 
 
@@ -62,9 +62,9 @@ def test_unknown_broker_position_blocks_trading():
 def test_position_closed_while_ha_was_down_is_recoverable():
     """Stop geraakt terwijl HA uit stond: administratie bijwerken, niet blokkeren."""
     c = LifecycleController()
-    r = asyncio.run(c.reconcile([], [7]))
+    r = asyncio.run(c.reconcile([], ["7"]))
     assert r.consistent
-    assert r.missing_at_broker == [7]
+    assert r.missing_at_broker == ["7"]
     assert c.state is LifecycleState.RUNNING
 
 
@@ -132,3 +132,25 @@ def test_failing_flush_does_not_block_shutdown():
     def boom(): raise RuntimeError("db weg")
     asyncio.run(c.emergency_shutdown([boom]))
     assert c.state is LifecycleState.STOPPED
+
+
+def test_ig_style_tickets_are_handled():
+    """IG gebruikt sleutels als 'DIAAAAYCJETQ7A8'; alleen MetaTrader en OANDA
+    leveren gehele getallen. Ervan uitgaan dat een ticket numeriek is liet de
+    integratie omvallen zodra er een echte positie bij IG openstond."""
+    c = LifecycleController()
+    r = asyncio.run(c.reconcile(
+        [{"ticket": "DIAAAAYCJETQ7A8", "volume": 1.0, "side": "buy"}],
+        ["DIAAAAYCJETQ7A8"],
+    ))
+    assert r.consistent
+    assert c.state is LifecycleState.RUNNING
+
+
+def test_mixed_ticket_types_still_match():
+    """Een getal uit de database naast een string van de broker mag niet als
+    'onbekende positie' gelden."""
+    c = LifecycleController()
+    r = asyncio.run(c.reconcile([{"ticket": 12345}], ["12345"]))
+    assert r.consistent
+    assert not r.orphaned_at_broker

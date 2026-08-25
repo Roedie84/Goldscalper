@@ -681,10 +681,12 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         open_trades = await self.hass.async_add_executor_job(
             self.db.open_trades, self.run_id
         )
-        db_tickets = [int(t.mt5_ticket) for t in open_trades if t.mt5_ticket]
+        # Tickets als tekst vergelijken: IG gebruikt sleutels als
+        # 'DIAAAAYCJETQ7A8', alleen MetaTrader en OANDA leveren getallen.
+        db_tickets = [str(t.broker_ticket) for t in open_trades if t.broker_ticket]
 
         result = await self.lifecycle.reconcile(
-            [{"ticket": int(p.ticket), "volume": p.units, "side": p.side}
+            [{"ticket": str(p.ticket), "volume": p.units, "side": p.side}
              for p in broker_positions],
             db_tickets,
         )

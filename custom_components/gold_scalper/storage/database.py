@@ -100,9 +100,13 @@ CREATE TABLE IF NOT EXISTS trades (
     signal_confidence REAL,
     regime            TEXT,
     open_reason       TEXT,
-    mt5_ticket        INTEGER,
+    -- Ticketnummers zijn niet numeriek. IG gebruikt sleutels als
+    -- 'DIAAAAYCJETQ7A8'; alleen MetaTrader en OANDA werken met gehele
+    -- getallen. De kolom heet nog mt5_ticket uit de eerste versie en is
+    -- hernoemd naar broker_ticket.
+    broker_ticket     TEXT,
 
-    UNIQUE(mt5_ticket, mode)
+    UNIQUE(broker_ticket, mode)
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_run   ON trades(run_id);
@@ -188,7 +192,9 @@ class Trade:
     signal_confidence: float | None = None
     regime: str | None = None
     open_reason: str | None = None
-    mt5_ticket: int | None = None
+    #: Ticketnummer bij de broker. Tekst, niet numeriek: IG gebruikt sleutels
+    #: als 'DIAAAAYCJETQ7A8'.
+    broker_ticket: str | None = None
     id: int | None = None
 
     @property
@@ -230,6 +236,23 @@ class TradeDatabase:
             row["name"]
             for row in self._conn.execute("PRAGMA table_info(runs)").fetchall()
         }
+        trade_columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(trades)").fetchall()
+        }
+        # Hernoemen van mt5_ticket naar broker_ticket, met behoud van de
+        # bestaande waarden. SQLite kan een kolomtype niet wijzigen, maar
+        # accepteert wel tekst in een INTEGER-kolom, dus kopiëren volstaat.
+        if "mt5_ticket" in trade_columns and "broker_ticket" not in trade_columns:
+            self._conn.execute("ALTER TABLE trades ADD COLUMN broker_ticket TEXT")
+            self._conn.execute(
+                "UPDATE trades SET broker_ticket = CAST(mt5_ticket AS TEXT) "
+                "WHERE mt5_ticket IS NOT NULL"
+            )
+            _LOGGER.info("Database bijgewerkt: mt5_ticket -> broker_ticket")
+        elif "broker_ticket" not in trade_columns:
+            self._conn.execute("ALTER TABLE trades ADD COLUMN broker_ticket TEXT")
+
         if "fingerprint" not in existing:
             self._conn.execute("ALTER TABLE runs ADD COLUMN fingerprint TEXT")
             _LOGGER.info("Database bijgewerkt: kolom 'fingerprint' toegevoegd")

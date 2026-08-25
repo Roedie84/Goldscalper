@@ -195,3 +195,69 @@ def test_mode_change_is_reported_as_your_choice():
               / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
     mapping = source.split("_OPTION_FOR = {")[1].split("}")[0]
     assert '"mode": "mode"' in mapping
+
+
+def test_existing_database_migrates_tickets(tmp_path):
+    """Ticketnummers zijn niet numeriek: IG gebruikt sleutels als
+    'DIAAAAYCJETQ7A8'. De kolom stond op INTEGER en heette mt5_ticket, een
+    overblijfsel uit de MetaTrader-versie. De migratie mag geen trades kosten.
+    """
+    import sqlite3
+
+    path = tmp_path / "oud.db"
+    legacy = sqlite3.connect(path)
+    legacy.executescript(
+        """CREATE TABLE runs (
+             id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL,
+             ended_at TEXT, mode TEXT NOT NULL, strategy_version TEXT NOT NULL,
+             symbol TEXT NOT NULL, config_json TEXT NOT NULL,
+             starting_balance REAL NOT NULL, note TEXT);
+           CREATE TABLE trades (
+             id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL,
+             mode TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
+             volume REAL NOT NULL, open_time TEXT NOT NULL,
+             open_price REAL NOT NULL, open_mid REAL NOT NULL,
+             open_spread REAL NOT NULL, open_slippage REAL,
+             close_time TEXT, close_price REAL, close_mid REAL,
+             close_spread REAL, close_slippage REAL, close_reason TEXT,
+             gross_pnl REAL, net_pnl REAL, total_cost REAL, commission REAL,
+             swap REAL, mae REAL, mfe REAL, duration_seconds INTEGER,
+             stop_loss REAL, take_profit REAL, signal_score REAL,
+             regime TEXT, mt5_ticket INTEGER);"""
+    )
+    legacy.execute(
+        "INSERT INTO runs (started_at, mode, strategy_version, symbol, "
+        "config_json, starting_balance) VALUES "
+        "('2026-08-01','paper','v1','GOLD','{}',1000.0)"
+    )
+    legacy.execute(
+        "INSERT INTO trades (run_id, mode, symbol, side, volume, open_time, "
+        "open_price, open_mid, open_spread, net_pnl, mt5_ticket) VALUES "
+        "(1,'paper','GOLD','buy',0.01,'2026-08-01T10:00:00',4640,4640,0.6,1.2,98765)"
+    )
+    legacy.commit()
+    legacy.close()
+
+    db = TradeDatabase(path)
+    db.connect()
+
+    columns = {
+        r["name"] for r in db.conn.execute("PRAGMA table_info(trades)").fetchall()
+    }
+    assert "broker_ticket" in columns
+
+    row = db.conn.execute("SELECT broker_ticket FROM trades").fetchone()
+    assert row["broker_ticket"] == "98765", "bestaande tickets zijn niet meegenomen"
+
+
+def test_alphanumeric_ticket_can_be_stored(tmp_path):
+    db = TradeDatabase(tmp_path / "n.db")
+    db.connect()
+    run = db.start_run("demo", "v1", "GOLD", {}, 1000.0, None, "fp")
+    trade = Trade(
+        run_id=run, mode="demo", symbol="GOLD", side="buy", volume=0.01,
+        open_time="2026-08-25T15:00:00+00:00", open_price=4640.0,
+        open_mid=4640.0, open_spread=0.8, broker_ticket="DIAAAAYCJETQ7A8",
+    )
+    db.insert_trade(trade)
+    assert db.open_trades(run)[0].broker_ticket == "DIAAAAYCJETQ7A8"

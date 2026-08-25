@@ -86,11 +86,11 @@ class ReconcileResult:
 
     consistent: bool
     broker_positions: list[dict] = field(default_factory=list)
-    database_open: list[int] = field(default_factory=list)
+    database_open: list[str] = field(default_factory=list)
     orphaned_at_broker: list[dict] = field(default_factory=list)
     """Posities die bij de broker staan maar niet in de database. Gevaarlijk:
     niemand bewaakt ze."""
-    missing_at_broker: list[int] = field(default_factory=list)
+    missing_at_broker: list[str] = field(default_factory=list)
     """Trades die de database open acht maar die de broker niet kent. Meestal
     gesloten door een stop terwijl HA uit stond."""
     message: str = ""
@@ -146,7 +146,7 @@ class LifecycleController:
     async def reconcile(
         self,
         broker_positions: list[dict],
-        database_open_tickets: list[int],
+        database_open_tickets: list[str],
     ) -> ReconcileResult:
         """Vergelijk de werkelijkheid bij de broker met onze administratie.
 
@@ -156,10 +156,17 @@ class LifecycleController:
         """
         self._transition(LifecycleState.RECONCILING)
 
-        broker_tickets = {p["ticket"] for p in broker_positions}
-        db_tickets = set(database_open_tickets)
+        # Als tekst vergelijken: brokers gebruiken uiteenlopende formaten en
+        # een getal naast een string levert altijd 'niet gevonden' op.
+        broker_tickets = {str(p["ticket"]) for p in broker_positions}
+        db_tickets = {str(t) for t in database_open_tickets}
 
-        orphaned = [p for p in broker_positions if p["ticket"] not in db_tickets]
+        # Als tekst vergelijken: een getal uit de database naast een string
+        # van de broker levert anders altijd 'onbekende positie' op, en dat
+        # blokkeert de handel om een verschil dat er niet is.
+        orphaned = [
+            p for p in broker_positions if str(p["ticket"]) not in db_tickets
+        ]
         missing = sorted(db_tickets - broker_tickets)
 
         if orphaned:
