@@ -197,3 +197,42 @@ uitlopen. In de testrun werden daardoor 112 evaluaties geweigerd op
 Wil je het venster toch terug, dan staat de schakelaar **Beperk tot een vast
 tijdvenster** bij de opties. Let op: dat verandert de vingerafdruk en begint dus
 een nieuwe run.
+
+## Meldingen op je telefoon
+
+Bij de opties staat **Meldingen sturen naar**. De keuzelijst wordt gevuld met
+de notify-diensten die Home Assistant werkelijk kent, dus je hoeft niets over
+te typen. Je telefoon staat er als `mobile_app_<naam van je toestel>`.
+
+Zie je hem niet, dan is de Home Assistant-app op dat toestel nog niet
+gekoppeld: open de app, log in, en de dienst verschijnt na een herstart van
+Home Assistant.
+
+### Wat je krijgt
+
+**Elk uur een samenvatting** met wat er dat uur gebeurde: aantal trades, het
+resultaat over dat uur én het totaal, kosten, trefkans en de huidige status.
+
+Standaard wordt een uur overgeslagen waarin er niets gebeurde. Een bericht dat
+elk uur "nul trades" zegt leer je binnen een dag negeren, en dan mis je ook de
+berichten die er wél toe doen. Een uur waarin de bot stillag door een noodstop
+telt niet als 'niets gebeurd'.
+
+**Directe waarschuwingen** bij:
+
+| Gebeurtenis | Waarom |
+|---|---|
+| Noodstop | handel ligt stil tot je hervat |
+| Posities kloppen niet | database en broker oneens; handel geblokkeerd |
+| Positie zonder stop | het enige scenario met onbegrensd verlies |
+| Hervat | de noodstop is opgeheven |
+
+Die gaan op de *overgang*, niet op de toestand: een noodstop duurt tot je hem
+opheft, en zonder dat onderscheid zou je elke tien seconden hetzelfde bericht
+krijgen. Dezelfde waarschuwing wordt hooguit eens per vier uur herhaald.
+
+### Kritieke meldingen
+
+Staat **Noodstop als kritieke melding** aan, dan komt die waarschuwing op iOS
+door een stille stand en door Niet storen heen. Bij een handelsbot die zichzelf
+heeft stilgelegd is dat gepast; het uurbericht gaat altijd als gewone melding.
