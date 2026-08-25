@@ -206,3 +206,56 @@ def test_slower_sampling_needs_a_larger_correction():
     fast = statistics.mean([_measure_correction(s, step=10)[1] for s in (1, 42)])
     slow = statistics.mean([_measure_correction(s, step=60)[1] for s in (1, 42)])
     assert slow > fast
+
+
+# ---------------- gesloten markt ----------------
+
+def test_closed_market_adds_nothing():
+    """Een weekend van achtenveertig uur levert anders vijfhonderd bars op met
+    exact dezelfde prijs. Die verdringen de werkelijke historie, de ATR zakt
+    naar nul, en maandagochtend blokkeert de kostenpoort elke trade."""
+    agg = QuoteAggregator("5m")
+    _feed(agg, [3300.0 + i * 0.1 for i in range(60)])
+    voor = agg.bar_count
+
+    start = T0 + timedelta(hours=5)
+    for i in range(500):
+        agg.add(3300.0, start + timedelta(seconds=i * 20), tradeable=False)
+
+    assert agg.bar_count == voor, "gesloten markt heeft bars toegevoegd"
+
+
+def test_atr_survives_a_weekend():
+    import statistics
+    from gold_scalper.analysis.volatility import atr
+
+    agg = QuoteAggregator("5m")
+    prijs = 4650.0
+    for i in range(60 * 15):
+        prijs += 0.3 if i % 2 else -0.2
+        agg.add(prijs, T0 + timedelta(seconds=i * 20), tradeable=True)
+    voor = statistics.median([x for x in atr(agg.candles(), 14) if x is not None])
+
+    weekend = T0 + timedelta(seconds=60 * 15 * 20)
+    for i in range(48 * 180):
+        agg.add(prijs, weekend + timedelta(seconds=i * 20), tradeable=False)
+    na = statistics.median([x for x in atr(agg.candles(), 14) if x is not None])
+
+    assert na == pytest.approx(voor), f"ATR viel van {voor:.3f} naar {na:.3f}"
+
+
+def test_trading_resumes_after_the_weekend():
+    """Na de sluiting moet hij gewoon verder bouwen, zonder gat in de logica."""
+    agg = QuoteAggregator("5m")
+    _feed(agg, [3300.0] * 20)
+    voor = agg.bar_count
+
+    weekend = T0 + timedelta(hours=1)
+    for i in range(100):
+        agg.add(3300.0, weekend + timedelta(seconds=i * 20), tradeable=False)
+
+    maandag = weekend + timedelta(hours=48)
+    for i in range(40):
+        agg.add(3301.0, maandag + timedelta(seconds=i * 20), tradeable=True)
+
+    assert agg.bar_count > voor

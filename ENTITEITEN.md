@@ -413,3 +413,69 @@ positie met een dun excuus.
 Niet nu. Pyramiden vergroot je inzet op de strategie, en dat is alleen zinvol
 als je weet dat er een edge is. Zet het aan als de bewijsfase geslaagd is, niet
 ervoor.
+
+## Wat er gebeurt als de markt dicht is
+
+Goud handelt bijna 24 uur per werkdag, met een korte dagelijkse onderbreking en
+het hele weekend gesloten. Dan gebeurt er dit:
+
+| Onderdeel | Gedrag |
+|---|---|
+| Status | `markt_gesloten` - geen storing, geen noodstop |
+| Koers ophalen | gaat door; levert de laatst bekende koers |
+| Orders plaatsen | geweigerd met reden "markt gesloten" |
+| Posities beheren | overgeslagen |
+| Bars opbouwen | **overgeslagen** |
+| Controle tegen de broker | overgeslagen |
+| Leren en rapporteren | gaat door; leest alleen de database |
+
+Je krijgt dus geen foutmeldingen, en de dataverbinding wordt niet als dood
+beschouwd ook al is de laatste koers uren oud.
+
+### Twee bronnen voor de handelstijden
+
+De integratie leunde eerst volledig op het veld `marketState` dat IG meestuurt.
+Dat werkt, maar het is één bron: klopt dat veld niet, dan handelt de bot op
+verouderde koersen zonder dat iets het merkt.
+
+Er zit nu een rooster naast, met de gepubliceerde tijden voor spot goud in
+Nederlandse tijd:
+
+| | |
+|---|---|
+| Opent | maandag 00:00 |
+| Sluit | vrijdag 23:00 |
+| Dagelijkse onderbreking | 23:00 tot 24:00 |
+
+**Bij onenigheid wint 'gesloten'.** Zegt de broker open en het rooster dicht,
+of andersom, dan wordt er niet gehandeld. Dat is geen voorzichtigheid maar
+rekenkunde: een gemiste kans kost je niets, handelen op een koers van uren
+geleden kan je alles kosten.
+
+Een afwijking wordt gemeld in de statussensor en het logboek, niet stil
+gecorrigeerd. Het rooster is namelijk geen waarheid: feestdagen en vervroegde
+sluitingen staan er niet in. Zie je die melding vaak op hetzelfde moment, dan
+is het rooster verouderd en moet het bijgesteld.
+
+Uitzetten kan met **Handelstijden controleren tegen een eigen rooster**.
+
+### Geen nieuwe posities vlak voor sluiting
+
+Standaard gaat er in de laatste **10 minuten** voor een sluiting geen nieuwe
+positie meer open.
+
+Een trade met een tijdslimiet van vijf minuten die om 22:58 opengaat, wordt
+door de sluiting overvallen: je zit dan vast tot de volgende sessie, en die
+opent met een gat waar geen stop tussen zit.
+
+### Waarom bars overslaan zo belangrijk is
+
+Zou de bot doorbouwen tijdens een gesloten markt, dan levert een weekend van
+achtenveertig uur ongeveer vijfhonderd bars op met exact dezelfde prijs. Die
+verdringen de werkelijke historie en de ATR zakt naar nul.
+
+Maandagochtend blokkeert de kostenpoort dan élke trade - want een doel van nul
+dekt nooit je kosten. Je zou dat pas merken als de bot een dag lang niets deed.
+
+Een gat in de reeks is hier het juiste gedrag: de markt bewóóg niet, en doen
+alsof er bars waren zou een verzinsel zijn.

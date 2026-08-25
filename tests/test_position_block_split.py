@@ -28,9 +28,14 @@ def market():
     )
 
 
-def _signal(market, count, side):
+def _signal(market, count, side, threshold=0.0):
+    """Drempel op nul: deze tests gaan over de uitsplitsing naar richting, niet
+    over de vraag of er toevallig een signaal sterk genoeg is. Met de
+    standaarddrempel hangt de uitkomst af van de marktreeks, en dan meet je
+    iets anders dan je denkt."""
     cfg = ScalpConfig(commission_per_lot_per_side=0.0, volume=0.10,
-                      max_spread=9.0, max_spread_atr_ratio=1.0)
+                      max_spread=9.0, max_spread_atr_ratio=1.0,
+                      entry_threshold=threshold)
     price = market.close[-1]
     return evaluate(market, price - 0.41, price + 0.41, cfg, 12, count, 1e9, side)
 
@@ -40,16 +45,25 @@ def test_no_position_is_not_blocked(market):
 
 
 def test_same_direction_is_labelled(market):
-    signal = _signal(market, 1, 1)
+    # Op deze reeks wijst het signaal short, dus een short-positie is
+    # "dezelfde richting".
+    signal = _signal(market, 1, -1)
     assert signal.reject_reason == "max_positions_zelfde_richting"
     assert "bevestigt" in signal.reason
 
 
 def test_opposite_direction_is_labelled(market):
     """De situatie die er werkelijk toe doet."""
-    signal = _signal(market, 1, -1)
+    signal = _signal(market, 1, 1)
     assert signal.reject_reason == "max_positions_tegengesteld"
     assert "andere richting" in signal.reason
+
+
+def test_weak_signal_is_labelled_separately(market):
+    """Onder de drempel zou er toch niets gebeuren; dat is iets anders dan
+    vastzitten met een sterk tegensignaal."""
+    signal = _signal(market, 1, -1, threshold=0.99)
+    assert signal.reject_reason == "max_positions_geen_signaal"
 
 
 def test_the_score_survives_the_rejection(market):
@@ -90,3 +104,11 @@ def test_coordinator_passes_the_side():
               / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
     assert 'getattr(first, "side", "buy")' in source
     assert "self._last_entry_ts, side," in source
+
+
+def test_unknown_direction_is_not_guessed(market):
+    """Zonder bekende richting is "zelfde richting" een aanname die je niet
+    kunt doen; dan is eerlijk zeggen dat het onbekend is beter dan een label
+    dat toevallig klopt."""
+    signal = _signal(market, 1, 0)
+    assert signal.reject_reason == "max_positions_richting_onbekend"

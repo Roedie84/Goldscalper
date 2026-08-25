@@ -454,3 +454,117 @@ def test_timeout_message_names_the_request():
     message = str(excinfo.value)
     assert "markets" in message
     assert "niet binnen" in message
+
+
+# ---------------- niveaus behouden bij een wijziging ----------------
+
+def test_moving_the_stop_keeps_the_target():
+    """Het PUT-endpoint vervangt de héle set niveaus. Alleen stopLevel
+    meesturen wist je take-profit - zichtbaar doordat de limiet in de
+    brokerinterface even een waarde toont en daarna weer leeg is."""
+    routes = {"/positions/otc": ({"dealReference": "D1"}, 200)}
+    venue = ig(routes)
+    asyncio.run(venue.modify_stop("T1", 4660.0, take_profit=4671.0))
+    body = venue._session.calls[-1]["json"]
+    assert body["stopLevel"] == 4660.0
+    assert body["limitLevel"] == 4671.0
+
+
+def test_moving_the_target_keeps_the_stop():
+    """Spiegelbeeld, en ernstiger: een positie zonder stop is het enige
+    scenario met in principe onbegrensd verlies."""
+    routes = {"/positions/otc": ({"dealReference": "D1"}, 200)}
+    venue = ig(routes)
+    asyncio.run(venue.modify_target("T1", 4671.0, stop_loss=4660.0))
+    body = venue._session.calls[-1]["json"]
+    assert body["limitLevel"] == 4671.0
+    assert body["stopLevel"] == 4660.0
+
+
+def test_missing_target_is_fetched_before_moving_the_stop():
+    """Wordt het doel niet meegegeven, dan wordt het opgehaald. Dat kost een
+    verzoek, maar minder dan het doel kwijtraken."""
+    positions = ({"positions": [{
+        "position": {"dealId": "T1", "direction": "BUY", "size": 10,
+                     "level": 4663.0, "stopLevel": 4659.0, "limitLevel": 4671.0},
+        "market": {"epic": "GOLD", "bid": 4665.0},
+    }]}, 200)
+    venue = ig({"/positions/otc": ({"dealReference": "D1"}, 200),
+                "/positions": positions})
+    asyncio.run(venue.modify_stop("T1", 4664.0))
+    body = next(
+        c for c in venue._session.calls
+        if c["method"] == "PUT"
+    )["json"]
+    assert body["limitLevel"] == 4671.0
+
+
+def test_no_target_means_no_limit_field():
+    """Zonder doel mag er geen limitLevel mee; anders stuur je None door."""
+    venue = ig({"/positions/otc": ({"dealReference": "D1"}, 200),
+                "/positions": ({"positions": []}, 200)})
+    asyncio.run(venue.modify_stop("T1", 4660.0))
+    body = next(c for c in venue._session.calls if c["method"] == "PUT")["json"]
+    assert "limitLevel" not in body
+
+
+# ---------------- sluiten ----------------
+
+def test_ig_closes_via_post_with_method_header():
+    """IG schrijft POST met '_method: DELETE' voor. Een echte DELETE met
+    inhoud wordt onderweg door proxies gestript, en dan weet de broker niet
+    hoeveel je wilt sluiten - waarna hij niets sluit, of alles."""
+    positions = ({"positions": [{
+        "position": {"dealId": "T1", "direction": "BUY", "size": 10,
+                     "level": 4663.0, "stopLevel": 4659.0},
+        "market": {"epic": "GOLD", "bid": 4665.0},
+    }]}, 200)
+    venue = ig({"/positions": positions, "/positions/otc": ({"dealReference": "R"}, 200)})
+    asyncio.run(venue.close("T1", 5.0))
+    call = next(
+        c for c in venue._session.calls
+        if c["method"] == "POST" and "otc" in c["url"]
+    )
+    assert call["headers"]["_method"] == "DELETE"
+    assert call["json"]["size"] == 5.0
+    assert call["json"]["dealId"] == "T1"
+
+
+def test_close_refuses_more_than_is_open():
+    positions = ({"positions": [{
+        "position": {"dealId": "T1", "direction": "BUY", "size": 5,
+                     "level": 4663.0, "stopLevel": 4659.0},
+        "market": {"epic": "GOLD", "bid": 4665.0},
+    }]}, 200)
+    venue = ig({"/positions": positions})
+    with pytest.raises(VenueError, match="meer dan er openstaat"):
+        asyncio.run(venue.close("T1", 50.0))
+
+
+def test_close_refuses_an_unknown_position():
+    """Blind een sluitopdracht sturen voor iets dat er niet is, kan bij een
+    andere positie terechtkomen."""
+    venue = ig({"/positions": ({"positions": []}, 200)})
+    with pytest.raises(VenueError, match="niet gevonden"):
+        asyncio.run(venue.close("T9"))
+
+
+def test_capital_refuses_partial_close():
+    """Hun API kent het niet. Stil negeren geeft hetzelfde probleem als bij IG:
+    administratie boekt de helft, broker sluit alles."""
+    positions = ({"positions": [{
+        "position": {"dealId": "T1", "direction": "BUY", "size": 10,
+                     "level": 4663.0, "stopLevel": 4659.0},
+        "market": {"epic": "GOLD", "bid": 4665.0},
+    }]}, 200)
+    venue = capital({"/positions": positions})
+    with pytest.raises(VenueError, match="gedeeltelijk"):
+        asyncio.run(venue.close("T1", 5.0))
+
+
+def test_capital_closes_with_the_ticket_in_the_path():
+    venue = capital({"/positions": ({"dealReference": "R"}, 200)})
+    asyncio.run(venue.close("T1"))
+    call = venue._session.calls[-1]
+    assert call["method"] == "DELETE"
+    assert call["url"].endswith("/positions/T1")

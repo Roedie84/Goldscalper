@@ -348,3 +348,98 @@ def test_no_key_changes_type_when_overwritten():
         "sleutel verandert van type; dat overschrijft betekenis:\n"
         + "\n".join(offenders)
     )
+
+
+def test_level_updates_never_send_a_single_field():
+    """Het PUT-endpoint van IG vervangt de héle set stop- en limietniveaus.
+
+    Eén veld meesturen wist het andere. Dat was zichtbaar doordat de limiet in
+    de brokerinterface even een waarde toonde en daarna weer leeg was - en in
+    combinatie met de doelverificatie leverde het een lus op die bij elke
+    break-even en elke trailing stop een extra API-aanroep kostte.
+    """
+    source = (PKG / "broker" / "ig_capital.py").read_text(encoding="utf-8")
+    for methode in ("modify_stop", "modify_target"):
+        body = source.split(f"async def {methode}")[1].split("\n    async def ")[0]
+        assert "stopLevel" in body and "limitLevel" in body, (
+            f"{methode} stuurt maar één niveau mee en wist daarmee het andere"
+        )
+
+
+def test_no_constant_is_defined_in_two_places():
+    """Twee kopieën van hetzelfde getal kunnen uit elkaar lopen, en dan reken je
+    in de ene helft van de code met een andere eenheid dan in de andere.
+
+    CONTRACT_SIZE stond in exits.py én paper.py apart gedefinieerd.
+    """
+    definities: dict[str, list[str]] = {}
+    for path in PKG.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:      # alleen op moduleniveau
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id.isupper():
+                    definities.setdefault(target.id, []).append(path.name)
+
+    # Per module een eigen logger, timeout of headerset is juist goed: die
+    # zijn modulespecifiek. Het gevaar zit in constanten die een *eenheid of
+    # maat* uitdrukken - daar leidt uiteenlopen tot rekenen in verschillende
+    # eenheden binnen één programma.
+    modulegebonden = {
+        "_LOGGER", "TIMEOUT", "HEADERS", "SYMBOLS", "INTERVALS", "_CSS",
+        "BASE", "HOSTS", "WARMUP_BARS",
+    }
+    dubbel = {
+        naam: sorted(set(plekken)) for naam, plekken in definities.items()
+        if len(set(plekken)) > 1 and naam not in modulegebonden
+    }
+    assert dubbel == {}, (
+        "eenheidsconstante op meerdere plekken gedefinieerd; die kunnen "
+        f"uiteenlopen: {dubbel}"
+    )
+
+
+def test_units_are_honoured_where_they_are_accepted():
+    """`close(ticket, units)` accepteerde een omvang en negeerde die: elke
+    deelsluiting sloot de héle positie terwijl de administratie de helft
+    boekte. Een parameter die niet in de body terechtkomt, is een leugen.
+    """
+    source = (PKG / "broker" / "ig_capital.py").read_text(encoding="utf-8")
+    body = source.split("async def close")[1].split("\n    async def ")[0]
+    assert '"size"' in body, "close() stuurt de omvang niet mee"
+
+
+def test_closing_never_guesses():
+    """Blind een sluitopdracht sturen is gevaarlijk op twee manieren: je kunt
+    meer sluiten dan er openstaat, of een positie raken die er niet is.
+
+    Beide varianten hebben zich voorgedaan: `close(units)` negeerde de omvang
+    volledig, waardoor elke deelsluiting de héle positie sloot.
+    """
+    source = (PKG / "broker" / "ig_capital.py").read_text(encoding="utf-8")
+    for klasse in ("IgVenue", "IgStyleVenue", "CapitalVenue"):
+        if f"class {klasse}" not in source:
+            continue
+        blok = source.split(f"class {klasse}")[1].split("\nclass ")[0]
+        if "async def close" not in blok:
+            continue
+        body = blok.split("async def close")[1].split("\n    async def ")[0]
+        assert "positions()" in body, (
+            f"{klasse}.close() controleert niet wat er werkelijk openstaat"
+        )
+
+
+def test_state_changing_requests_are_explicit_about_method():
+    """IG wil POST met '_method: DELETE'; een echte DELETE met inhoud wordt
+    onderweg gestript. Een sluiting die zijn body kwijtraakt, sluit niets - of
+    alles."""
+    source = (PKG / "broker" / "ig_capital.py").read_text(encoding="utf-8")
+    ig_block = source.split("class IgVenue")[1].split("\nclass ")[0]
+    parent = source.split("class IgStyleVenue")[1].split("\nclass ")[0]
+    combined = ig_block + parent
+    if "async def close" in combined:
+        body = combined.split("async def close")[1].split("\n    async def ")[0]
+        assert "_method" in body, (
+            "IG's sluitverzoek gebruikt geen POST met _method-header"
+        )
