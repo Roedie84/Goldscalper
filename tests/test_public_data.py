@@ -174,7 +174,7 @@ def test_gate_blocks_zero_cost_run():
     run = {"started_at": "2026-01-01T00:00:00+00:00",
            "config_json": json.dumps({"venue": "public_data", "simulated": False})}
     daily = [{"date": f"2026-06-{i+1:02d}", "trades": 40, "net_pnl": 200.0} for i in range(25)]
-    result = LiveGate().evaluate(stats, run, daily)
+    result = LiveGate().evaluate(stats, run, daily, {"verdict": "houdbaar", "explanation": "consistent"})
     assert not result.unlocked
     assert result.checks["kosten_meegerekend"] is False
     assert any("kosten" in r for r in result.reasons)
@@ -186,7 +186,7 @@ def test_gate_allows_run_with_real_costs():
     run = {"started_at": "2026-01-01T00:00:00+00:00",
            "config_json": json.dumps({"venue": "oanda", "simulated": False})}
     daily = [{"date": f"2026-06-{i+1:02d}", "trades": 30, "net_pnl": 50.0} for i in range(20)]
-    assert LiveGate().evaluate(stats, run, daily).unlocked
+    assert LiveGate().evaluate(stats, run, daily, {"verdict": "houdbaar", "explanation": "consistent"}).unlocked
 
 
 @pytest.mark.parametrize("state,expected", [

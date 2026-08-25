@@ -29,9 +29,23 @@ def good_daily(n=20, each=50.0):
 
 # ---------------- de poort ----------------
 
+#: Uitkomst van de consistentietoets die de poort accepteert.
+GOOD_ROBUSTNESS = {"verdict": "houdbaar", "explanation": "consistent over de tijd"}
+
+
 def test_gate_opens_when_everything_passes():
-    r = LiveGate().evaluate(good_stats(), good_run(), good_daily())
+    r = LiveGate().evaluate(
+        good_stats(), good_run(), good_daily(), GOOD_ROBUSTNESS
+    )
     assert r.unlocked, r.reasons
+
+
+def test_gate_stays_shut_without_a_consistency_verdict():
+    """Alle andere eisen gehaald, maar de consistentie is niet vastgesteld.
+    Dan is de poort dicht: hoeveelheid is geen betekenis."""
+    r = LiveGate().evaluate(good_stats(), good_run(), good_daily())
+    assert not r.unlocked
+    assert not r.checks["houdt_stand_over_tijd"]
 
 
 def test_gate_blocks_on_too_few_trades():
@@ -519,3 +533,35 @@ def test_resume_limit_is_configurable_from_the_options():
         "de instelling bereikt de RiskLimits niet"
     )
     assert "CONF_MAX_RESUMES_PER_DAY" in flow, "het veld staat niet in de opties"
+
+
+def test_gate_requires_time_consistency():
+    """Vijfhonderd trades in dezelfde marktsituatie bewijzen niets over een
+    andere. De aantalseis meet hoeveelheid; deze toets meet betekenis."""
+    from gold_scalper.modes import LiveGate
+
+    strong = {
+        "trades": 800, "verdict": "passed", "net_pnl": 400.0,
+        "started_at": "2026-01-01T00:00:00+00:00",
+    }
+    run = {"config_json": '{"simulated": false, "costs_disabled": false}'}
+    daily = [
+        {"date": f"2026-0{m}-{d:02d}", "net_pnl": 10.0}
+        for m in range(1, 3) for d in range(1, 21)
+    ]
+
+    zonder = LiveGate().evaluate(strong, run, daily, None)
+    assert not zonder.unlocked
+    assert any("consistentie" in r for r in zonder.reasons)
+
+    zwak = LiveGate().evaluate(
+        strong, run, daily,
+        {"verdict": "geconcentreerd", "explanation": "winst uit één periode"},
+    )
+    assert not zwak.unlocked
+    assert any("geconcentreerd" in r for r in zwak.reasons)
+
+    goed = LiveGate().evaluate(
+        strong, run, daily, {"verdict": "houdbaar", "explanation": "ok"}
+    )
+    assert goed.checks["houdt_stand_over_tijd"] is True

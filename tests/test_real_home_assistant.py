@@ -311,3 +311,19 @@ def test_a_sane_ratio_leaves_no_warning():
     options._pending_warning = None
     asyncio.run(options.async_step_init())
     assert options._pending_warning is None
+
+
+def test_sizing_options_are_present():
+    result = asyncio.run(_options_for("ig").async_step_init())
+    fields = {str(k) for k in result["data_schema"].schema}
+    assert {"risk_based_sizing", "risk_per_trade_pct",
+            "scale_with_confidence"} <= fields
+
+
+def test_risk_percentage_is_capped_at_a_sane_level():
+    """Boven drie procent per trade wordt een normale verliesreeks
+    existentieel."""
+    result = asyncio.run(_options_for("ig").async_step_init())
+    schema = result["data_schema"].schema
+    field = next(k for k in schema if str(k) == "risk_per_trade_pct")
+    assert schema[field].config["max"] <= 3.0

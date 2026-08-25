@@ -90,7 +90,7 @@ def test_gate_blocks_simulated_run_even_when_profitable():
         "config_json": json.dumps({"venue": "simulator", "simulated": True}),
     }
     daily = [{"date": f"2026-06-{i+1:02d}", "trades": 40, "net_pnl": 200.0} for i in range(25)]
-    result = LiveGate().evaluate(stats, run, daily)
+    result = LiveGate().evaluate(stats, run, daily, {"verdict": "houdbaar", "explanation": "consistent"})
     assert not result.unlocked
     assert result.checks["echte_marktdata"] is False
     assert any("simulator" in r for r in result.reasons)
@@ -104,7 +104,7 @@ def test_gate_allows_real_data_run():
         "config_json": json.dumps({"venue": "oanda", "simulated": False}),
     }
     daily = [{"date": f"2026-06-{i+1:02d}", "trades": 30, "net_pnl": 50.0} for i in range(20)]
-    assert LiveGate().evaluate(stats, run, daily).unlocked
+    assert LiveGate().evaluate(stats, run, daily, {"verdict": "houdbaar", "explanation": "consistent"}).unlocked
 
 
 def test_gate_blocks_when_config_unparseable_but_mentions_simulator():
@@ -112,4 +112,4 @@ def test_gate_blocks_when_config_unparseable_but_mentions_simulator():
     stats = dict(trades=600, ready_for_live=True, blocking_reasons=[],
                  net_pnl=100.0, total_costs=80.0)
     daily = [{"date": f"2026-06-{i+1:02d}", "trades": 30, "net_pnl": 5.0} for i in range(20)]
-    assert not LiveGate().evaluate(stats, run, daily).unlocked
+    assert not LiveGate().evaluate(stats, run, daily, {"verdict": "houdbaar", "explanation": "consistent"}).unlocked
