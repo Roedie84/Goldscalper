@@ -43,7 +43,7 @@ class TradingSwitch(GoldScalperEntity, SwitchEntity):
     def extra_state_attributes(self) -> dict:
         data = self.coordinator.data or {}
         gate = data.get("gate") or {}
-        live = self.coordinator.mode is TradingMode.LIVE
+        live = self.coordinator.mode.places_orders
         return {
             "mode": self.coordinator.mode.value,
             "uses_real_money": live and bool(gate.get("unlocked")) and self.coordinator.enabled,

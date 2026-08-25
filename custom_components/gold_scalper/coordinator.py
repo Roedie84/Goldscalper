@@ -769,7 +769,16 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
     # -- posities ----------------------------------------------------------- #
 
     async def _open_positions(self) -> list:
-        if self.mode is TradingMode.LIVE:
+        """Open posities, uit de bron die ze werkelijk houdt.
+
+        In demomodus staan de posities bij de broker, niet in de
+        papersimulatie. Hier op LIVE toetsen in plaats van op places_orders
+        liet de strategie in demomodus altijd nul posities zien, waardoor de
+        limiet van één positie nooit aansloeg: er kwam elke cyclus een nieuwe
+        bij, allemaal dezelfde kant op. Vier gestapelde longs in een dalende
+        markt.
+        """
+        if self.mode.places_orders:
             return await self.venue.positions(self.symbol)
         return self.paper.open_positions if self.paper else []
 

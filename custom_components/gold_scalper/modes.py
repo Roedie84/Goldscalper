@@ -216,7 +216,10 @@ class ModeLockedError(Exception):
 
 def require_live_unlocked(mode: TradingMode, gate: GateResult) -> None:
     """Roep dit aan vóór elke echte order. Faalt luid in plaats van stil."""
-    if mode is not TradingMode.LIVE:
+    # Demo plaatst echte orders en hoort dus dezelfde controles te doorlopen,
+    # op de poort na: die beschermt tegen geldverlies, niet tegen slechte
+    # metingen.
+    if not mode.places_orders:
         return
     if not gate.unlocked:
         raise ModeLockedError(

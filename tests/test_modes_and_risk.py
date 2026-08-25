@@ -303,3 +303,61 @@ def test_live_still_requires_the_gate():
               / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
     block = source.split("self.venue.supports_trading = bool(")[1].split("\n\n")[0]
     assert 'self.mode is TradingMode.LIVE and self.gate["unlocked"]' in block
+
+
+def test_unrealised_loss_counts_towards_the_daily_limit():
+    """Balance bevat alleen gesloten trades. Vier open posities met samen 200
+    verlies gingen daardoor onopgemerkt voorbij een daglimiet van 2%."""
+    rm = fresh(max_daily_loss_pct=2.0)
+    ok, reason = rm.can_open(**args(
+        balance=10000.0,     # nog niets afgerekend
+        equity=9700.0,       # 300 onrealiseerd verlies
+        starting_balance=10000.0,
+    ))
+    assert not ok
+    assert rm.state.state is TradingState.HALTED
+    assert "niet gerealiseerd" in (rm.state.halt_reason or "")
+
+
+def test_realised_loss_is_not_masked_by_an_open_winner():
+    """De strengste van de twee telt: een gerealiseerd verlies boven de limiet
+    mag niet verdwijnen achter een open positie die toevallig in de plus staat."""
+    rm = fresh(max_daily_loss_pct=2.0)
+    ok, _ = rm.can_open(**args(
+        balance=9700.0,      # 300 al verloren
+        equity=10100.0,      # open positie staat in de plus
+        starting_balance=10000.0,
+    ))
+    assert not ok
+
+
+def test_healthy_account_is_not_halted():
+    rm = fresh(max_daily_loss_pct=2.0)
+    ok, _ = rm.can_open(**args(
+        balance=10000.0, equity=9950.0, starting_balance=10000.0
+    ))
+    assert ok
+
+
+def test_no_code_path_treats_demo_as_paper():
+    """Demo plaatst echte orders. Elke plek die op `is TradingMode.LIVE` toetst
+    behandelt demo als papermodus, en dat gaf een integratie die in demomodus
+    haar eigen posities niet zag: de limiet van één positie sloeg nooit aan en
+    er stapelden zich vier longs op in een dalende markt."""
+    from pathlib import Path
+
+    pkg = Path(__file__).resolve().parent.parent / "custom_components" / "gold_scalper"
+    offenders = []
+    for path in pkg.rglob("*.py"):
+        if path.name == "modes.py":
+            continue      # daar is de enum zelf gedefinieerd
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#") or "uses_real_money" in stripped:
+                continue
+            if "is TradingMode.LIVE" in stripped and "gate" not in stripped:
+                offenders.append(f"{path.name}:{number}  {stripped[:70]}")
+    assert offenders == [], (
+        "gebruik mode.places_orders in plaats van een toets op LIVE:\n"
+        + "\n".join(offenders)
+    )

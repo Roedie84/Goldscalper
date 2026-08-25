@@ -176,15 +176,30 @@ class RiskManager:
             )
             return False, "equity onder de ondergrens"
 
+        # Op equity rekenen, niet op balance. Balance bevat alleen gesloten
+        # trades; open posities met een fors onrealiseerd verlies telden dus
+        # niet mee. In de praktijk liep het onrealiseerde verlies op tot ruim
+        # het dubbele van de daglimiet zonder dat er iets afging, omdat er
+        # simpelweg nog niets was afgerekend.
+        #
+        # De strengste van de twee wint: een gerealiseerd verlies dat al boven
+        # de limiet ligt mag niet gemaskeerd worden door een open positie die
+        # toevallig in de plus staat.
+        worst = min(balance, equity)
         day_loss_pct = (
-            (self.state.day_start_balance - balance) / self.state.day_start_balance * 100.0
+            (self.state.day_start_balance - worst) / self.state.day_start_balance * 100.0
             if self.state.day_start_balance
             else 0.0
         )
         if day_loss_pct >= self.limits.max_daily_loss_pct:
+            unrealised = equity - balance
             self.halt(
                 f"dagverlies {day_loss_pct:.2f}% bereikt de limiet van "
                 f"{self.limits.max_daily_loss_pct:.2f}%"
+                + (
+                    f" (waarvan {unrealised:.2f} nog niet gerealiseerd)"
+                    if abs(unrealised) > 0.01 else ""
+                )
             )
             return False, "daglimiet bereikt"
 
