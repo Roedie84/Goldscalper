@@ -34,6 +34,18 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class TradingMode(str, Enum):
+    #: Echte orders op een demo-account.
+    #:
+    #: Bestaat omdat de papersimulatie de kosten *modelleert* en een model
+    #: fout kan zijn - zoals bleek toen een terugkoppelingslus de slippage
+    #: verzesvoudigde en een winstgevende reeks in een verlies veranderde.
+    #: Op een demo-account worden spread, slippage en fills *gemeten* in
+    #: plaats van berekend, zonder dat er geld op het spel staat.
+    #:
+    #: Dit is de enige modus waarin je de aannames van de simulatie kunt
+    #: toetsen. De poort naar echt geld blijft er los van staan.
+    DEMO = "demo"
+
     #: Nog niet geïmplementeerd; gedraagt zich als PAPER. Wordt daarom niet
     #: aangeboden in de configuratie. Blijft bestaan zodat bestaande entries
     #: met deze waarde niet stukgaan bij het laden.
@@ -44,6 +56,11 @@ class TradingMode(str, Enum):
     @property
     def uses_real_money(self) -> bool:
         return self is TradingMode.LIVE
+
+    @property
+    def places_orders(self) -> bool:
+        """Worden er werkelijk orders verstuurd? Ook demo doet dat."""
+        return self in (TradingMode.DEMO, TradingMode.LIVE)
 
     @property
     def needs_market_data(self) -> bool:

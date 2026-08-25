@@ -352,7 +352,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 self.run_id,
             )
 
-        if self.mode is not TradingMode.LIVE:
+        if not self.mode.places_orders:
             # Slippage volgt de aangenomen spread: staat die op nul, dan is de
             # hele kostenkant uitgeschakeld en moet dat consistent zijn.
             spread = getattr(self.venue, "assumed_spread", 0.0)
@@ -495,17 +495,33 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         )
         self.execution_facts = facts.as_dict()
 
-        # De enige automatische aanpassing: gemeten slippage vervangt de
-        # aanname. Dat is een waarneming over jouw uitvoering, geen
-        # voorspelling over de markt.
-        if facts.measured_slippage is not None and self.paper is not None:
-            if abs(facts.measured_slippage - self.paper.costs.base_slippage) > 0.005:
-                _LOGGER.info(
-                    "Slippage bijgesteld van %.4f naar de gemeten %.4f",
-                    self.paper.costs.base_slippage, facts.measured_slippage,
+        # De gemeten slippage wordt gebruikt voor de *verwachting* in de
+        # kostenpoort, maar niet teruggezet in het kostenmodel van de
+        # papersimulatie.
+        #
+        # Dat laatste deed ik wel, en het was een terugkoppelingslus: de meting
+        # bevat al de volatiliteitscomponent (ATR x factor), en die werd er als
+        # nieuwe basis opnieuw bovenop gelegd. Elke ronde telde hij dubbel. Na
+        # veertig trades stond de slippage op het zesvoudige en was een
+        # winstgevende reeks omgeslagen in een verlies van 224 - allemaal
+        # boekhouding, geen markt.
+        #
+        # Dit is precies de val waar deze module tegen waarschuwt: een systeem
+        # dat leert van zijn eigen uitvoer in plaats van van de werkelijkheid.
+        if facts.measured_slippage is not None:
+            self.strategy_cfg.expected_slippage = facts.measured_slippage
+            if self.paper is not None:
+                modelled = self.paper.costs.base_slippage + (
+                    (self.state.atr.value or 0.0)
+                    * self.paper.costs.volatility_slippage_factor
                 )
-                self.paper.costs.base_slippage = facts.measured_slippage
-                self.strategy_cfg.expected_slippage = facts.measured_slippage
+                if modelled > 0 and facts.measured_slippage > modelled * 2:
+                    _LOGGER.warning(
+                        "Gemeten slippage %.3f is meer dan het dubbele van wat het "
+                        "model voorspelt (%.3f). Controleer of de kostenboeking "
+                        "klopt voordat je hier conclusies aan verbindt.",
+                        facts.measured_slippage, modelled,
+                    )
 
         proposal = await self.hass.async_add_executor_job(
             evaluate_threshold, trades,
@@ -671,7 +687,13 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # De venue mag alleen handelen als álles klopt: live modus, poort open,
         # en de gebruiker heeft de schakelaar bewust omgezet.
         self.venue.supports_trading = bool(
-            self.mode is TradingMode.LIVE and self.gate["unlocked"] and self._enabled
+            self._enabled and (
+                # Demo: orders sturen zodra de gebruiker het aanzet. Er staat
+                # geen geld op het spel en het doel is juist meten.
+                self.mode is TradingMode.DEMO
+                # Live: alleen als de bewijsfase geslaagd is.
+                or (self.mode is TradingMode.LIVE and self.gate["unlocked"])
+            )
         )
 
     # -- bediening ---------------------------------------------------------- #
@@ -726,7 +748,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         return self.paper.open_positions if self.paper else []
 
     async def _close_position(self, position, reason: str) -> None:
-        if self.mode is TradingMode.LIVE:
+        if self.mode.places_orders:
             await self.venue.close(position.ticket)
             return
         if self.paper and self._last_quote:
@@ -799,7 +821,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # Een stop kan verdwijnen doordat een wijziging half doorkwam of doordat
         # de broker hem introk. Zonder controle merk je dat pas als het geld weg
         # is. Elke tiende cyclus volstaat; vaker belast de broker-API onnodig.
-        if self.mode is TradingMode.LIVE and open_positions_precheck:
+        if self.mode.places_orders and open_positions_precheck:
             self._audit_counter += 1
             if self._audit_counter >= 10:
                 self._audit_counter = 0
@@ -1113,13 +1135,13 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             try:
                 if action.kind == "close":
                     await self._close_position(position, action.reason[:60])
-                elif action.kind == "modify_stop" and self.mode is TradingMode.LIVE:
+                elif action.kind == "modify_stop" and self.mode.places_orders:
                     await self.venue.modify_stop(ticket, action.new_stop)
                 elif action.kind == "modify_stop":
                     position.stop_loss = action.new_stop
                 elif action.kind == "partial_close":
                     units = (getattr(position, "units", 0) or 0) * action.close_fraction
-                    if self.mode is TradingMode.LIVE and units > 0:
+                    if self.mode.places_orders and units > 0:
                         await self.venue.close(ticket, units)
                     self._partial_taken.add(ticket)
             except VenueError as err:
@@ -1128,7 +1150,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
     async def _open_position(self, signal, quote: VenueQuote, now: datetime) -> None:
         side = "buy" if signal.direction == 1 else "sell"
         try:
-            if self.mode is TradingMode.LIVE:
+            if self.mode.places_orders:
+                # De poort geldt alleen voor echt geld. Op demo is er niets te
+                # beschermen behalve de kwaliteit van je meting, en juist die
+                # meting is het doel.
                 require_live_unlocked(self.mode, type("G", (), self.gate)())
                 # Via de veiligheidslaag: garandeert een stop, voorkomt een
                 # tweede order na een verbroken verbinding.

@@ -181,6 +181,14 @@ class PaperBroker:
 
     # -- execution ---------------------------------------------------------- #
 
+    #: Bovengrens op de slippage als veelvoud van de spread.
+    #:
+    #: Vangnet tegen een kostenmodel dat zichzelf opblaast. Slippage groter dan
+    #: een paar keer de spread komt in de praktijk alleen voor bij nieuws, en
+    #: nooit structureel op elke trade. Zonder deze grens bleef een fout in de
+    #: parameters onopgemerkt tot de resultaten al vervuild waren.
+    MAX_SLIPPAGE_SPREAD_MULTIPLE = 2.0
+
     def _slippage(self, quote: Quote, volume: float) -> float:
         """Altijd nadelige slippage, in USD per ounce.
 
@@ -192,7 +200,19 @@ class PaperBroker:
         size_component = max(0.0, volume - 0.10) * self.costs.size_slippage_per_lot
         vol_component = quote.atr * self.costs.volatility_slippage_factor
         noise = self._rng.uniform(0.5, 1.5)
-        return (self.costs.base_slippage + size_component + vol_component) * noise
+        slippage = (
+            self.costs.base_slippage + size_component + vol_component
+        ) * noise
+
+        ceiling = quote.spread * self.MAX_SLIPPAGE_SPREAD_MULTIPLE
+        if ceiling > 0 and slippage > ceiling:
+            _LOGGER.warning(
+                "Slippage van %.3f begrensd op %.3f (%.1fx de spread). Zo'n hoge "
+                "waarde wijst op een fout in het kostenmodel, niet op de markt.",
+                slippage, ceiling, self.MAX_SLIPPAGE_SPREAD_MULTIPLE,
+            )
+            return ceiling
+        return slippage
 
     def open_position(
         self,

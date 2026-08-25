@@ -274,3 +274,32 @@ def test_only_one_definition_of_a_wide_spread():
     ]:
         source = path.read_text(encoding="utf-8")
         assert marker in source, f"{path.name} toetst de spread niet relatief"
+
+
+# ---------------- demo-modus ----------------
+
+def test_demo_places_orders_but_is_not_real_money():
+    assert TradingMode.DEMO.places_orders is True
+    assert TradingMode.DEMO.uses_real_money is False
+    assert TradingMode.LIVE.places_orders is True
+    assert TradingMode.LIVE.uses_real_money is True
+    assert TradingMode.PAPER.places_orders is False
+
+
+def test_demo_does_not_require_the_gate():
+    """Op demo is er niets te beschermen behalve de kwaliteit van je meting,
+    en juist die meting is het doel."""
+    from pathlib import Path
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    block = source.split("self.venue.supports_trading = bool(")[1].split(")")[0]
+    assert "TradingMode.DEMO" in block
+    assert "gate" in block and "LIVE" in block
+
+
+def test_live_still_requires_the_gate():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    block = source.split("self.venue.supports_trading = bool(")[1].split("\n\n")[0]
+    assert 'self.mode is TradingMode.LIVE and self.gate["unlocked"]' in block

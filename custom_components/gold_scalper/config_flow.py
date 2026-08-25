@@ -566,7 +566,14 @@ class GoldScalperOptionsFlow(OptionsFlow):
         # die niets verandert, wekt de indruk dat er iets anders gebeurt.
         venue = current.get(CONF_VENUE, DEFAULT_VENUE)
         if venue in TRADING_VENUES:
-            available_modes = [TradingMode.PAPER.value, TradingMode.LIVE.value]
+            # Demo staat tussen paper en live: echte orders, gemeten kosten,
+            # geen geld. Dat is de enige manier om te toetsen of de aannames
+            # van de papersimulatie kloppen.
+            available_modes = [
+                TradingMode.PAPER.value,
+                TradingMode.DEMO.value,
+                TradingMode.LIVE.value,
+            ]
         else:
             available_modes = [TradingMode.PAPER.value]
         current_mode = default(CONF_MODE, DEFAULT_MODE)

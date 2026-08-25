@@ -85,7 +85,7 @@
     "step": {
       "init": {
         "title": "Gold Scalper afstellen",
-        "description": "Strategie- en risico-instellingen. De risicolimieten zijn noodremmen: bij overschrijding volgt een noodstop die een herstart overleeft en handmatig hervat moet worden via gold_scalper.resume. De hoofdschakelaar blijft eveneens bewaard tussen herstarts.",
+        "description": "Strategie- en risico-instellingen. Modus paper simuleert de kosten; modus demo plaatst echte orders op je demo-account en meet de kosten in plaats van ze te modelleren. Live vereist een geslaagde bewijsfase.",
         "data": {
           "mode": "Modus",
           "update_seconds": "Verversingsinterval",
