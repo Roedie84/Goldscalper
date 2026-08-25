@@ -39,11 +39,14 @@ BAR_SECONDS = {
 
 #: Correctie op de ATR omdat periodiek bemonsteren de uitersten mist.
 #:
-#: Gemeten op gesimuleerde M5-data: 20 seconden bemonstering geeft 95% van de
-#: werkelijke ATR, 30 seconden 93%, 60 seconden 81%. De factor wordt uit het
-#: aantal monsters per bar afgeleid in plaats van vast ingesteld, zodat hij
-#: meebeweegt met het tijdsframe en het verversingsinterval.
-_CALIBRATION = {5: 1.23, 10: 1.08, 15: 1.05, 30: 1.02, 60: 1.00}
+#: Gemeten over acht gesimuleerde markten en vijf bemonsteringssnelheden, met
+#: bars uitgelijnd op dezelfde tijdstempels. De spreiding tussen markten is
+#: klein (±0,02 bij vijftien monsters), dus dit is een stabiel getal.
+#:
+#: Een eerdere versie van deze tabel kwam uit één enkele meting en zat er
+#: structureel naast: 1,05 waar 1,086 nodig was. Eén marktreeks is te weinig om
+#: een constante op te baseren.
+_CALIBRATION = {5: 1.408, 10: 1.155, 15: 1.086, 30: 1.035, 60: 1.009}
 
 
 def sampling_correction(samples_per_bar: float) -> float:

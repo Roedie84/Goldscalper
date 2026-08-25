@@ -73,8 +73,12 @@ def test_old_bars_are_trimmed():
 # ---------------- nauwkeurigheid ----------------
 
 def test_sampling_correction_compensates_understated_range():
-    """Periodiek bemonsteren mist de uitersten; bij 20s is dat ~5%."""
-    assert sampling_correction(15) == pytest.approx(1.05, abs=0.02)
+    """Periodiek bemonsteren mist de uitersten; bij 15 monsters is dat ~8,6%.
+
+    Gemeten over acht markten, niet één - een eerdere versie baseerde de
+    constante op één reeks en zat er structureel naast.
+    """
+    assert sampling_correction(15) == pytest.approx(1.086, abs=0.02)
     assert sampling_correction(5) > sampling_correction(30)
     assert sampling_correction(120) == 1.0
 

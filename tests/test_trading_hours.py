@@ -93,3 +93,52 @@ def test_real_spread_keeps_the_normal_floor(market):
 def test_venues_declare_whether_spread_is_measured():
     from gold_scalper.broker.simulator import SimulatorVenue as Sim
     assert Sim().has_real_spread is False
+
+
+# ---------------- spread relatief aan volatiliteit ----------------
+
+def test_spread_limit_scales_with_volatility():
+    """Een absolute grens is betekenisloos zonder de volatiliteit erbij.
+
+    Bij goud op 3300 met ATR 1,65 is een spread van 0,30 hetzelfde verhaal als
+    0,77 bij goud op 4642 met ATR 4,22. Een vaste grens van 0,30 weigerde 1098
+    evaluaties op rij zodra de eerste echte brokerdata binnenkwam.
+    """
+    from gold_scalper.analysis.signals import Candles
+
+    def market(atr_target: float, price: float) -> Candles:
+        n = 300
+        highs, lows, closes, opens = [], [], [], []
+        for i in range(n):
+            base = price + (i % 7 - 3) * atr_target * 0.4
+            opens.append(base)
+            closes.append(base + atr_target * 0.1)
+            highs.append(base + atr_target * 0.6)
+            lows.append(base - atr_target * 0.6)
+        return Candles(list(range(n)), opens, highs, lows, closes, [10.0] * n)
+
+    cfg = ScalpConfig(commission_per_lot_per_side=0.0, volume=0.01,
+                      max_spread_atr_ratio=0.35, max_spread=9.0)
+
+    # Rustige markt: spread 0,60 is te breed.
+    quiet = market(1.0, 3300.0)
+    narrow = evaluate(quiet, 3300.0 - 0.30, 3300.0 + 0.30, cfg, 12, 0, 1e9)
+    # Beweeglijke markt: dezelfde spread valt in het niet.
+    lively = market(4.2, 4642.0)
+    wide = evaluate(lively, 4642.0 - 0.30, 4642.0 + 0.30, cfg, 12, 0, 1e9)
+
+    assert narrow.reject_reason == "spread_too_wide"
+    assert wide.reject_reason != "spread_too_wide"
+
+
+def test_absolute_limit_still_catches_absurd_spreads():
+    """Vangnet voor het geval de ATR zelf onbetrouwbaar is."""
+    from gold_scalper.analysis.signals import Candles
+
+    candles = Candles(list(range(300)), [4642.0] * 300, [4650.0] * 300,
+                      [4634.0] * 300, [4642.0] * 300, [10.0] * 300)
+    cfg = ScalpConfig(commission_per_lot_per_side=0.0, volume=0.01,
+                      max_spread=3.0, max_spread_atr_ratio=1.0)
+    signal = evaluate(candles, 4600.0, 4700.0, cfg, 12, 0, 1e9)
+    assert signal.reject_reason == "spread_too_wide"
+    assert "absolute" in signal.reason

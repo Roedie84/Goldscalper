@@ -33,7 +33,7 @@ from .const import (
     CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
     DEFAULT_SIM_SEED, DEFAULT_SIM_SPREAD, DEFAULT_VENUE, VENUES,
     VENUE_OANDA, VENUE_SIMULATOR, CONF_ENTRY_THRESHOLD, CONF_ENVIRONMENT, CONF_EQUITY_FLOOR_PCT,
-    CONF_MAX_CONSECUTIVE_LOSSES, CONF_MAX_DAILY_LOSS_PCT, CONF_MAX_SPREAD,
+    CONF_MAX_CONSECUTIVE_LOSSES, CONF_MAX_DAILY_LOSS_PCT, CONF_MAX_SPREAD, CONF_MAX_SPREAD_ATR,
     CONF_MAX_TRADES_PER_DAY, CONF_MAX_UNITS, CONF_MIN_EDGE_MULTIPLE, CONF_MODE,
     CONF_STARTING_BALANCE, CONF_SYMBOL, CONF_TIMEFRAME, CONF_TOKEN,
     CONF_TRADING_END_HOUR, CONF_TRADING_START_HOUR, CONF_UNITS, CONF_UPDATE_SECONDS,
@@ -589,8 +589,13 @@ class GoldScalperOptionsFlow(OptionsFlow):
                          default=default(CONF_STARTING_BALANCE, DEFAULT_STARTING_BALANCE)):
                 _number(100, 1_000_000, 100),
 
-            vol.Required(CONF_MAX_SPREAD, default=default(CONF_MAX_SPREAD, 0.30)):
-                _number(0.01, 2.0, 0.01, "USD"),
+            # Relatief aan de ATR: een vaste grens is betekenisloos zonder de
+            # volatiliteit erbij.
+            vol.Required(
+                CONF_MAX_SPREAD_ATR, default=default(CONF_MAX_SPREAD_ATR, 0.35)
+            ): _number(0.05, 1.0, 0.05, slider=True),
+            vol.Required(CONF_MAX_SPREAD, default=default(CONF_MAX_SPREAD, 3.00)):
+                _number(0.05, 20.0, 0.05, "USD"),
             vol.Required(CONF_MIN_EDGE_MULTIPLE,
                          default=default(CONF_MIN_EDGE_MULTIPLE, 2.0)):
                 _number(1.0, 6.0, 0.1, slider=True),

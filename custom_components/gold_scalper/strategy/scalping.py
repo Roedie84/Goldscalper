@@ -25,6 +25,7 @@ from ..analysis.momentum import rsi
 from ..analysis.signals import Candles
 from ..analysis.trend import adx
 from ..analysis.volatility import atr, bollinger
+from .structure import read_structure
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,8 +44,21 @@ class ScalpConfig:
     op basis van de bewijsfase-resultaten en met een aparte validatieperiode.
     """
 
-    #: Handel alleen als de spread onder deze waarde ligt (USD per ounce).
-    max_spread: float = 0.30
+    #: Maximale spread als fractie van de ATR.
+    #:
+    #: Een absolute grens is betekenisloos zonder de volatiliteit erbij. Bij
+    #: goud op 3300 met een ATR van 1,65 is een spread van 0,30 hetzelfde
+    #: verhaal als 0,77 bij goud op 4642 met een ATR van 4,22 - in beide
+    #: gevallen ongeveer een zesde van de gemiddelde beweging.
+    #:
+    #: Dit werd zichtbaar toen de eerste echte brokerdata binnenkwam: 1098
+    #: evaluaties op rij geweigerd omdat de vaste grens van 0,30 onder IG's
+    #: werkelijke spread van 0,60 lag, terwijl de kostenpoort er ruim
+    #: doorheen kwam.
+    max_spread_atr_ratio: float = 0.35
+    #: Absolute bovengrens als vangnet, in USD per ounce. Vangt het geval af
+    #: waarin de ATR zelf onbetrouwbaar is.
+    max_spread: float = 3.00
     #: Verwachte beweging moet dit veelvoud van de kosten zijn.
     min_edge_multiple: float = 2.0
     #: Doelwinst en stop als veelvoud van de ATR.
@@ -80,6 +94,18 @@ class ScalpConfig:
     #: werkelijkheid juist uitlopen. De volatiliteitscontrole wordt dan
     #: strenger gezet als vervanging.
     real_spread: bool = True
+    #: Weeg marktstructuur mee: hogere toppen en bodems tegenover lagere.
+    #:
+    #: De overige componenten zijn allemaal gemiddelden - EMA's, een
+    #: regressiehelling, Bollinger, RSI. Die zeggen iets over richting maar
+    #: niets over structuur. Gemeten op simulatiedata verschillen structuur en
+    #: ADX in 41% van de gevallen van oordeel, dus het is een aanvullend
+    #: signaal en geen herverpakking.
+    use_structure: bool = True
+    structure_weight: float = 0.30
+    #: Aantal candles aan weerszijden dat een pivot moet bevestigen. Hoger is
+    #: betrouwbaarder maar later.
+    pivot_strength: int = 2
     #: Correctie op de gemeten ATR.
     #:
     #: Bij bars die uit periodieke koersen zijn opgebouwd vallen high en low te
@@ -225,7 +251,7 @@ def evaluate(
     if spread > cfg.max_spread:
         return reject(
             "spread_too_wide",
-            f"Spread {spread:.3f} boven de limiet {cfg.max_spread:.3f}",
+            f"Spread {spread:.3f} boven de absolute limiet {cfg.max_spread:.3f}",
         )
 
     if cfg.enforce_trading_hours:
@@ -267,6 +293,12 @@ def evaluate(
     if vol_score < 0:
         return reject("volatility_regime", vol_note)
 
+    structure_read = None
+    if cfg.use_structure:
+        structure_read = read_structure(candles, cfg.pivot_strength)
+        components["structure"] = round(structure_read.score, 3)
+        components["structure_state"] = structure_read.structure.value
+
     if cfg.regime_switching:
         # Laat de ADX bepalen welk verhaal geldt. In een trendende markt is
         # 'ga tegen de beweging in' een slecht idee, en in een zijwaartse markt
@@ -295,7 +327,22 @@ def evaluate(
         ) / 4.0
         confidence = max(0.0, min(1.0, agreement))
 
+    if structure_read is not None and structure_read.score:
+        # Meewegen, niet overrulen. Structuur is trager dan de overige
+        # componenten: pivots worden pas bevestigd als er candles aan beide
+        # kanten liggen. Er zwaarder op leunen zou het signaal vertragen.
+        score = (
+            score * (1.0 - cfg.structure_weight)
+            + structure_read.score * cfg.structure_weight
+        )
+
     direction = 1 if score > 0 else -1
+
+    # Een break tegen de heersende structuur in is een waarschuwing, geen
+    # signaal: hij kan een omslag inluiden maar even goed een uitschieter zijn.
+    # Vertrouwen verlagen is eerlijker dan de trade weigeren of forceren.
+    if structure_read is not None and structure_read.character_change:
+        confidence *= 0.6
 
     if abs(score) < cfg.entry_threshold:
         return reject(
@@ -308,6 +355,17 @@ def evaluate(
     atr_value = (a[-1] or 0.0) * cfg.atr_correction
     if atr_value <= 0:
         return reject("no_atr", "ATR is nul; kan geen doelen bepalen")
+
+    # Spread afwegen tegen de beweging in plaats van tegen een vast getal.
+    spread_ratio = spread / atr_value
+    components["spread_atr_ratio"] = round(spread_ratio, 3)
+    if spread_ratio > cfg.max_spread_atr_ratio:
+        return reject(
+            "spread_too_wide",
+            f"Spread {spread:.3f} is {spread_ratio:.0%} van de ATR ({atr_value:.2f}); "
+            f"de grens ligt op {cfg.max_spread_atr_ratio:.0%}. Bij deze verhouding "
+            "eet de spread te veel van de beweging op."
+        )
 
     expected_move = atr_value * cfg.take_profit_atr
     # Kosten per ounce: spread (één keer per round trip) + slippage (beide
@@ -341,6 +399,22 @@ def evaluate(
         stop = entry + atr_value * cfg.stop_loss_atr
         target = entry - expected_move
 
+    # Als de structuur een duidelijker ongeldigheidsniveau aanwijst dan de ATR,
+    # dat gebruiken: een stop net voorbij de laatste bodem is een niveau waar
+    # de aanname aantoonbaar niet meer klopt, in plaats van een afstand die uit
+    # een gemiddelde volgt.
+    if structure_read is not None and structure_read.invalidation is not None:
+        level = structure_read.invalidation
+        buffer = atr_value * 0.15
+        if direction == 1 and level < entry:
+            candidate = level - buffer
+            if candidate > stop:      # strakker, maar nog steeds onder de instap
+                stop = candidate
+        elif direction == -1 and level > entry:
+            candidate = level + buffer
+            if candidate < stop:
+                stop = candidate
+
     return ScalpSignal(
         direction=direction,
         score=score,
@@ -349,8 +423,9 @@ def evaluate(
         reject_reason=None,
         reason=(
             f"{'Long' if direction == 1 else 'Short'} bij score {score:+.3f}. "
-            f"{trend_note}; {stretch_note}; {mom_note}; {vol_note}. "
-            f"Doel {expected_move:.3f} USD/oz tegen kosten {expected_cost:.3f}"
+            f"{trend_note}; {stretch_note}; {mom_note}; {vol_note}"
+            + (f"; structuur: {structure_read.note}" if structure_read else "")
+            + f". Doel {expected_move:.3f} USD/oz tegen kosten {expected_cost:.3f}"
         ),
         stop_loss=round(stop, 3),
         take_profit=round(target, 3),

@@ -141,6 +141,24 @@ SENSORS: tuple[ScalperSensor, ...] = (
         value_fn=lambda d: _stats(d).get("max_drawdown_pct"),
     ),
     ScalperSensor(
+        key="learning", name="Geleerd", icon="mdi:school-outline",
+        # Toont wat er uit de eigen historie is afgeleid. Metingen zijn
+        # toegepast; voorstellen wachten op jouw beslissing.
+        value_fn=lambda d: len(
+            ((d.get("learning") or {}).get("execution") or {}).get("notes") or []
+        ),
+        attrs_fn=lambda d: {
+            "execution": (d.get("learning") or {}).get("execution", {}),
+            "proposals": (d.get("learning") or {}).get("proposals", []),
+            "regimes": (d.get("learning") or {}).get("regimes", {}),
+            "note": (
+                "Gemeten waarden worden automatisch toegepast. "
+                "Parametervoorstellen niet: die pas je zelf toe bij de opties, "
+                "en alleen als je de onderbouwing overtuigend vindt."
+            ),
+        },
+    ),
+    ScalperSensor(
         key="verdict", name="Oordeel", icon="mdi:gavel",
         device_class=SensorDeviceClass.ENUM,
         options=["no_data", "insufficient_data", "failed", "passed"],

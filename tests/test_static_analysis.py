@@ -101,3 +101,31 @@ def test_all_source_files_are_utf8():
     """Eerder ging ENTITEITEN.md hierop stuk; nu ook de broncode bewaakt."""
     for path in list(PKG.rglob("*.py")) + list(PKG.rglob("*.json")):
         path.read_text(encoding="utf-8")
+
+
+def test_no_dict_get_with_too_many_arguments():
+    """`dict.get()` neemt hoogstens twee argumenten.
+
+    Een zoek-en-vervangactie op het korte patroon `CONF_MAX_SPREAD,` sloeg
+    blind toe midden in een aanroep en maakte er
+    `options.get(CONF_MAX_SPREAD, CONF_MAX_SPREAD_ATR, 3.00)` van. Dat crasht
+    pas bij het opstarten van de integratie; pyflakes ziet het niet, want
+    syntactisch klopt het.
+    """
+    offenders = []
+    for path in PKG.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "get"
+                    and len(node.args) > 2):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert offenders == [], "\n".join(offenders)
+
+
+# Een test op dubbele positionele argumenten is hier weggelaten. Hij vond
+# `_Bar(start, price, price, price, price)`, waar dezelfde waarde terecht
+# vier keer wordt doorgegeven omdat open, high, low en close bij een nieuwe
+# bar gelijk zijn. Een test die vals alarm geeft leer je negeren, en dan vangt
+# hij ook de echte gevallen niet meer.

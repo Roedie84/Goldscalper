@@ -92,7 +92,7 @@
           "units": "Positiegrootte (ounce)",
           "max_units": "Maximale positiegrootte",
           "starting_balance": "Startbalans papermodus",
-          "max_spread": "Maximale spread",
+          "max_spread": "Absolute spreadlimiet (vangnet)",
           "min_edge_multiple": "Vereiste marge boven de kosten",
           "entry_threshold": "Instapdrempel",
           "trading_start_hour": "Venster vanaf (UTC, alleen als beperking aan staat)",
@@ -104,7 +104,8 @@
           "show_panel": "Toon 'Gold Scalper' in de zijbalk",
           "regime_switching": "Kies per marktregime (aanbevolen)",
           "enforce_trading_hours": "Beperk tot een vast tijdvenster",
-          "build_from_quotes": "Bars opbouwen uit live koersen (geen historie opvragen)"
+          "build_from_quotes": "Bars opbouwen uit live koersen (geen historie opvragen)",
+          "max_spread_atr_ratio": "Maximale spread als deel van de ATR"
         }
       }
     },
@@ -147,6 +148,9 @@
     "sensor": {
       "status": {
         "name": "Status"
+      },
+      "learning": {
+        "name": "Geleerd"
       }
     }
   }

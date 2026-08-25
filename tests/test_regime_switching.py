@@ -25,10 +25,14 @@ def market():
 
 
 def _scores(market, regime_switching: bool) -> list[float]:
+    # De spreadpoorten staan hier bewust open: deze test gaat over hoe de
+    # score wordt samengesteld, niet over filtering. Met de standaardgrens van
+    # 0,35 x ATR viel de testspread precies op de rand, waardoor de helft van
+    # de evaluaties werd geweigerd en de test niets meer mat.
     cfg = ScalpConfig(
         commission_per_lot_per_side=0.0, volume=0.01,
         regime_switching=regime_switching, entry_threshold=0.0,
-        trading_hours_utc=(0, 24), max_spread=9.0,
+        trading_hours_utc=(0, 24), max_spread=9.0, max_spread_atr_ratio=1.0,
     )
     out = []
     for i in range(400, 1100, 3):
@@ -61,7 +65,8 @@ def test_regime_is_reported_in_components(market):
     """Je moet kunnen zien welk verhaal de bot volgde bij een trade."""
     cfg = ScalpConfig(commission_per_lot_per_side=0.0, volume=0.01,
                       regime_switching=True, entry_threshold=0.0,
-                      trading_hours_utc=(0, 24), max_spread=9.0)
+                      trading_hours_utc=(0, 24), max_spread=9.0,
+                      max_spread_atr_ratio=1.0)
     w = slice(700, 1000)
     candles = Candles(market.timestamp[w], market.open[w], market.high[w],
                       market.low[w], market.close[w], market.volume[w])

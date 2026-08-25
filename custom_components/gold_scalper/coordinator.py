@@ -45,7 +45,7 @@ from .const import (
     VENUE_STOOQ,
     CONF_SIM_SEED, CONF_SIM_SPREAD, CONF_VENUE,
     DEFAULT_SIM_SEED, DEFAULT_SIM_SPREAD, DEFAULT_VENUE, VENUE_SIMULATOR, CONF_ENTRY_THRESHOLD, CONF_ENVIRONMENT, CONF_EQUITY_FLOOR_PCT,
-    CONF_MAX_CONSECUTIVE_LOSSES, CONF_MAX_DAILY_LOSS_PCT, CONF_MAX_SPREAD,
+    CONF_MAX_CONSECUTIVE_LOSSES, CONF_MAX_DAILY_LOSS_PCT, CONF_MAX_SPREAD, CONF_MAX_SPREAD_ATR,
     CONF_MAX_TRADES_PER_DAY, CONF_MAX_UNITS, CONF_MIN_EDGE_MULTIPLE, CONF_MODE,
     CONF_STARTING_BALANCE, CONF_SYMBOL, CONF_TIMEFRAME, CONF_TOKEN,
     CONF_TRADING_END_HOUR, CONF_TRADING_START_HOUR, CONF_UNITS, CONF_UPDATE_SECONDS,
@@ -54,6 +54,7 @@ from .const import (
     DEFAULT_UPDATE_SECONDS, DOMAIN, MIN_UPDATE_SECONDS, MIN_WARMUP_CANDLES,
     WARMUP_CANDLES,
 )
+from .learning.analysis import evaluate_threshold, measure_execution, regime_performance
 from .lifecycle import DrainPolicy, LifecycleController
 from .modes import LiveGate, ModeLockedError, TradingMode, require_live_unlocked
 from .storage import performance
@@ -189,7 +190,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             )
 
         self.strategy_cfg = ScalpConfig(
-            max_spread=options.get(CONF_MAX_SPREAD, 0.30),
+            max_spread=options.get(CONF_MAX_SPREAD, 3.00),
+            max_spread_atr_ratio=options.get(CONF_MAX_SPREAD_ATR, 0.35),
             min_edge_multiple=options.get(CONF_MIN_EDGE_MULTIPLE, 2.0),
             entry_threshold=options.get(CONF_ENTRY_THRESHOLD, 0.45),
             regime_switching=options.get(CONF_REGIME_SWITCHING, True),
@@ -250,6 +252,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         #: herberekenen is duur (meerdere queries), dus dat gebeurt alleen als
         #: er werkelijk iets veranderd is.
         self._gate_trade_count: int = -1
+        #: Wat er uit de eigen historie geleerd is.
+        self.execution_facts: dict = {}
+        self.proposals: list[dict] = []
+        self.regime_stats: dict = {}
         #: Aantal candles dat sinds de vorige positiecontrole is afgesloten.
         self._bars_since_last_check: int = 1
         self._new_bars_this_cycle: int = 0
@@ -458,6 +464,50 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             f"Kon geen bruikbare historie ophalen voor {self.symbol} op "
             f"{self.timeframe}. Laatste fout: {last_error}. Probeer een hoger "
             "tijdsframe; dat kost minder datapunten en reikt verder terug."
+        )
+
+    async def _relearn(self, trades: list) -> None:
+        """Werk bij wat er uit de eigen historie te leren valt.
+
+        Metingen worden toegepast: die vervangen een aanname door een feit.
+        Parametervoorstellen worden alleen getoond - een bot die zijn eigen
+        drempel bijstelt na een slechte week, past zich aan de ruis van die
+        week aan en wordt daarmee instabieler in plaats van beter.
+        """
+        assumed = getattr(
+            self.paper.costs, "base_slippage", 0.02
+        ) if self.paper else 0.02
+
+        facts = await self.hass.async_add_executor_job(
+            measure_execution, trades, assumed
+        )
+        self.execution_facts = facts.as_dict()
+
+        # De enige automatische aanpassing: gemeten slippage vervangt de
+        # aanname. Dat is een waarneming over jouw uitvoering, geen
+        # voorspelling over de markt.
+        if facts.measured_slippage is not None and self.paper is not None:
+            if abs(facts.measured_slippage - self.paper.costs.base_slippage) > 0.005:
+                _LOGGER.info(
+                    "Slippage bijgesteld van %.4f naar de gemeten %.4f",
+                    self.paper.costs.base_slippage, facts.measured_slippage,
+                )
+                self.paper.costs.base_slippage = facts.measured_slippage
+                self.strategy_cfg.expected_slippage = facts.measured_slippage
+
+        proposal = await self.hass.async_add_executor_job(
+            evaluate_threshold, trades,
+            self.strategy_cfg.entry_threshold, [0.30, 0.35, 0.40, 0.50, 0.55, 0.60],
+        )
+        self.proposals = [proposal.as_dict()] if proposal else []
+        if proposal and proposal.accept:
+            _LOGGER.info(
+                "Voorstel: instapdrempel van %s naar %s. %s",
+                proposal.current, proposal.suggested, proposal.reasoning,
+            )
+
+        self.regime_stats = await self.hass.async_add_executor_job(
+            regime_performance, trades
         )
 
     def _fingerprint(self, config: dict) -> str:
@@ -747,10 +797,17 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # want de berekening kost meerdere queries.
         trade_count = stats.get("trades", 0)
         if trade_count != self._gate_trade_count:
+            # Eén keer ophalen en tweemaal gebruiken: de poort en de leerlaag
+            # hebben dezelfde tradelijst nodig, en die tabel inlezen is de
+            # duurste stap in deze cyclus.
+            closed = await self.hass.async_add_executor_job(
+                self.db.closed_trades, self.run_id
+            )
             await self._refresh_gate()
+            await self._relearn(closed)
             self._gate_trade_count = trade_count
             stats = await self.hass.async_add_executor_job(
-                performance.compute_for_run, self.db, self.run_id
+                performance.compute_for_run, self.db, self.run_id, closed
             )
 
         # Elke cyclus bewaren, niet alleen bij afsluiten: een noodstop die
@@ -789,6 +846,11 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 if self._aggregator is not None else None
             ),
             "build_from_quotes": self._build_from_quotes,
+            "learning": {
+                "execution": self.execution_facts,
+                "proposals": self.proposals,
+                "regimes": self.regime_stats,
+            },
             "mode": self.mode.value,
             "requested_mode": self.requested_mode.value,
             "mode_override_reason": self.mode_override_reason,

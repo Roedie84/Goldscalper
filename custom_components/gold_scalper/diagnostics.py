@@ -6,11 +6,32 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_ACCOUNT_ID, CONF_TOKEN, DOMAIN
+from .const import (
+    CONF_ACCOUNT_ID, CONF_API_KEY, CONF_IDENTIFIER, CONF_PASSWORD, CONF_TOKEN,
+    DOMAIN,
+)
 from .coordinator import GoldScalperCoordinator
 from .storage import performance
 
-REDACT = {CONF_TOKEN, CONF_ACCOUNT_ID}
+#: Alles wat toegang geeft. Bewust ruim: het is beter een onschuldig veld te
+#: redigeren dan er één te missen.
+#:
+#: Deze lijst liep achter op de code. Toen de IG- en Capital.com-adapters
+#: erbij kwamen, kwamen hun api_key, identifier en password in elke
+#: diagnostiekexport terecht - en die exports worden nu juist gedeeld om hulp
+#: te vragen. Er staat daarom een test op die controleert dat elk
+#: configuratieveld dat een geheim kan bevatten hier ook genoemd wordt.
+REDACT = {
+    CONF_TOKEN,
+    CONF_ACCOUNT_ID,
+    CONF_API_KEY,
+    CONF_PASSWORD,
+    CONF_IDENTIFIER,
+    # Losse namen, voor het geval een adapter ze anders noemt.
+    "api_key", "apikey", "password", "identifier", "token",
+    "secret", "client_secret", "access_token", "refresh_token",
+    "login", "username", "account_id", "accountId",
+}
 
 
 async def async_get_config_entry_diagnostics(
