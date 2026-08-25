@@ -351,7 +351,7 @@ def _cost_projection_block(stats: dict) -> str:
 
 def _loss_analysis(stats: dict) -> str:
     """Verliezen naar oorzaak, met onderscheid tussen ontwerp en markt."""
-    post = stats.get("losses") or {}
+    post = stats.get("loss_analysis") or {}
     patterns = post.get("patterns") or []
     if not patterns:
         return ""

@@ -323,6 +323,11 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self._candles: Candles | None = None
         self._last_bar_ts: int = 0
         self._last_entry_ts: float = 0.0
+        #: Tickets waarvan al een deel is afgeroomd.
+        #:
+        #: Deze stond alleen in het geheugen. Na een herstart was hij leeg,
+        #: waardoor dezelfde positie opnieuw voor de helft gesloten werd - en
+        #: bij herhaling tot niets. Gaat nu mee in de bewaarde toestand.
         self._partial_taken: set[str] = set()
         self._last_quote: VenueQuote | None = None
         self._last_signal = None
@@ -372,6 +377,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         if self._state.halted:
             self.risk.halt(self._state.halt_reason or "noodstop uit vorige sessie")
         self.risk.state.resumes_today = self._state.resumes_today
+        self._partial_taken = set(self._state.partial_taken or [])
         self.risk.state.consecutive_losses = self._state.consecutive_losses
         if self._state.day and self._state.day_start_balance is not None:
             from datetime import date as _date
@@ -895,6 +901,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self._state.day_start_balance = self.risk.state.day_start_balance
         self._state.trades_today = self.risk.state.trades_today
         self._state.resumes_today = self.risk.state.resumes_today
+        self._state.partial_taken = sorted(self._partial_taken)
         self._state.run_id = self.run_id
         if self._aggregator is not None:
             self._state.bars = self._aggregator.to_dict()
@@ -1404,6 +1411,14 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                     units = (getattr(position, "units", 0) or 0) * action.close_fraction
                     if self.mode.places_orders and units > 0:
                         await self.venue.close(ticket, units)
+                        self._positions_cache = None
+                        # Vastleggen: anders wordt de winst wél genomen maar
+                        # verschijnt hij nergens in je resultaten, en telt hij
+                        # niet mee in de bewijsfase.
+                        await self._record_partial(
+                            ticket, units, action.reason,
+                            datetime.now(timezone.utc),
+                        )
                     self._partial_taken.add(ticket)
             except VenueError as err:
                 _LOGGER.error("Exitactie %s mislukte: %s", action.kind, err)
@@ -1505,6 +1520,67 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             await self._record_broker_close(
                 _TicketOnly(str(trade.broker_ticket)), quote, reason, now
             )
+
+    async def _record_partial(
+        self, ticket: str, units: float, reason: str, now: datetime
+    ) -> None:
+        """Boek een gedeeltelijke sluiting als aparte gesloten trade.
+
+        De resterende positie blijft open met de overgebleven omvang. Zo telt
+        de genomen winst mee in het resultaat en in de bewijsfase, en blijft
+        het spoor van wat er gebeurd is intact.
+        """
+        if self._last_quote is None:
+            return
+
+        open_trades = await self.hass.async_add_executor_job(
+            self.db.open_trades, self.run_id
+        )
+        trade = next(
+            (t for t in open_trades if str(t.broker_ticket) == str(ticket)), None
+        )
+        if trade is None:
+            _LOGGER.debug("Deelsluiting van %s niet in de database gevonden", ticket)
+            return
+
+        quote = self._last_quote
+        long = trade.side == "buy"
+        exit_price = quote.bid if long else quote.ask
+        direction = 1.0 if long else -1.0
+        closed_lots = units / CONTRACT_SIZE
+
+        # Het gesloten deel als eigen rij, met de rest van de gegevens van de
+        # oorspronkelijke trade.
+        part = Trade(
+            run_id=self.run_id, mode=self.mode.value, symbol=trade.symbol,
+            side=trade.side, volume=closed_lots,
+            open_time=trade.open_time, open_price=trade.open_price,
+            open_mid=trade.open_mid, open_spread=trade.open_spread,
+            open_slippage=trade.open_slippage,
+            close_time=now.isoformat(), close_price=exit_price,
+            close_mid=quote.mid, close_spread=quote.spread,
+            close_reason="partial_close",
+            stop_loss=trade.stop_loss, take_profit=trade.take_profit,
+            signal_score=trade.signal_score, regime=trade.regime,
+            broker_ticket=f"{ticket}-deel",
+            gross_pnl=round((quote.mid - trade.open_mid) * direction * units, 4),
+            net_pnl=round((exit_price - trade.open_price) * direction * units, 4),
+        )
+        part.total_cost = round((part.gross_pnl or 0) - (part.net_pnl or 0), 4)
+        part.duration_seconds = int(
+            (now - _as_datetime(trade.open_time, now)).total_seconds()
+        )
+        await self.hass.async_add_executor_job(self.db.insert_trade, part)
+
+        # De oorspronkelijke rij krimpt tot wat er nog openstaat.
+        trade.volume = max(0.0, trade.volume - closed_lots)
+        await self.hass.async_add_executor_job(self.db.update_trade, trade)
+
+        self.risk.record_close(part.net_pnl or 0.0)
+        _LOGGER.info(
+            "Deel genomen: %.2f oz, netto %.2f. %s",
+            units, part.net_pnl or 0.0, reason,
+        )
 
     async def _record_broker_open(
         self, result, signal, quote: VenueQuote, side: str, now: datetime

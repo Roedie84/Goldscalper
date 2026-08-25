@@ -292,7 +292,12 @@ def compute_for_run(
     stats["cost_projection"] = cost_projection(trades)
 
     from ..learning.postmortem import analyse_losses
-    stats["losses"] = analyse_losses(trades).as_dict()
+    # Bewust een andere sleutel dan "losses": dat veld bevat het *aantal*
+    # verliezende trades. Die overschrijven met de analyse maakte de teller
+    # onbruikbaar, en de controle op "geen enkele verliezer" - die een
+    # boekhoudfout moet vangen - vergeleek daarna een dict met nul en sloeg
+    # dus nooit meer aan.
+    stats["loss_analysis"] = analyse_losses(trades).as_dict()
 
     # Markeer expliciet als er zonder kosten gedraaid is. Zonder dit ziet een
     # nulkosten-run er in het rapport uit als een gewone winstgevende run.

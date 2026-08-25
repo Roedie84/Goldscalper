@@ -56,6 +56,9 @@ class RuntimeState:
     #: Zelfgebouwde bars, zodat de opwarmfase een herstart overleeft. Zonder
     #: dit kost elke update opnieuw uren voordat de analyse iets kan zeggen.
     bars: dict | None = None
+    #: Tickets waarvan al een deel is afgeroomd. Zonder dit wordt na een
+    #: herstart dezelfde positie opnieuw gehalveerd, en bij herhaling tot niets.
+    partial_taken: list | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

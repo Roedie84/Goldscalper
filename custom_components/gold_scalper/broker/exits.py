@@ -181,7 +181,15 @@ class ExitManager:
             )
 
         # --- Break-even -------------------------------------------------------
-        if profit_atr >= self.config.breakeven_trigger_atr:
+        #
+        # Ook meteen ná een deelsluiting, en niet alleen op de eigen drempel.
+        # Zodra je de helft hebt afgeroomd is de rest gratis geworden; die
+        # daarna alsnog met verlies laten sluiten is de slechtste van beide
+        # werelden - je hebt je winst begrensd én je verlies niet.
+        trigger = (
+            0.0 if partial_taken else self.config.breakeven_trigger_atr
+        )
+        if profit_atr >= trigger:
             buffer = round_trip_cost_per_oz * self.config.breakeven_buffer_cost_multiple
             breakeven = open_price + direction * buffer
             if current_stop is None or (breakeven - current_stop) * direction > 0:
@@ -191,6 +199,7 @@ class ExitManager:
                     reason=(
                         f"stop naar break-even plus kosten ({buffer:.3f} USD/oz); "
                         "deze trade kan vanaf nu niet meer verliezen"
+                        + (" (winst is al deels genomen)" if partial_taken else "")
                     ),
                 )
 
