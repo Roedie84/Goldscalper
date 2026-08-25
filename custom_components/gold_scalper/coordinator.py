@@ -545,8 +545,11 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # exitontwerp liggen of aan de markt.
         post = await self.hass.async_add_executor_job(
             analyse_losses, trades,
-            self.exits.config.take_profit_atr,
-            self.exits.config.stop_loss_atr,
+            # De doel- en stopmultipliers horen bij de strategie, niet bij de
+            # exitmanager: die laatste beheert alleen wat er ná de instap
+            # gebeurt (break-even, trailing, tijdslimiet).
+            self.strategy_cfg.take_profit_atr,
+            self.strategy_cfg.stop_loss_atr,
             self.state.atr.value,
         )
         self.postmortem = post.as_dict()

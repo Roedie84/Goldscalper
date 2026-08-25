@@ -11,6 +11,7 @@ ook de regels die geen test ooit aanraakt.
 """
 import ast
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -129,3 +130,53 @@ def test_no_dict_get_with_too_many_arguments():
 # vier keer wordt doorgegeven omdat open, high, low en close bij een nieuwe
 # bar gelijk zijn. Een test die vals alarm geeft leer je negeren, en dan vangt
 # hij ook de echte gevallen niet meer.
+
+
+def _dataclass_fields(path: Path, name: str) -> set[str]:
+    """Veldnamen van een dataclass, uit de bron gelezen."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == name:
+            return {
+                item.target.id for item in node.body
+                if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+            }
+    return set()
+
+
+def test_config_attributes_actually_exist():
+    """Vangt verzonnen attributen op configuratieobjecten.
+
+    `self.exits.config.take_profit_atr` bestond niet - die multiplier hoort bij
+    de strategie, niet bij de exitmanager. De integratie viel daarop om in de
+    handelslus, en 449 tests merkten er niets van omdat geen enkele test die
+    lus doorloopt met echte objecten.
+    """
+    sources = {
+        "self.strategy_cfg": _dataclass_fields(
+            PKG / "strategy" / "scalping.py", "ScalpConfig"
+        ),
+        "self.exits.config": _dataclass_fields(
+            PKG / "broker" / "exits.py", "ExitConfig"
+        ),
+        "self.risk.limits": _dataclass_fields(
+            PKG / "broker" / "risk.py", "RiskLimits"
+        ),
+        "self.paper.costs": _dataclass_fields(
+            PKG / "broker" / "paper.py", "BrokerCosts"
+        ),
+    }
+    for name, fields in sources.items():
+        assert fields, f"geen velden gevonden voor {name}; de test zelf is stuk"
+
+    coordinator = (PKG / "coordinator.py").read_text(encoding="utf-8")
+    offenders = []
+    for prefix, fields in sources.items():
+        for match in re.finditer(
+            rf"{re.escape(prefix)}\.(\w+)", coordinator
+        ):
+            attribute = match.group(1)
+            if attribute not in fields:
+                line = coordinator[: match.start()].count("\n") + 1
+                offenders.append(f"coordinator.py:{line}  {prefix}.{attribute}")
+    assert offenders == [], "\n".join(offenders)
