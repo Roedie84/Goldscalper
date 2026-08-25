@@ -34,6 +34,7 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+OVERVIEW_URL = "/api/gold_scalper/overview"
 REPORT_URL = "/api/gold_scalper/report"
 PANEL_URL_PATH = "gold-scalper"
 
@@ -45,6 +46,70 @@ PANEL_URL_PATH = "gold-scalper"
 #: zonder dat je meer ziet. Aan te passen met ?refresh=N, en 0 zet het uit.
 DEFAULT_REFRESH_SECONDS = 60
 MIN_REFRESH_SECONDS = 15
+
+
+class GoldScalperOverviewView(HomeAssistantView):
+    """Compacte samenvatting; het paneel opent hierop.
+
+    Het keuringsrapport is bedoeld om te bestuderen, niet om even op je
+    telefoon te bekijken. Deze pagina beantwoordt de vier vragen die je dan
+    hebt en zet het rapport één klik verderop.
+    """
+
+    url = OVERVIEW_URL
+    name = "api:gold_scalper:overview"
+    requires_auth = False
+
+    async def get(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        coordinator = _pick_coordinator(hass, request.query.get("entry"))
+        if coordinator is None:
+            return web.Response(
+                text=_placeholder(
+                    "Nog geen actieve configuratie",
+                    "Controleer Instellingen, Apparaten en diensten.",
+                ),
+                content_type="text/html",
+            )
+        if not coordinator.data:
+            return web.Response(
+                text=_placeholder(
+                    "Aan het opstarten",
+                    "Er is nog geen meting binnen. Ververs over een halve minuut.",
+                ),
+                content_type="text/html",
+            )
+
+        from homeassistant.util import dt as dt_util
+
+        from .dashboard.overview import build_overview
+        from .status import build_status
+
+        payload = dict(coordinator.data)
+        payload["status"] = build_status(payload)
+        payload["symbol"] = coordinator.symbol
+
+        try:
+            refresh = int(request.query.get("refresh", DEFAULT_REFRESH_SECONDS))
+        except (TypeError, ValueError):
+            refresh = DEFAULT_REFRESH_SECONDS
+
+        html = await hass.async_add_executor_job(
+            build_overview, payload, REPORT_URL, dt_util.DEFAULT_TIME_ZONE, refresh
+        )
+        return web.Response(
+            text=html, content_type="text/html",
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
+
+def _pick_coordinator(hass: HomeAssistant, wanted: str | None):
+    coordinators = list(hass.data.get(DOMAIN, {}).values())
+    if not coordinators:
+        return None
+    return next(
+        (c for c in coordinators if c.entry.entry_id == wanted), coordinators[0]
+    )
 
 
 class GoldScalperReportView(HomeAssistantView):
@@ -109,6 +174,15 @@ class GoldScalperReportView(HomeAssistantView):
                 status=500,
             )
 
+        # Terugknop naar het overzicht. In een iframe is er geen adresbalk,
+        # dus zonder deze link zit je vast op het rapport.
+        back = (
+            '<div style="max-width:1080px;margin:0 auto;padding:14px 22px 0">'
+            f'<a href="{OVERVIEW_URL}" style="font:12px ui-monospace,monospace;'
+            'color:#5A6156;text-decoration:none">&larr; Overzicht</a></div>'
+        )
+        html = html.replace('<div class="wrap">', back + '<div class="wrap">', 1)
+
         return web.Response(
             text=html,
             content_type="text/html",
@@ -139,6 +213,7 @@ p{{margin:0;color:#5A6156;font-size:13px}}
 async def async_register_frontend(hass: HomeAssistant, show_panel: bool = True) -> None:
     """Registreer het adres en het menu-item. Veilig om vaker aan te roepen."""
     if not hass.data.get(f"{DOMAIN}_view_registered"):
+        hass.http.register_view(GoldScalperOverviewView())
         hass.http.register_view(GoldScalperReportView())
         hass.data[f"{DOMAIN}_view_registered"] = True
         _LOGGER.debug("Rapport bereikbaar op %s", REPORT_URL)
@@ -157,7 +232,7 @@ async def async_register_frontend(hass: HomeAssistant, show_panel: bool = True) 
             sidebar_title="Gold Scalper",
             sidebar_icon="mdi:gold",
             frontend_url_path=PANEL_URL_PATH,
-            config={"url": REPORT_URL},
+            config={"url": OVERVIEW_URL},
             require_admin=True,
         )
         hass.data[f"{DOMAIN}_panel_registered"] = True

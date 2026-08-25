@@ -343,8 +343,9 @@ def _cost_projection_block(stats: dict) -> str:
     return f"""<section>
   <h3>Kostenprojectie</h3>
   {banner}
-  <table><thead><tr><th>Scenario</th><th class="num">Kosten</th>
-    <th class="num">Netto</th></tr></thead><tbody>{body}</tbody></table>
+  <div class="scroller"><table><thead><tr><th>Scenario</th>
+    <th class="num">Kosten</th><th class="num">Netto</th>
+  </tr></thead><tbody>{body}</tbody></table></div>
 </section>"""
 
 
@@ -394,10 +395,10 @@ def _run_history(db, current_run_id: int, tz=None) -> str:
      databron, andere drempel, andere spread - omdat de resultaten dan niet meer
      vergelijkbaar zijn. Een herstart of een gewijzigde risicolimiet begint
      géén nieuwe run. De huidige staat gemarkeerd.</p>
-  <table><thead><tr>
+  <div class="scroller"><table><thead><tr>
     <th>Run</th><th>Gestart</th><th>Bron</th><th>Strategie</th>
     <th class="num">Trades</th><th class="num">Kosten</th><th class="num">Netto</th>
-  </tr></thead><tbody>{rows}</tbody></table>
+  </tr></thead><tbody>{rows}</tbody></table></div>
 </section>"""
 
 
@@ -446,11 +447,27 @@ def _stamp(stats: dict, gate: dict | None) -> str:
 
 _CSS = """
 *,*::before,*::after{box-sizing:border-box}
+
+/* Scrollen in een iframe.
+   Het paneel toont dit rapport in een iframe. Zonder expliciete hoogte en
+   overflow schaalt iOS Safari het iframe naar de inhoudshoogte en scrollt hij
+   niet; de pagina staat dan vast. */
+html{height:100%%;-webkit-text-size-adjust:100%%}
 body{margin:0;background:%(ground)s;color:%(ink)s;
+  min-height:100%%;overflow-x:hidden;overflow-y:auto;
+  -webkit-overflow-scrolling:touch;
   font:14px/1.55 ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace;
   -webkit-font-smoothing:antialiased}
 .prose{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif}
 .wrap{max-width:1080px;margin:0 auto;padding:32px 22px 72px}
+
+/* Tabellen mogen de pagina niet breder maken dan het scherm.
+   Zodra dat gebeurt kantelt de hele weergave horizontaal en werkt verticaal
+   scrollen in een iframe niet meer. Elke tabel krijgt daarom een eigen
+   scrollbare houder. */
+.scroller{overflow-x:auto;-webkit-overflow-scrolling:touch;
+  margin:0 -4px;padding:0 4px}
+.scroller table{min-width:100%%}
 
 header{display:flex;justify-content:space-between;align-items:flex-start;gap:28px;
   border-bottom:2px solid %(ink)s;padding-bottom:18px;margin-bottom:6px;flex-wrap:wrap}
@@ -528,6 +545,26 @@ footer{margin-top:52px;padding-top:16px;border-top:1px solid %(rule)s;
   .grid,.duo{grid-template-columns:1fr}
   header{flex-direction:column-reverse}
   .stamp{align-self:flex-start}
+}
+
+@media (max-width:560px){
+  .wrap{padding:18px 12px 56px}
+  h1{font-size:15px;letter-spacing:.14em}
+  .stamp{width:118px;height:118px}
+  .stamp-fineness{font-size:28px}
+  table{font-size:11px}
+  th,td{padding:5px 6px}
+
+  /* Kolommen die op een telefoon niet passen en die je op een groter scherm
+     alsnog ziet. De essentie - tijd, kant, netto - blijft staan. */
+  .trades th:nth-child(4),.trades td:nth-child(4),
+  .trades th:nth-child(5),.trades td:nth-child(5),
+  .trades th:nth-child(6),.trades td:nth-child(6){display:none}
+
+  .metrics dt{font-size:11px}
+  .metrics dd{font-size:12px}
+  .funnel-label,.funnel-count{font-size:10.5px}
+  .note{font-size:11px}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 """ % TOKENS
@@ -694,11 +731,11 @@ def build_report(
 
 <section>
   <h3>Trades</h3>
-  <table><thead><tr>
+  <div class="scroller"><table class="trades"><thead><tr>
     <th>Gesloten</th><th>Kant</th><th class="num">Lots</th><th class="num">In</th>
     <th class="num">Uit</th><th class="num">Bruto</th><th class="num">Kosten</th>
     <th class="num">Netto</th><th>Reden</th>
-  </tr></thead><tbody>{trade_rows}</tbody></table>
+  </tr></thead><tbody>{trade_rows}</tbody></table></div>
 </section>
 
 <footer>

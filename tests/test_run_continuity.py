@@ -106,10 +106,71 @@ def test_fingerprint_ignores_risk_limits():
     from pathlib import Path
     source = (Path(__file__).resolve().parent.parent / "custom_components"
               / "gold_scalper" / "coordinator.py").read_text()
-    body = source.split("def _fingerprint(")[1].split("\n    async def ")[0]
+    body = source.split("def _fingerprint_material(")[1].split("\n    @staticmethod")[0]
     for excluded in ("max_daily_loss", "equity_floor", "max_trades_per_day",
                      "consecutive_losses", "starting_balance"):
         assert excluded not in body, f"{excluded} hoort niet in de vingerafdruk"
     for included in ("venue", "symbol", "timeframe", "entry_threshold",
                      "assumed_spread", "regime_switching"):
         assert included in body, f"{included} hoort wél in de vingerafdruk"
+
+
+def test_fingerprint_includes_the_new_spread_settings():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    body = source.split("def _fingerprint_material(")[1].split("\n    @staticmethod")[0]
+    assert "max_spread" in body
+    assert "max_spread_atr_ratio" in body
+
+
+def test_option_mapping_covers_every_tunable_field():
+    """Elk veld in de vingerafdruk dat de gebruiker kan instellen moet in de
+    afbeelding staan; anders wordt een gewijzigde standaardwaarde ten onrechte
+    als jouw keuze gezien en reset de bewijsfase."""
+    from pathlib import Path
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    body = source.split("def _fingerprint_material(")[1].split("\n    @staticmethod")[0]
+    mapping = source.split("_OPTION_FOR = {")[1].split("}")[0]
+
+    tunable = [
+        "entry_threshold", "regime_switching", "min_edge_multiple",
+        "max_spread", "max_spread_atr_ratio", "units", "assumed_spread",
+    ]
+    for field in tunable:
+        assert f'"{field}"' in body, f"{field} ontbreekt in de vingerafdruk"
+        assert f'"{field}"' in mapping, f"{field} ontbreekt in _OPTION_FOR"
+
+
+def test_adoption_only_when_user_did_not_choose():
+    """De kern: een gewijzigde standaardwaarde mag de teller niet resetten,
+    een instelling die jij zelf zette wél."""
+    from pathlib import Path
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    body = source.split("async def _adoptable_run")[1].split("\n    #: Van ")[0]
+    assert "self.entry.options" in body, "er wordt niet gekeken wat jij zelf zette"
+    assert "user_chosen" in body
+    assert "structural" in body
+
+
+def test_fingerprint_update_preserves_run(db):
+    """Voortzetten mag de run niet afsluiten of de trades kwijtraken."""
+    run = db.start_run("paper", "v1", "GOLD", {"a": 1}, 1000.0, None, "oud")
+    db.insert_trade(Trade(
+        run_id=run, mode="paper", symbol="GOLD", side="buy", volume=0.01,
+        open_time="2026-08-24T10:00:00+00:00", open_price=4642.0,
+        open_mid=4642.0, open_spread=0.6,
+        close_time="2026-08-24T10:06:00+00:00", net_pnl=1.0, gross_pnl=1.6,
+        total_cost=0.6,
+    ))
+    db.update_run_fingerprint(run, "nieuw", {"max_spread": 3.0})
+
+    assert db.find_matching_run("nieuw")["id"] == run
+    assert db.find_matching_run("oud") is None
+    assert len(db.closed_trades(run)) == 1
+    import json
+    stored = json.loads(db.get_run(run)["config_json"])
+    assert stored["fingerprint_material"] == {"max_spread": 3.0}
+    assert stored["a"] == 1          # bestaande configuratie behouden

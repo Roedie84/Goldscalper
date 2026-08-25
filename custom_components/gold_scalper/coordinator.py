@@ -256,6 +256,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self.execution_facts: dict = {}
         self.proposals: list[dict] = []
         self.regime_stats: dict = {}
+        #: Waarom er een nieuwe run begon, en welke standaardwaarden er
+        #: stilzwijgend zijn overgenomen. Beide horen zichtbaar te zijn.
+        self.run_changed_because: list[str] = []
+        self.adopted_defaults: list[str] = []
         #: Aantal candles dat sinds de vorige positiecontrole is afgesloten.
         self._bars_since_last_check: int = 1
         self._new_bars_this_cycle: int = 0
@@ -315,10 +319,18 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "costs_disabled": getattr(self.venue, "costs_disabled", False),
         }
 
-        fingerprint = self._fingerprint(config)
+        material = self._fingerprint_material(config)
+        config["fingerprint_material"] = material
+        fingerprint = self._hash_material(material)
+
         existing = await self.hass.async_add_executor_job(
             self.db.find_matching_run, fingerprint
         )
+        if not existing:
+            # Geen exacte match: kijk of er een recente run is die alleen
+            # verschilt door een gewijzigde standaardwaarde. Jouw bewijsfase
+            # hoort niet op nul te springen omdat ík een default aanpas.
+            existing = await self._adoptable_run(material, fingerprint)
         if existing:
             # Zelfde opzet: de lopende bewijsfase voortzetten. Elke herstart een
             # nieuwe run beginnen maakte de eis van dertig dagen onhaalbaar - één
@@ -510,7 +522,81 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             regime_performance, trades
         )
 
-    def _fingerprint(self, config: dict) -> str:
+    async def _adoptable_run(self, material: dict, fingerprint: str):
+        """Zoek een lopende run die alleen verschilt in wat jij niet koos.
+
+        De vingerafdruk hoort te reageren op jóuw keuzes, niet op mijn
+        releases. Wordt een standaardwaarde in een nieuwe versie aangepast en
+        heb jij die instelling nooit zelf gezet, dan is dat geen wijziging van
+        de strategie door jou - en dan mag de teller niet op nul.
+
+        Verschilt er iets dat je wél zelf hebt ingesteld, dan begint er terecht
+        een nieuwe run en wordt in het logboek genoemd wát er verschilde.
+        """
+        recent = await self.hass.async_add_executor_job(self.db.list_runs, 10)
+        options_set = set(self.entry.options)
+
+        for run in recent:
+            if run.get("ended_at") or run["id"] == 0:
+                continue
+            try:
+                stored = json.loads(run.get("config_json") or "{}")
+            except (TypeError, ValueError):
+                continue
+            previous = stored.get("fingerprint_material")
+            if not previous:
+                continue
+
+            differences = {
+                key for key in set(previous) | set(material)
+                if previous.get(key) != material.get(key)
+            }
+            if not differences:
+                continue
+
+            # Onderscheid: heeft de gebruiker deze instelling zelf gezet?
+            user_chosen = {
+                key for key in differences
+                if self._OPTION_FOR.get(key) in options_set
+            }
+            structural = differences & {"venue", "symbol", "timeframe", "simulated"}
+
+            if user_chosen or structural:
+                _LOGGER.info(
+                    "Nieuwe bewijsfase: %s gewijzigd. Eerdere runs blijven in "
+                    "het rapport staan.", ", ".join(sorted(user_chosen | structural)),
+                )
+                self.run_changed_because = sorted(user_chosen | structural)
+                return None
+
+            # Alleen standaardwaarden verschillen; run voortzetten en de
+            # vingerafdruk bijwerken zodat het de volgende keer meteen matcht.
+            _LOGGER.info(
+                "Bewijsfase voortgezet ondanks gewijzigde standaardwaarden (%s). "
+                "Die heb je niet zelf ingesteld, dus dit telt niet als een "
+                "wijziging van de strategie.", ", ".join(sorted(differences)),
+            )
+            self.adopted_defaults = sorted(differences)
+            await self.hass.async_add_executor_job(
+                self.db.update_run_fingerprint, run["id"], fingerprint, material
+            )
+            return run
+        return None
+
+    #: Van vingerafdrukveld naar de optienaam waarmee je het zelf instelt.
+    _OPTION_FOR = {
+        "entry_threshold": "entry_threshold",
+        "regime_switching": "regime_switching",
+        "min_edge_multiple": "min_edge_multiple",
+        "max_spread": "max_spread",
+        "max_spread_atr_ratio": "max_spread_atr_ratio",
+        "enforce_hours": "enforce_trading_hours",
+        "trading_hours": "trading_start_hour",
+        "units": "units",
+        "assumed_spread": "assumed_spread",
+    }
+
+    def _fingerprint_material(self, config: dict) -> dict:
         """Hash van alles wat het handelsgedrag bepaalt.
 
         Wijzigt hier iets, dan zijn de resultaten niet meer vergelijkbaar en
@@ -521,7 +607,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         bewijzen terwijl je hem verandert. Risicolimieten zitten er bewust
         níet in; die begrenzen de schade maar veranderen de signalen niet.
         """
-        material = {
+        return {
             "venue": config["venue"],
             "symbol": config["symbol"],
             "timeframe": config["timeframe"],
@@ -532,14 +618,18 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "entry_threshold": self.strategy_cfg.entry_threshold,
             "regime_switching": self.strategy_cfg.regime_switching,
             "min_edge_multiple": self.strategy_cfg.min_edge_multiple,
-            "max_spread": self.strategy_cfg.max_spread,
             "enforce_hours": self.strategy_cfg.enforce_trading_hours,
             "real_spread": self.strategy_cfg.real_spread,
             "trading_hours": (
                 list(self.strategy_cfg.trading_hours_utc)
                 if self.strategy_cfg.enforce_trading_hours else None
             ),
+            "max_spread": self.strategy_cfg.max_spread,
+            "max_spread_atr_ratio": self.strategy_cfg.max_spread_atr_ratio,
         }
+
+    @staticmethod
+    def _hash_material(material: dict) -> str:
         blob = json.dumps(material, sort_keys=True, default=str)
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
@@ -766,6 +856,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                     volume=self.units / CONTRACT_SIZE,
                     spread=quote.spread, last_tick_age=tick_age,
                     market_open=quote.tradeable,
+                    atr=self.state.atr.value,
                 )
                 reject_reason = None if allowed else f"risico: {why}"
 
@@ -846,6 +937,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 if self._aggregator is not None else None
             ),
             "build_from_quotes": self._build_from_quotes,
+            "run_changed_because": self.run_changed_because,
+            "adopted_defaults": self.adopted_defaults,
             "learning": {
                 "execution": self.execution_facts,
                 "proposals": self.proposals,

@@ -266,6 +266,31 @@ class TradeDatabase:
         ).fetchone()
         return dict(row) if row else None
 
+    def update_run_fingerprint(
+        self, run_id: int, fingerprint: str, material: dict
+    ) -> None:
+        """Werk de vingerafdruk bij zonder de run te onderbreken.
+
+        Nodig wanneer een run wordt voortgezet ondanks gewijzigde
+        standaardwaarden: zonder bijwerken zou de volgende herstart dezelfde
+        vergelijking opnieuw moeten maken.
+        """
+        row = self.conn.execute(
+            "SELECT config_json FROM runs WHERE id=?", (run_id,)
+        ).fetchone()
+        config = {}
+        if row and row["config_json"]:
+            try:
+                config = json.loads(row["config_json"])
+            except (TypeError, ValueError):
+                config = {}
+        config["fingerprint_material"] = material
+        self.conn.execute(
+            "UPDATE runs SET fingerprint=?, config_json=? WHERE id=?",
+            (fingerprint, json.dumps(config, sort_keys=True, default=str), run_id),
+        )
+        self.conn.commit()
+
     def run_totals(self) -> list[dict]:
         """Samenvatting per run, zodat eerdere runs niet uit beeld verdwijnen."""
         rows = self.conn.execute(

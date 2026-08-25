@@ -84,7 +84,7 @@ def fresh(**over):
 def args(**over):
     base = dict(now=NOW, balance=10000.0, equity=10000.0, starting_balance=10000.0,
                 open_positions=0, volume=0.01, spread=0.35, last_tick_age=1.0,
-                market_open=True)
+                market_open=True, atr=4.1)
     base.update(over); return base
 
 
@@ -143,6 +143,32 @@ def test_wide_spread_blocks_but_does_not_halt():
     rm = fresh(max_spread=0.60)
     ok, _ = rm.can_open(**args(spread=1.20))
     assert not ok and rm.state.state is TradingState.RUNNING
+
+
+def test_spread_limit_is_relative_to_volatility():
+    """Een absolute grens deugt niet als primaire toets: bij goud op 4640 met
+    een ATR van 4,1 is een spread van 0,80 normaal, bij goud op 3300 met een
+    ATR van 1,0 is diezelfde spread veel te breed."""
+    rm = fresh(max_spread_atr_ratio=0.75, max_spread=10.0)
+    ok, _ = rm.can_open(**args(spread=0.80, atr=4.1))
+    assert ok, "normale spread bij hoge volatiliteit hoort door te komen"
+
+    ok, reason = rm.can_open(**args(spread=0.80, atr=1.0))
+    assert not ok and "ATR" in reason
+
+
+def test_risk_net_is_wider_than_the_strategy_filter():
+    """Het vangnet en het filter zijn twee verschillende dingen; ze door
+    elkaar halen leverde een grens op die normale spreads weigerde."""
+    from gold_scalper.broker.risk import RiskLimits
+    from gold_scalper.strategy.scalping import ScalpConfig
+    assert RiskLimits().max_spread_atr_ratio > ScalpConfig().max_spread_atr_ratio
+
+
+def test_absolute_limit_still_catches_a_blowout():
+    rm = fresh(max_spread=10.0)
+    ok, reason = rm.can_open(**args(spread=25.0, atr=4.1))
+    assert not ok and "vangnet" in reason
 
 
 def test_oversized_volume_blocked():
@@ -228,3 +254,23 @@ def test_trading_resumes_after_market_reopens():
     rm.can_open(**args(last_tick_age=48000.0, market_open=False))
     ok, _ = rm.can_open(**args(last_tick_age=2.0, market_open=True))
     assert ok
+
+
+def test_only_one_definition_of_a_wide_spread():
+    """Er zaten drie spreadgrenzen in de code - strategie, risicobewaking en
+    de sensor - en ze werden niet tegelijk aangepast. Dan toont de sensor
+    groen terwijl de strategie weigert.
+
+    Deze test controleert dat elke plek die 'te breed' beoordeelt, dat
+    relatief aan de ATR doet.
+    """
+    from pathlib import Path
+
+    pkg = Path(__file__).resolve().parent.parent / "custom_components" / "gold_scalper"
+    for path, marker in [
+        (pkg / "strategy" / "scalping.py", "spread_ratio"),
+        (pkg / "broker" / "risk.py", "max_spread_atr_ratio"),
+        (pkg / "binary_sensor.py", "max_spread_atr_ratio"),
+    ]:
+        source = path.read_text(encoding="utf-8")
+        assert marker in source, f"{path.name} toetst de spread niet relatief"

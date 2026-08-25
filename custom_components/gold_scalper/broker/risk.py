@@ -57,8 +57,18 @@ class RiskLimits:
     #: Maximale duur van een positie. Vangt een positie af die blijft hangen
     #: doordat de bot is vastgelopen.
     max_position_age_seconds: int = 900
-    #: Stop bij een spread boven deze waarde; meestal een nieuwsmoment.
-    max_spread: float = 0.60
+    #: Weiger bij een spread boven dit deel van de ATR.
+    #:
+    #: Bewust ruimer dan de grens in de strategie (0,35): dit is een vangnet
+    #: tegen nieuwsmomenten waarop de spread vervijfvoudigt, niet het filter
+    #: dat bepaalt of een trade de moeite waard is. Die twee door elkaar halen
+    #: leverde een absolute grens van 0,60 op die IG's normale spread van 0,80
+    #: al weigerde.
+    max_spread_atr_ratio: float = 0.75
+    #: Absolute bovengrens als laatste vangnet, in prijs-eenheden. Hoog gezet:
+    #: bij goud rond 4600 is een spread van 0,80 normaal, bij goud op 3300 was
+    #: dat 0,25. Een vast getal deugt hier niet als primaire grens.
+    max_spread: float = 10.0
     #: Maximale tijd zonder nieuwe tick voordat de bot de dataverbinding
     #: als dood beschouwt en posities sluit.
     max_data_staleness_seconds: int = 30
@@ -129,6 +139,7 @@ class RiskManager:
         spread: float,
         last_tick_age: float,
         market_open: bool = True,
+        atr: float | None = None,
     ) -> tuple[bool, str | None]:
         """Mag er nu een positie open? Geeft (toegestaan, reden bij weigering)."""
         self._roll_day(now, balance)
@@ -190,7 +201,20 @@ class RiskManager:
             )
 
         if spread > self.limits.max_spread:
-            return False, f"spread {spread:.3f} boven de limiet {self.limits.max_spread:.3f}"
+            return False, (
+                f"spread {spread:.3f} boven de absolute vangnetgrens "
+                f"{self.limits.max_spread:.3f}"
+            )
+
+        # Relatief aan de beweging: een spread van 0,80 is krap bij een ATR van
+        # 1,0 en verwaarloosbaar bij een ATR van 4,1.
+        if atr and atr > 0:
+            ratio = spread / atr
+            if ratio > self.limits.max_spread_atr_ratio:
+                return False, (
+                    f"spread {spread:.3f} is {ratio:.0%} van de ATR ({atr:.2f}); "
+                    f"vangnetgrens ligt op {self.limits.max_spread_atr_ratio:.0%}"
+                )
 
         return True, None
 

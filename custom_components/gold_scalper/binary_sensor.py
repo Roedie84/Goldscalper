@@ -128,17 +128,30 @@ class MarketTradeable(GoldScalperEntity, BinarySensorEntity):
         if not data or not data.get("quote"):
             return None
         quote = data["quote"]
-        return bool(
-            quote.tradeable and quote.spread <= self.coordinator.strategy_cfg.max_spread
-        )
+        if not quote.tradeable:
+            return False
+        # Dezelfde toets als de strategie, anders toont deze sensor groen
+        # terwijl er geweigerd wordt - of omgekeerd.
+        atr = data.get("atr")
+        if atr and atr > 0:
+            ratio = quote.spread / atr
+            return ratio <= self.coordinator.strategy_cfg.max_spread_atr_ratio
+        return quote.spread <= self.coordinator.strategy_cfg.max_spread
 
     @property
     def extra_state_attributes(self) -> dict:
         data = self.coordinator.data or {}
         quote = data.get("quote")
+        atr = data.get("atr")
+        spread = getattr(quote, "spread", None)
         return {
-            "spread": getattr(quote, "spread", None),
-            "max_spread": self.coordinator.strategy_cfg.max_spread,
+            "spread": spread,
+            "atr": atr,
+            "spread_atr_ratio": (
+                round(spread / atr, 3) if (spread and atr and atr > 0) else None
+            ),
+            "max_ratio": self.coordinator.strategy_cfg.max_spread_atr_ratio,
+            "max_spread_absolute": self.coordinator.strategy_cfg.max_spread,
             "market_open": getattr(quote, "tradeable", None),
         }
 
