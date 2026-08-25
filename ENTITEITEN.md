@@ -236,3 +236,63 @@ krijgen. Dezelfde waarschuwing wordt hooguit eens per vier uur herhaald.
 Staat **Noodstop als kritieke melding** aan, dan komt die waarschuwing op iOS
 door een stille stand en door Niet storen heen. Bij een handelsbot die zichzelf
 heeft stilgelegd is dat gepast; het uurbericht gaat altijd als gewone melding.
+
+## Hervatten na een noodstop
+
+Bij de opties staat **Hervattingen per dag na een noodstop**, standaard twee.
+
+Hervatten verzet het dagijkpunt: het dagverlies telt vanaf dat moment opnieuw.
+Zonder dat zou hervatten zinloos zijn - de volgende cyclus ziet dezelfde
+overschrijding en stopt meteen weer.
+
+Juist daarom zit er een grens op. Onbeperkt hervatten maakt van de daglimiet
+een suggestie: je kunt dan telkens opnieuw hetzelfde percentage verliezen.
+
+| Waarde | Betekenis |
+|---|---|
+| 0 | een noodstop duurt tot morgen |
+| 2 | standaard: ruimte om een storing te herstellen |
+| hoger | meer speling, maar de daglimiet verwatert evenredig |
+
+Nul is een verdedigbare keuze voor wie zichzelf niet wil kunnen overrulen. Het
+verlies dat al geleden is blijft hoe dan ook in de database en telt mee in je
+resultaten; alleen de noodrem begint opnieuw.
+
+De statussensor toont hoeveel hervattingen je vandaag nog hebt.
+
+## Doel en stop instellen
+
+Standaard schalen doel en stop mee met de ATR: **1,5x** voor het doel, **1,0x**
+voor de stop. Bij een ATR van 6 is dat een doel van 9 en een stop van 6 USD per
+ounce.
+
+Dat meeschalen is bewust. Hetzelfde percentage van de beweging, of goud nu 2 of
+12 dollar per bar aflegt.
+
+### Vast bedrag in USD
+
+Bij de opties staan **Doel als vast bedrag** en **Stop als vast bedrag**. Nul
+betekent: de ATR gebruiken. Vul je er iets in, dan geldt dat bedrag ongeacht de
+volatiliteit.
+
+Dat snijdt twee kanten op:
+
+| Markt | ATR | Vast doel van 10 |
+|---|---|---|
+| rustig | 2 | onbereikbaar; je doet vrijwel niets |
+| normaal | 6 | vergelijkbaar met 1,7x ATR |
+| onrustig | 12 | binnen een halve bar geraakt |
+
+En bij een vaste **stop** is het omgekeerde het risico: in een onrustige markt
+word je er stelselmatig uitgeschud voordat de beweging op gang komt.
+
+Bij het openen van het optiescherm staat de huidige ATR erbij, met wat de
+multipliers daarmee opleveren. Dan weet je waar je een vast bedrag tegen
+afzet.
+
+De twee zijn onafhankelijk: je kunt het doel vastzetten en de stop laten
+meeschalen.
+
+**Let op:** doel en stop zitten in de vingerafdruk van de run. Ze aanpassen
+begint een nieuwe bewijsfase, want trades met andere doelen zijn niet
+vergelijkbaar.
