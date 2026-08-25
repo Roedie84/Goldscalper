@@ -349,6 +349,39 @@ def _cost_projection_block(stats: dict) -> str:
 </section>"""
 
 
+def _loss_analysis(stats: dict) -> str:
+    """Verliezen naar oorzaak, met onderscheid tussen ontwerp en markt."""
+    post = stats.get("losses") or {}
+    patterns = post.get("patterns") or []
+    if not patterns:
+        return ""
+
+    rows = ""
+    for item in patterns:
+        mark = "herstelbaar" if item["actionable"] else "markt"
+        cls = "neg" if item["actionable"] else ""
+        rows += (
+            f"<tr><td>{_esc(item['cause'].replace('_', ' '))}</td>"
+            f"<td class='num'>{item['count']}</td>"
+            f"<td class='num'>{item['share'] * 100:.0f}%</td>"
+            f"<td class='num neg'>{_fmt(item['total_loss'])}</td>"
+            f"<td class='{cls}'>{mark}</td></tr>"
+        )
+
+    return f"""<section>
+  <h3>Waar de verliezen vandaan komen</h3>
+  <p class="note">Niet elk verlies is een fout. Bij een doel van anderhalf keer
+     de stop zijn verliezers noodzakelijk; ze wegfilteren haalt de winnaars mee
+     weg. Wat hier telt is het onderscheid tussen gewone marktbeweging en een
+     fout in het exitontwerp.</p>
+  <div class="scroller"><table><thead><tr>
+    <th>Oorzaak</th><th class="num">Aantal</th><th class="num">Deel</th>
+    <th class="num">Verlies</th><th>Soort</th>
+  </tr></thead><tbody>{rows}</tbody></table></div>
+  <p class="note prose">{_esc(post.get("conclusion"))}</p>
+</section>"""
+
+
 def _run_history(db, current_run_id: int, tz=None) -> str:
     """Overzicht van alle runs, met de huidige gemarkeerd.
 
@@ -485,7 +518,7 @@ h1{margin:0;font-size:19px;font-weight:600;letter-spacing:.22em;text-transform:u
 .stamp-sub{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;opacity:.8}
 
 .mode-line{margin:18px 0 0;padding:10px 14px;background:%(ground_deep)s;
-  border-left:4px solid %(assay)s;font-size:12px;color:%(ink_soft)s;line-height:1.5}
+  border-left:4px solid var(--mode-colour,%(assay)s);font-size:12px;color:%(ink_soft)s;line-height:1.5}
 .verdict{border-left:3px solid var(--vc,%(ink_soft)s);padding:14px 18px;margin:26px 0;
   background:%(ground_deep)s}
 .verdict h2{margin:0 0 8px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;
@@ -646,12 +679,28 @@ def build_report(
     label = now.tzname() or "UTC"
     generated = now.strftime(f"%d-%m-%Y %H:%M:%S {label}")
 
-    mode_line = (
-        "Papierhandel: de koersen zijn echt, de trades gesimuleerd. "
-        "Er is niets naar je broker gestuurd en je account is ongewijzigd."
-        if (run.get("mode") or "paper") != "live"
-        else "LIVE: deze cijfers horen bij orders die werkelijk zijn geplaatst."
-    )
+    run_mode = run.get("mode") or "paper"
+    mode_line = {
+        "paper": (
+            "Papierhandel: de koersen zijn echt, de trades gesimuleerd. Er is "
+            "niets naar je broker gestuurd en je account is ongewijzigd. De "
+            "kosten hieronder zijn berekend, niet gemeten."
+        ),
+        "demo": (
+            "Demo: deze cijfers horen bij orders die werkelijk naar je "
+            "demo-account zijn gestuurd. Spread, slippage en fills zijn "
+            "gemeten in plaats van gemodelleerd - dit is de enige manier om "
+            "de aannames van de papersimulatie te toetsen. Er staat geen echt "
+            "geld op het spel."
+        ),
+        "live": (
+            "LIVE: deze cijfers horen bij orders die werkelijk zijn geplaatst "
+            "met echt geld."
+        ),
+    }.get(run_mode, f"Modus {run_mode}.")
+    mode_colour = {
+        "paper": TOKENS["assay"], "demo": TOKENS["metal"], "live": TOKENS["reject"],
+    }.get(run_mode, TOKENS["ink_soft"])
 
     # Automatisch verversen via meta-refresh in plaats van JavaScript: het
     # rapport blijft daarmee scriptvrij, wat van belang is omdat het paneel
@@ -683,7 +732,7 @@ def build_report(
   {_stamp(stats, gate)}
 </header>
 
-<p class="mode-line">{mode_line}</p>
+<p class="mode-line" style="--mode-colour:{mode_colour}">{mode_line}</p>
 
 <div class="verdict" style="--vc:{vc}">
   <h2>Oordeel</h2>
@@ -737,6 +786,8 @@ def build_report(
     {_scatter_mae_mfe(trades)}
   </div>
 </section>
+
+{_loss_analysis(stats)}
 
 {_run_history(db, run_id, tz)}
 

@@ -90,12 +90,22 @@ class GoldScalperOverviewView(HomeAssistantView):
         payload["symbol"] = coordinator.symbol
         # Eén bron van waarheid voor de vraag of er echt geld omgaat: live
         # modus én poort open én schakelaar aan én de venue mag handelen.
-        payload["uses_real_money"] = bool(
-            coordinator.mode.uses_real_money
-            and (coordinator.gate or {}).get("unlocked")
+        # Drie standen, niet twee. 'Geen geld' is niet hetzelfde als 'geen
+        # orders': op een demo-account gaan er werkelijke orders naar de
+        # broker, met echte fills en gemeten kosten. Dat verzwijgen zou de
+        # indruk wekken dat er niets gebeurt.
+        places_orders = bool(
+            coordinator.mode.places_orders
             and coordinator.enabled
             and getattr(coordinator.venue, "supports_trading", False)
         )
+        payload["uses_real_money"] = bool(
+            coordinator.mode.uses_real_money
+            and (coordinator.gate or {}).get("unlocked")
+            and places_orders
+        )
+        payload["places_orders"] = places_orders
+        payload["mode"] = coordinator.mode.value
 
         try:
             refresh = int(request.query.get("refresh", DEFAULT_REFRESH_SECONDS))

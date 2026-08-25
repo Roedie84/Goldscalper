@@ -157,3 +157,29 @@ def test_default_is_paper_when_unknown():
 def test_money_banner_comes_before_the_status():
     html = build_overview(data(), REPORT)
     assert html.index("PAPIERHANDEL") < html.index('class="status"')
+
+
+def test_demo_is_distinguished_from_paper():
+    """'Geen geld' is niet hetzelfde als 'geen orders': op demo gaan er
+    werkelijke orders naar de broker met gemeten kosten."""
+    html = build_overview(
+        data(places_orders=True, uses_real_money=False, mode="demo"), REPORT
+    )
+    assert "DEMO" in html
+    assert "echte orders" in html
+    assert "gemeten, niet berekend" in html
+    assert "PAPIERHANDEL" not in html
+
+
+def test_paper_when_no_orders_are_placed():
+    html = build_overview(data(places_orders=False, uses_real_money=False), REPORT)
+    assert "PAPIERHANDEL" in html
+    assert "DEMO" not in html
+
+
+def test_real_money_outranks_demo():
+    html = build_overview(
+        data(places_orders=True, uses_real_money=True, mode="live"), REPORT
+    )
+    assert "ECHT GELD" in html
+    assert "DEMO &middot;" not in html

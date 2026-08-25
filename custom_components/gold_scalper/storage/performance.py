@@ -291,6 +291,9 @@ def compute_for_run(
     stats["signals"] = db.signal_stats(run_id)
     stats["cost_projection"] = cost_projection(trades)
 
+    from ..learning.postmortem import analyse_losses
+    stats["losses"] = analyse_losses(trades).as_dict()
+
     # Markeer expliciet als er zonder kosten gedraaid is. Zonder dit ziet een
     # nulkosten-run er in het rapport uit als een gewone winstgevende run.
     if stats.get("trades") and (stats.get("total_costs") or 0) <= 0:

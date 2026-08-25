@@ -132,3 +132,16 @@ def test_report_states_whether_money_is_involved(empty_db):
     html = build_report(db, run)
     assert "Papierhandel" in html
     assert "niets naar je broker" in html
+
+
+@pytest.mark.parametrize("mode,fragment", [
+    ("paper", "berekend, niet gemeten"),
+    ("demo", "gemeten in plaats van gemodelleerd"),
+    ("live", "echt geld"),
+])
+def test_report_states_the_mode(tmp_path, mode, fragment):
+    """Een geëxporteerd rapport mag niet uit zijn verband gelezen worden."""
+    from gold_scalper.storage.database import TradeDatabase
+    db = TradeDatabase(tmp_path / f"m{mode}.db"); db.connect()
+    run = db.start_run(mode, "v1", "GOLD", {}, 1000.0)
+    assert fragment in build_report(db, run)

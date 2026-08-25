@@ -152,8 +152,12 @@ SENSORS: tuple[ScalperSensor, ...] = (
             "execution": (d.get("learning") or {}).get("execution", {}),
             "proposals": (d.get("learning") or {}).get("proposals", []),
             "regimes": (d.get("learning") or {}).get("regimes", {}),
+            "losses": (d.get("learning") or {}).get("losses", {}),
             "note": (
-                "Gemeten waarden worden automatisch toegepast. "
+                "Verliezen worden geordend naar oorzaak, niet gebruikt om "
+                "omstandigheden te vermijden: bij een trefkans van 40% zijn "
+                "verliezers noodzakelijk, en ze wegfilteren haalt de winnaars "
+                "mee weg. Gemeten waarden worden automatisch toegepast. "
                 "Parametervoorstellen niet: die pas je zelf toe bij de opties, "
                 "en alleen als je de onderbouwing overtuigend vindt."
             ),

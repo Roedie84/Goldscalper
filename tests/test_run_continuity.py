@@ -174,3 +174,24 @@ def test_fingerprint_update_preserves_run(db):
     stored = json.loads(db.get_run(run)["config_json"])
     assert stored["fingerprint_material"] == {"max_spread": 3.0}
     assert stored["a"] == 1          # bestaande configuratie behouden
+
+
+def test_mode_is_part_of_the_fingerprint():
+    """Papertrades hebben gemodelleerde kosten, demotrades gemeten. Die in één
+    bewijsfase mengen zou de uitkomst waardeloos maken - juist het verschil
+    tussen die twee is wat je wilt meten."""
+    from pathlib import Path
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    body = source.split("def _fingerprint_material(")[1].split("\n    @staticmethod")[0]
+    assert '"mode"' in body
+
+
+def test_mode_change_is_reported_as_your_choice():
+    """Van paper naar demo is jouw beslissing, dus hoort de nieuwe run
+    benoemd te worden in plaats van stil te beginnen."""
+    from pathlib import Path
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    mapping = source.split("_OPTION_FOR = {")[1].split("}")[0]
+    assert '"mode": "mode"' in mapping

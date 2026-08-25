@@ -101,6 +101,9 @@ a.button:active{opacity:.75}
 .money.paper{background:%(ground_deep)s;border-left:4px solid %(assay)s;
   color:%(ink_soft)s}
 .money.paper::first-line{font-weight:600;color:%(assay)s}
+.money.demo{background:%(ground_deep)s;border-left:4px solid %(metal)s;
+  color:%(ink_soft)s}
+.money.demo::first-line{font-weight:600;color:%(metal)s}
 .money.real{background:%(reject)s;color:%(ground)s;font-weight:600;
   border-left:4px solid %(ink)s}
 .notice{background:%(ground_deep)s;border-left:3px solid %(metal)s;
@@ -208,10 +211,20 @@ def build_overview(
     # Wie een trade ziet verschijnen en zijn brokeraccount ongewijzigd vindt,
     # moet niet hoeven zoeken naar de verklaring.
     real_money = bool(data.get("uses_real_money"))
+    places_orders = bool(data.get("places_orders"))
+
     if real_money:
         money_banner = (
             '<div class="money real">ECHT GELD &middot; deze bot plaatst orders '
             'bij je broker</div>'
+        )
+    elif places_orders:
+        # Demo: er gaan werkelijke orders naar de broker, met echte fills en
+        # gemeten kosten. Alleen het geld is niet echt.
+        money_banner = (
+            '<div class="money demo">DEMO &middot; er worden echte orders naar '
+            'je demo-account gestuurd. Fills, spread en slippage zijn gemeten, '
+            'niet berekend. Er staat geen echt geld op het spel.</div>'
         )
     else:
         money_banner = (

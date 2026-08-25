@@ -55,6 +55,7 @@ from .const import (
     WARMUP_CANDLES,
 )
 from .learning.analysis import evaluate_threshold, measure_execution, regime_performance
+from .learning.postmortem import analyse_losses
 from .lifecycle import DrainPolicy, LifecycleController
 from .modes import LiveGate, ModeLockedError, TradingMode, require_live_unlocked
 from .storage import performance
@@ -256,6 +257,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self.execution_facts: dict = {}
         self.proposals: list[dict] = []
         self.regime_stats: dict = {}
+        self.postmortem: dict = {}
         #: Waarom er een nieuwe run begon, en welke standaardwaarden er
         #: stilzwijgend zijn overgenomen. Beide horen zichtbaar te zijn.
         self.run_changed_because: list[str] = []
@@ -538,6 +540,19 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             regime_performance, trades
         )
 
+        # Verliezen ordenen naar oorzaak. Niet om omstandigheden te vermijden -
+        # dat filtert de winnaars mee weg - maar om te zien of ze aan het
+        # exitontwerp liggen of aan de markt.
+        post = await self.hass.async_add_executor_job(
+            analyse_losses, trades,
+            self.exits.config.take_profit_atr,
+            self.exits.config.stop_loss_atr,
+            self.state.atr.value,
+        )
+        self.postmortem = post.as_dict()
+        if post.patterns and post.patterns[0].actionable and post.fixable_share >= 0.25:
+            _LOGGER.info("Verliesanalyse: %s", post.conclusion)
+
     async def _adoptable_run(self, material: dict, fingerprint: str):
         """Zoek een lopende run die alleen verschilt in wat jij niet koos.
 
@@ -601,6 +616,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
     #: Van vingerafdrukveld naar de optienaam waarmee je het zelf instelt.
     _OPTION_FOR = {
+        "mode": "mode",
         "entry_threshold": "entry_threshold",
         "regime_switching": "regime_switching",
         "min_edge_multiple": "min_edge_multiple",
@@ -642,6 +658,11 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             ),
             "max_spread": self.strategy_cfg.max_spread,
             "max_spread_atr_ratio": self.strategy_cfg.max_spread_atr_ratio,
+            # De modus hoort erbij: papertrades hebben gemodelleerde kosten,
+            # demotrades gemeten. Die in één bewijsfase mengen zou de hele
+            # uitkomst waardeloos maken - juist het verschil tussen die twee
+            # is wat je wilt meten.
+            "mode": self.mode.value,
         }
 
     @staticmethod
@@ -965,6 +986,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 "execution": self.execution_facts,
                 "proposals": self.proposals,
                 "regimes": self.regime_stats,
+                "losses": self.postmortem,
             },
             "mode": self.mode.value,
             "requested_mode": self.requested_mode.value,
