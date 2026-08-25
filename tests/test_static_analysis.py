@@ -290,3 +290,61 @@ def test_no_stale_metatrader_instructions():
             if "MT5" in text or "/close_all" in text or "MetaTrader" in text:
                 offenders.append(f"{path.name}:{node.lineno}  {text[:60]}")
     assert offenders == [], "\n".join(offenders)
+
+
+def test_no_key_changes_type_when_overwritten():
+    """Vangt sleutels die eerst een getal zijn en daarna een dict.
+
+    `stats["losses"]` bevatte het aantal verliezende trades. Daar werd later de
+    verliesanalyse overheen geschreven, waardoor de teller verdween én de
+    controle op 'geen enkele verliezer' - die een boekhoudfout moet vangen -
+    een dict met nul vergeleek en dus nooit meer aansloeg.
+
+    Aanvullen van een dict is normaal en wordt niet gemeld; alleen een sleutel
+    waarvan het *type* verandert is verdacht.
+    """
+    def _kind(node) -> str | None:
+        """Grove typering van wat er aan een sleutel wordt toegekend."""
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = getattr(func, "attr", None) or getattr(func, "id", None)
+            if name in ("len", "round", "sum", "int", "float", "abs"):
+                return "getal"
+            if name == "as_dict":
+                return "dict"
+            return None
+        if isinstance(node, ast.Dict):
+            return "dict"
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return "getal"
+        return None
+
+    offenders = []
+    for path in PKG.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        kinds: dict[str, set[str]] = {}
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values):
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        kind = _kind(value)
+                        if kind:
+                            kinds.setdefault(key.value, set()).add(kind)
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (isinstance(target, ast.Subscript)
+                            and isinstance(target.slice, ast.Constant)
+                            and isinstance(target.slice.value, str)):
+                        kind = _kind(node.value)
+                        if kind:
+                            kinds.setdefault(target.slice.value, set()).add(kind)
+
+        for key, seen in kinds.items():
+            if len(seen) > 1:
+                offenders.append(f"{path.name}  '{key}': {sorted(seen)}")
+
+    assert offenders == [], (
+        "sleutel verandert van type; dat overschrijft betekenis:\n"
+        + "\n".join(offenders)
+    )
