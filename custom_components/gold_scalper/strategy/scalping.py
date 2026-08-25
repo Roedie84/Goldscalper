@@ -245,6 +245,13 @@ def evaluate(
     hour_utc: int,
     open_position_count: int = 0,
     seconds_since_last_entry: float = 1e9,
+    #: Richting van de lopende positie: 1 long, -1 short, 0 onbekend.
+    #:
+    #: Nodig om een geweigerd signaal te kunnen uitsplitsen. Zonder dit zie je
+    #: alleen "positielimiet" en niet of de strategie ondertussen van richting
+    #: veranderde - en dat verschil bepaalt of je vastzit in iets waarvan je
+    #: systeem het tegenovergestelde denkt.
+    open_position_side: int = 0,
 ) -> ScalpSignal:
     """Beoordeel of er nu een scalp te maken is.
 
@@ -255,9 +262,18 @@ def evaluate(
     spread = ask - bid
     components: dict[str, float] = {}
 
-    def reject(reason: str, text: str) -> ScalpSignal:
+    def reject(
+        reason: str, text: str, score: float = 0.0, direction: int = 0
+    ) -> ScalpSignal:
+        """Weiger, maar behoud de score als die al berekend is.
+
+        Een weigering met score nul verbergt of het signaal sterk was. Bij
+        'positie open in de andere richting' is juist die sterkte het punt:
+        -0,08 is toevallige ruis, -0,72 betekent dat je vastzit in iets waarvan
+        je systeem het tegenovergestelde denkt.
+        """
         return ScalpSignal(
-            direction=0, score=0.0, confidence=0.0, should_trade=False,
+            direction=direction, score=score, confidence=0.0, should_trade=False,
             reject_reason=reason, reason=text, components=components,
         )
 
@@ -279,9 +295,17 @@ def evaluate(
             )
 
     if open_position_count >= cfg.max_positions:
-        return reject("max_positions", f"Al {open_position_count} positie(s) open")
+        # Bewust hier niet meteen weigeren, maar dat onthouden en de score toch
+        # berekenen. Anders zie je in de signaaltrechter alleen "positielimiet"
+        # en niet óf de strategie ondertussen van richting veranderde. Dat
+        # verschil is het waard: vastzitten in een long terwijl je systeem
+        # short denkt, is iets anders dan een herhaald signaal in dezelfde
+        # richting.
+        position_blocked = True
+    else:
+        position_blocked = False
 
-    if seconds_since_last_entry < cfg.cooldown_seconds:
+    if not position_blocked and seconds_since_last_entry < cfg.cooldown_seconds:
         return reject(
             "cooldown",
             f"Nog {cfg.cooldown_seconds - seconds_since_last_entry:.0f}s cooldown",
@@ -353,6 +377,30 @@ def evaluate(
         )
 
     direction = 1 if score > 0 else -1
+
+    if position_blocked:
+        # Nu is de richting bekend, dus de weigering kan uitgesplitst worden.
+        if abs(score) < cfg.entry_threshold:
+            return reject(
+                "max_positions_geen_signaal",
+                f"Positie open en score {score:+.3f} onder de drempel; "
+                "er zou toch niets gebeuren",
+                score, direction,
+            )
+        if open_position_side and direction != open_position_side:
+            return reject(
+                "max_positions_tegengesteld",
+                f"Positie open in de andere richting, maar het signaal wijst "
+                f"{'long' if direction == 1 else 'short'} met score {score:+.3f}. "
+                "De lopende positie wordt niet omgedraaid.",
+                score, direction,
+            )
+        return reject(
+            "max_positions_zelfde_richting",
+            f"Positie al open in dezelfde richting; signaal {score:+.3f} "
+            "bevestigt alleen wat er al loopt.",
+            score, direction,
+        )
 
     # Een break tegen de heersende structuur in is een waarschuwing, geen
     # signaal: hij kan een omslag inluiden maar even goed een uitschieter zijn.

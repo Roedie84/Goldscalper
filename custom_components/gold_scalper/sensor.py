@@ -105,6 +105,16 @@ SENSORS: tuple[ScalperSensor, ...] = (
         key="total_costs", name="Kosten", icon="mdi:cash-minus",
         state_class=SensorStateClass.TOTAL, suggested_display_precision=2,
         value_fn=lambda d: _stats(d).get("total_costs"),
+        attrs_fn=lambda d: {
+            "per_trade": _stats(d).get("cost_per_trade"),
+            # De spread die je werkelijk betaalde, niet die van dit moment.
+            # Zonder dit onderscheid lijkt een correcte kostprijs
+            # onverklaarbaar: de sensor toont 0.60 terwijl je 0.82 betaalde.
+            "spread_betaald_mediaan": _stats(d).get("spread_paid_median"),
+            "spread_betaald_hoogste": _stats(d).get("spread_paid_max"),
+            "spread_nu": d.get("spread"),
+            "aandeel_van_bruto": _stats(d).get("cost_ratio"),
+        },
     ),
     ScalperSensor(
         key="trades", name="Trades", icon="mdi:swap-horizontal",
@@ -140,6 +150,26 @@ SENSORS: tuple[ScalperSensor, ...] = (
         key="max_drawdown", name="Max. drawdown", icon="mdi:trending-down",
         native_unit_of_measurement=PERCENTAGE, state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: _stats(d).get("max_drawdown_pct"),
+    ),
+    ScalperSensor(
+        key="periods", name="Resultaat per periode", icon="mdi:calendar-check",
+        native_unit_of_measurement="USD", device_class=SensorDeviceClass.MONETARY,
+        # De waarde is vandaag; dag, week en maand staan in de attributen.
+        # Een totaalcijfer verbergt of de winst gespreid is of uit één periode
+        # komt, en dat is juist wat je wilt weten.
+        value_fn=lambda d: (
+            ((d.get("periods") or {}).get("daily") or [{}])[-1].get("net")
+        ),
+        attrs_fn=lambda d: {
+            "vandaag": ((d.get("periods") or {}).get("daily") or [{}])[-1],
+            "deze_week": ((d.get("periods") or {}).get("weekly") or [{}])[-1],
+            "deze_maand": ((d.get("periods") or {}).get("monthly") or [{}])[-1],
+            "dagen": (d.get("periods") or {}).get("daily", [])[-14:],
+            "weken": (d.get("periods") or {}).get("weekly", [])[-8:],
+            "maanden": (d.get("periods") or {}).get("monthly", []),
+            "reeksen": (d.get("periods") or {}).get("streaks", {}),
+            "backtest": d.get("backtest", {}),
+        },
     ),
     ScalperSensor(
         key="learning", name="Geleerd", icon="mdi:school-outline",

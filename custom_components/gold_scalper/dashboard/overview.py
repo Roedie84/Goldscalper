@@ -169,7 +169,19 @@ def build_overview(
     # Waarom er niet gehandeld wordt: de meest voorkomende reden volstaat.
     rejections = signals.get("rejections") or {}
     reason_rows = ""
-    for reason, count in sorted(rejections.items(), key=lambda kv: -kv[1])[:4]:
+    leesbaar = {
+        "max_positions_tegengesteld": "positie open, signaal tegengesteld",
+        "max_positions_zelfde_richting": "positie open, zelfde richting",
+        "max_positions_geen_signaal": "positie open, geen signaal",
+        "score_below_threshold": "signaal te zwak",
+        "spread_too_wide": "spread te breed",
+        "edge_below_cost": "beweging dekt de kosten niet",
+        "volatility_regime": "te weinig beweging",
+        "cooldown": "wachttijd na vorige trade",
+        "outside_hours": "buiten het handelsvenster",
+    }
+    for reason, count in sorted(rejections.items(), key=lambda kv: -kv[1])[:5]:
+        reason = leesbaar.get(reason, reason)
         reason_rows += (
             f'<li><span class="k">{_esc(reason)}</span>'
             f'<span class="v">{count}</span></li>'

@@ -154,6 +154,16 @@ class ExecutionVenue(ABC):
     async def close(self, ticket: str, units: float | None = None) -> OrderResult:
         """Sluit een positie geheel of gedeeltelijk."""
 
+    async def modify_target(self, ticket: str, take_profit: float) -> OrderResult:
+        """Pas het winstdoel van een open positie aan.
+
+        Standaard niet ondersteund: niet elke venue kent losse doelen. Een
+        venue die het wel kan, overschrijft dit.
+        """
+        raise VenueError(
+            f"{self.name} ondersteunt het losstaand aanpassen van het doel niet."
+        )
+
     @abstractmethod
     async def modify_stop(self, ticket: str, stop_loss: float) -> OrderResult:
         """Verplaats de stop-loss. Nodig voor break-even en trailing."""

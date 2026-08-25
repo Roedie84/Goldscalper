@@ -117,7 +117,10 @@
           "max_resumes_per_day": "Hervattingen per dag na een noodstop (0 = geen)",
           "risk_based_sizing": "Grootte uit risico berekenen (i.p.v. vaste ounces)",
           "risk_per_trade_pct": "Risico per trade in % van het vermogen",
-          "scale_with_confidence": "Meer inzetten bij een sterker signaal"
+          "scale_with_confidence": "Meer inzetten bij een sterker signaal",
+          "pyramid_enabled": "Bijkopen bij bevestiging (pyramiden)",
+          "pyramid_trigger_atr": "Bijkopen vanaf winst in ATR",
+          "pyramid_max_additions": "Maximaal aantal toevoegingen"
         }
       }
     },
@@ -163,6 +166,9 @@
       },
       "learning": {
         "name": "Geleerd"
+      },
+      "periods": {
+        "name": "Resultaat per periode"
       }
     }
   }

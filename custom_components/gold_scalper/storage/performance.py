@@ -25,6 +25,7 @@ omdat ze onaangenaam zijn:
 from __future__ import annotations
 
 import math
+import statistics
 from datetime import datetime, timezone
 from typing import Sequence
 
@@ -50,6 +51,7 @@ def compute(trades: Sequence[Trade], starting_balance: float = 10_000.0) -> dict
             "verdict_text": "Nog geen gesloten trades.",
         }
 
+    spreads = [t.open_spread for t in closed if t.open_spread]
     nets = [t.net_pnl for t in closed]
     grosses = [t.gross_pnl or 0.0 for t in closed]
     costs = [t.total_cost or 0.0 for t in closed]
@@ -116,6 +118,13 @@ def compute(trades: Sequence[Trade], starting_balance: float = 10_000.0) -> dict
             round(cost_total / abs(gross_total), 3) if gross_total else None
         ),
         "cost_per_trade": round(_safe(cost_total, len(closed)), 4),
+        # De spread die je werkelijk betaalde, niet die van dit moment. De
+        # actuele spread zegt niets over trades die uren geleden liepen, en
+        # zonder dit onderscheid lijkt een correcte kostprijs onverklaarbaar.
+        "spread_paid_median": (
+            round(statistics.median(spreads), 4) if spreads else None
+        ),
+        "spread_paid_max": round(max(spreads), 4) if spreads else None,
 
         # None in plaats van oneindig: Infinity is geen geldige JSON en breekt
         # strikte parsers, waaronder sommige dashboardtools. Zonder verliezers

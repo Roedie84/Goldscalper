@@ -77,6 +77,16 @@ def build_status(d: dict) -> tuple[str, str]:
             "cooldown": "Wachttijd na de vorige trade.",
             "volatility_regime": "Volatiliteit ongeschikt om te handelen.",
             "insufficient_data": "Nog te weinig historie voor een oordeel.",
+            "max_positions_tegengesteld": (
+                "Er loopt een positie in de andere richting. Die wordt niet "
+                "omgedraaid; omkeren kost een volledige round trip."
+            ),
+            "max_positions_zelfde_richting": (
+                "Er loopt al een positie in dezelfde richting."
+            ),
+            "max_positions_geen_signaal": (
+                "Er loopt een positie en er is geen nieuw signaal."
+            ),
         }.get(reason, reason)
         return "wachtend", readable
     return "wachtend", "Actief; wachten op een geschikt signaal."

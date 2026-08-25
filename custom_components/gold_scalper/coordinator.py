@@ -41,7 +41,8 @@ from .broker.risk import RiskLimits, RiskManager, TradingState
 from .const import (
     CONF_ACCOUNT_ID, CONF_API_KEY, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
     CONF_NOTIFY_CRITICAL, CONF_NOTIFY_HOURLY, CONF_NOTIFY_SERVICE,
-    CONF_NOTIFY_SKIP_QUIET, CONF_RISK_BASED_SIZING, CONF_RISK_PER_TRADE_PCT,
+    CONF_NOTIFY_SKIP_QUIET, CONF_PYRAMID_ENABLED, CONF_PYRAMID_MAX_ADDITIONS,
+    CONF_PYRAMID_TRIGGER_ATR, CONF_RISK_BASED_SIZING, CONF_RISK_PER_TRADE_PCT,
     CONF_SCALE_WITH_CONFIDENCE, CONF_STOP_LOSS_ATR, CONF_STOP_LOSS_USD,
     CONF_TAKE_PROFIT_ATR, CONF_TAKE_PROFIT_USD, NOTIFY_NONE,
     CONF_ENFORCE_TRADING_HOURS,
@@ -66,12 +67,14 @@ from .notify import Notifier, NotifierConfig
 from .status import build_status
 from .modes import LiveGate, ModeLockedError, TradingMode, require_live_unlocked
 from .storage import performance
+from .storage.periods import build_periods
 from .storage.database import MODE_LIVE, MODE_PAPER, Trade, TradeDatabase
 from .storage.state import RuntimeState, StateStore
 from .storage.latency import LatencyBudget, LatencyTracker, install_buffered_signals
 from .strategy.scalping import STRATEGY_VERSION, ScalpConfig, evaluate
 from .learning.robustness import evaluate_robustness
 from .strategy.aggregator import QuoteAggregator
+from .strategy.pyramid import PyramidConfig, consider_addition
 from .strategy.sizing import SizingConfig, position_size
 from .strategy.streaming import StreamState
 
@@ -270,7 +273,24 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             scale_with_confidence=options.get(CONF_SCALE_WITH_CONFIDENCE, False),
             max_units=options.get(CONF_MAX_UNITS, DEFAULT_MAX_UNITS),
         )
+        self.pyramid = PyramidConfig(
+            enabled=options.get(CONF_PYRAMID_ENABLED, False),
+            trigger_atr=options.get(CONF_PYRAMID_TRIGGER_ATR, 1.0),
+            max_additions=_as_int(options.get(CONF_PYRAMID_MAX_ADDITIONS), 2),
+        )
+        #: Per ticket: hoeveel toevoegingen en op welke prijs de laatste.
+        self._pyramid_state: dict[str, dict] = {}
+        #: Per ticket de uiterste mee- en tegenbeweging sinds de instap.
+        #:
+        #: Bij brokertrades werden die niet bijgehouden, terwijl de
+        #: verliesanalyse erop filtert. Gevolg: die analyse sloeg elke
+        #: demotrade over en meldde "0 verliezende trades" naast een
+        #: performance die er wél telde - dood in precies de modus die ertoe
+        #: doet.
+        self._excursions: dict[str, dict] = {}
         self.robustness: dict = {}
+        self.periods: dict = {}
+        self.backtest: dict = {}
         self.last_sizing: dict = {}
 
         service = options.get(CONF_NOTIFY_SERVICE, NOTIFY_NONE)
@@ -295,7 +315,24 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             scale_with_confidence=options.get(CONF_SCALE_WITH_CONFIDENCE, False),
             max_units=options.get(CONF_MAX_UNITS, DEFAULT_MAX_UNITS),
         )
+        self.pyramid = PyramidConfig(
+            enabled=options.get(CONF_PYRAMID_ENABLED, False),
+            trigger_atr=options.get(CONF_PYRAMID_TRIGGER_ATR, 1.0),
+            max_additions=_as_int(options.get(CONF_PYRAMID_MAX_ADDITIONS), 2),
+        )
+        #: Per ticket: hoeveel toevoegingen en op welke prijs de laatste.
+        self._pyramid_state: dict[str, dict] = {}
+        #: Per ticket de uiterste mee- en tegenbeweging sinds de instap.
+        #:
+        #: Bij brokertrades werden die niet bijgehouden, terwijl de
+        #: verliesanalyse erop filtert. Gevolg: die analyse sloeg elke
+        #: demotrade over en meldde "0 verliezende trades" naast een
+        #: performance die er wél telde - dood in precies de modus die ertoe
+        #: doet.
+        self._excursions: dict[str, dict] = {}
         self.robustness: dict = {}
+        self.periods: dict = {}
+        self.backtest: dict = {}
         self.last_sizing: dict = {}
 
         service = options.get(CONF_NOTIFY_SERVICE, NOTIFY_NONE)
@@ -630,6 +667,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             evaluate_robustness, trades
         )
         self.robustness = robust.as_dict()
+
+        from homeassistant.util import dt as dt_util
+
+        self.periods = build_periods(trades, dt_util.DEFAULT_TIME_ZONE).as_dict()
 
         # Verliezen ordenen naar oorzaak. Niet om omstandigheden te vermijden -
         # dat filtert de winnaars mee weg - maar om te zien of ze aan het
@@ -1100,10 +1141,19 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
         signal = None
         if self._candles is not None and len(self._candles) >= 60:
+            # Richting van de lopende positie meegeven, zodat een geweigerd
+            # signaal uitgesplitst kan worden naar 'zelfde richting' of
+            # 'tegengesteld'. Zonder dat verschil zie je alleen dat er niets
+            # gebeurde, niet of je systeem ondertussen van mening veranderde.
+            side = 0
+            if open_positions:
+                first = open_positions[0]
+                side = 1 if getattr(first, "side", "buy") == "buy" else -1
+
             signal = await self.hass.async_add_executor_job(
                 evaluate, self._candles, quote.bid, quote.ask, self.strategy_cfg,
                 now.hour, len(open_positions),
-                now.timestamp() - self._last_entry_ts,
+                now.timestamp() - self._last_entry_ts, side,
             )
             self._last_signal = signal
         budget.mark("signal")
@@ -1225,6 +1275,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             ),
             "build_from_quotes": self._build_from_quotes,
             "sizing": self.last_sizing,
+            "periods": self.periods,
+            "backtest": self.backtest,
             "run_changed_because": self.run_changed_because,
             "adopted_defaults": self.adopted_defaults,
             "learning": {
@@ -1397,6 +1449,17 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 round_trip_cost_per_oz=cost,
                 partial_taken=ticket in self._partial_taken,
             )
+            # Uitersten bijhouden zolang de positie leeft, vóór de
+            # noop-controle: bij 'hold' gebeurt er verder niets, en dat is
+            # juist het grootste deel van de tijd. Achteraf zijn ze niet meer
+            # te achterhalen.
+            self._track_excursion(position, quote, ticket)
+
+            # Pyramiden vóór de exitacties: bijkopen bij bevestiging is een
+            # aparte beslissing van de vraag of je moet sluiten.
+            if self.pyramid.enabled and action.kind in ("hold", "modify_stop"):
+                await self._consider_pyramid(position, quote, ticket)
+
             if action.is_noop:
                 continue
 
@@ -1521,6 +1584,84 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 _TicketOnly(str(trade.broker_ticket)), quote, reason, now
             )
 
+    def _track_excursion(self, position, quote: VenueQuote, ticket: str) -> None:
+        """Werk de uiterste mee- en tegenbeweging van een open positie bij."""
+        entry = float(getattr(position, "open_price", 0) or 0)
+        if entry <= 0:
+            return
+        long = getattr(position, "side", "buy") == "buy"
+        direction = 1.0 if long else -1.0
+        # Op de prijs waarop je zou uitstappen, niet op de mid: dat is de
+        # beweging die je werkelijk had kunnen realiseren.
+        exit_price = quote.bid if long else quote.ask
+        excursion = (exit_price - entry) * direction
+
+        record = self._excursions.setdefault(ticket, {"mfe": 0.0, "mae": 0.0})
+        record["mfe"] = max(record["mfe"], excursion)
+        record["mae"] = min(record["mae"], excursion)
+
+    async def _consider_pyramid(self, position, quote: VenueQuote, ticket: str) -> None:
+        """Koop bij als de markt de richting bevestigt.
+
+        Het spiegelbeeld van middelen: bij middelen vergroot je een positie die
+        ongelijk krijgt, hier alleen een die gelijk krijgt. De stop schuift bij
+        elke toevoeging mee, zodat het totale risico niet groeit.
+        """
+        state = self._pyramid_state.setdefault(
+            ticket, {"additions": 0, "last_price": None, "original": None}
+        )
+        units_now = float(getattr(position, "units", 0) or 0)
+        if state["original"] is None:
+            state["original"] = units_now
+        if units_now <= 0:
+            return
+
+        long = getattr(position, "side", "buy") == "buy"
+        price = quote.bid if long else quote.ask
+        costs = self.strategy_cfg.expected_slippage * 2 + quote.spread
+
+        decision = consider_addition(
+            self.pyramid,
+            side=getattr(position, "side", "buy"),
+            entry_price=float(getattr(position, "open_price", price)),
+            current_price=price,
+            current_stop=getattr(position, "stop_loss", None),
+            original_units=state["original"],
+            total_units=units_now,
+            additions_done=state["additions"],
+            last_addition_price=state["last_price"],
+            atr=self.state.atr.value or 0.0,
+            round_trip_cost_per_oz=costs,
+        )
+        if not decision.add:
+            return
+
+        try:
+            # Eerst de stop verplaatsen, dan pas bijkopen. Andersom sta je
+            # kortstondig met een grotere positie achter een te ruime stop, en
+            # precies dan kan de verbinding wegvallen.
+            await self.venue.modify_stop(ticket, decision.new_stop)
+            result, notes = await self.executor.open_protected(
+                self.symbol,
+                getattr(position, "side", "buy"),
+                decision.units,
+                quote.mid,
+                stop_loss=decision.new_stop,
+                take_profit=getattr(position, "take_profit", None),
+            )
+        except VenueError as err:
+            _LOGGER.warning("Bijkopen mislukte: %s", err)
+            return
+
+        if not result.success:
+            _LOGGER.warning("Bijkopen niet geplaatst: %s", result.error)
+            return
+
+        state["additions"] += 1
+        state["last_price"] = price
+        self._positions_cache = None
+        _LOGGER.info("Bijgekocht: %s", decision.reason)
+
     async def _record_partial(
         self, ticket: str, units: float, reason: str, now: datetime
     ) -> None:
@@ -1563,6 +1704,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             stop_loss=trade.stop_loss, take_profit=trade.take_profit,
             signal_score=trade.signal_score, regime=trade.regime,
             broker_ticket=f"{ticket}-deel",
+            mfe=(self._excursions.get(str(ticket), {}).get("mfe", 0.0)) * units,
+            mae=(self._excursions.get(str(ticket), {}).get("mae", 0.0)) * units,
             gross_pnl=round((quote.mid - trade.open_mid) * direction * units, 4),
             net_pnl=round((exit_price - trade.open_price) * direction * units, 4),
         )
@@ -1654,6 +1797,13 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             (now - _as_datetime(trade.open_time, now)).total_seconds()
         )
         # Bruto op de mids: dat is de beweging die de strategie ving.
+        # Uitersten meenemen. Zonder deze twee kan de verliesanalyse niet
+        # vaststellen of een verlies aan het ontwerp lag of aan de markt.
+        excursion = self._excursions.pop(ticket, None)
+        if excursion:
+            trade.mfe = round(excursion["mfe"] * units, 4)
+            trade.mae = round(excursion["mae"] * units, 4)
+
         trade.gross_pnl = round(
             (quote.mid - trade.open_mid) * direction * units, 4
         )

@@ -212,6 +212,28 @@ class SafeExecutor:
         protected, note = await self._ensure_stop(
             symbol, result.ticket, check.stop_loss
         )
+
+        # Ook het doel nakijken. Minder ernstig dan een ontbrekende stop - de
+        # bot sluit zelf zodra de koers het doel raakt - maar zonder deze
+        # controle merk je nooit dat je winst onbeschermd is als Home Assistant
+        # uitvalt.
+        if check.take_profit is not None:
+            target_note = await self._verify_target(
+                symbol, result.ticket, check.take_profit
+            )
+            if target_note:
+                notes.append(target_note)
+        # Het doel wordt óók nagekeken, maar met andere gevolgen. Ontbreekt de
+        # stop, dan is de positie onbeschermd en gaat hij dicht. Ontbreekt het
+        # doel, dan sluit de bot zelf op het niveau - dat werkt zolang Home
+        # Assistant draait. Dat verschil hoort zichtbaar te zijn in plaats van
+        # stilzwijgend aangenomen.
+        if check.take_profit is not None:
+            target_note = await self._verify_target(
+                symbol, result.ticket, check.take_profit
+            )
+            if target_note:
+                notes.append(target_note)
         if note:
             notes.append(note)
         if not protected:
@@ -262,6 +284,49 @@ class SafeExecutor:
         if position is None or position.stop_loss:
             return True, "Stop achteraf geplaatst"
         return False, "Stop staat er na twee pogingen nog niet op"
+
+    async def _verify_target(
+        self, symbol: str, ticket: str, take_profit: float
+    ) -> str | None:
+        """Controleer of het doel bij de broker staat, en plaats het anders alsnog.
+
+        Bij IG heet dit veld ``limitLevel``. Wordt hij geweigerd - meestal omdat
+        het niveau te dicht bij de markt ligt - dan blijft de positie zonder
+        doel achter. Dat is minder ernstig dan een ontbrekende stop, want de
+        bot sluit zelf zodra de koers het doel raakt, maar het betekent wel dat
+        je winst niet beschermd is als Home Assistant uitvalt.
+        """
+        try:
+            positions = await self.venue.positions(symbol)
+        except VenueError as err:
+            return f"Kon het doel niet nakijken: {err}"
+
+        position = next(
+            (p for p in positions if str(p.ticket) == str(ticket)), None
+        )
+        if position is None or position.take_profit:
+            return None
+
+        # Niet elke venue kan een doel achteraf plaatsen. Blind aanroepen laat
+        # de hele orderafhandeling crashen op een adapter die de methode niet
+        # heeft, en dat is een veel groter probleem dan een ontbrekend doel.
+        modify = getattr(self.venue, "modify_target", None)
+        if modify is None:
+            return (
+                "Deze databron kan een doel niet achteraf plaatsen. De bot "
+                "sluit zelf op het doel, maar die winst is niet beschermd als "
+                "Home Assistant uitvalt."
+            )
+
+        try:
+            await modify(ticket, take_profit)
+        except VenueError as err:
+            return (
+                f"Het doel staat niet bij de broker en plaatsen mislukte ({err}). "
+                "De bot sluit zelf op het doel, maar die winst is niet beschermd "
+                "als Home Assistant uitvalt."
+            )
+        return "Doel achteraf bij de broker geplaatst"
 
     async def _find_by_comment(
         self, symbol: str, client_id: str

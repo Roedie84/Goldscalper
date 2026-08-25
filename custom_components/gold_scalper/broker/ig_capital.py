@@ -620,6 +620,19 @@ class IgStyleVenue(ExecutionVenue):
             error=None if payload.get("dealReference") else "Stop niet aangepast",
         )
 
+    async def modify_target(self, ticket: str, take_profit: float) -> OrderResult:
+        """Zet of verplaats het winstdoel. Bij IG heet dat veld limitLevel."""
+        if not self.supports_trading:
+            raise TradingDisabledError("Handel staat uit voor deze venue.")
+        payload = await self._request(
+            "PUT", f"{self._order_path}/{ticket}", version="2",
+            json={"limitLevel": round(take_profit, 2)}, timeout=ORDER_TIMEOUT,
+        )
+        return OrderResult(
+            success=bool(payload.get("dealReference")), ticket=ticket,
+            error=None if payload.get("dealReference") else "Doel niet aangepast",
+        )
+
     async def health(self) -> dict:
         base = await super().health()
         base["environment"] = self.environment

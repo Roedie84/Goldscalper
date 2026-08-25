@@ -24,6 +24,11 @@ CONF_UNITS: Final = "units"
 CONF_RISK_BASED_SIZING: Final = "risk_based_sizing"
 CONF_RISK_PER_TRADE_PCT: Final = "risk_per_trade_pct"
 CONF_SCALE_WITH_CONFIDENCE: Final = "scale_with_confidence"
+
+#: Pyramiden: bijkopen bij bevestiging, nooit bij tegenslag.
+CONF_PYRAMID_ENABLED: Final = "pyramid_enabled"
+CONF_PYRAMID_TRIGGER_ATR: Final = "pyramid_trigger_atr"
+CONF_PYRAMID_MAX_ADDITIONS: Final = "pyramid_max_additions"
 CONF_MAX_UNITS: Final = "max_units"
 CONF_MAX_SPREAD: Final = "max_spread"
 CONF_MAX_SPREAD_ATR: Final = "max_spread_atr_ratio"
@@ -140,6 +145,7 @@ SERVICE_CLOSE_ALL: Final = "close_all"
 SERVICE_RESUME: Final = "resume"
 SERVICE_GENERATE_REPORT: Final = "generate_report"
 SERVICE_NEW_RUN: Final = "new_run"
+SERVICE_BACKTEST: Final = "backtest"
 
 DISCLAIMER: Final = (
     "Technische indicatoranalyse, geen financieel advies. "

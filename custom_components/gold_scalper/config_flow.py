@@ -28,7 +28,8 @@ from .validation import reward_risk_warning
 from .const import (
     CONF_ACCOUNT_ID, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
     CONF_NOTIFY_CRITICAL, CONF_NOTIFY_HOURLY, CONF_NOTIFY_SERVICE,
-    CONF_NOTIFY_SKIP_QUIET, CONF_RISK_BASED_SIZING, CONF_RISK_PER_TRADE_PCT,
+    CONF_NOTIFY_SKIP_QUIET, CONF_PYRAMID_ENABLED, CONF_PYRAMID_MAX_ADDITIONS,
+    CONF_PYRAMID_TRIGGER_ATR, CONF_RISK_BASED_SIZING, CONF_RISK_PER_TRADE_PCT,
     CONF_SCALE_WITH_CONFIDENCE, CONF_STOP_LOSS_ATR, CONF_STOP_LOSS_USD,
     CONF_TAKE_PROFIT_ATR, CONF_TAKE_PROFIT_USD, NOTIFY_NONE,
     CONF_ENFORCE_TRADING_HOURS,
@@ -705,6 +706,20 @@ class GoldScalperOptionsFlow(OptionsFlow):
                 CONF_RISK_PER_TRADE_PCT,
                 default=default(CONF_RISK_PER_TRADE_PCT, 0.5),
             ): _number(0.05, 3.0, 0.05, "%", slider=True),
+            # Pyramiden: bijkopen bij bevestiging. Zie pyramid.py voor waarom
+            # dit het spiegelbeeld van middelen is en niet een variant erop.
+            vol.Required(
+                CONF_PYRAMID_ENABLED, default=default(CONF_PYRAMID_ENABLED, False)
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_PYRAMID_TRIGGER_ATR,
+                default=default(CONF_PYRAMID_TRIGGER_ATR, 1.0),
+            ): _number(0.5, 3.0, 0.1, slider=True),
+            vol.Required(
+                CONF_PYRAMID_MAX_ADDITIONS,
+                default=default(CONF_PYRAMID_MAX_ADDITIONS, 2),
+            ): _number(1, 5, 1, slider=True),
+
             vol.Required(
                 CONF_SCALE_WITH_CONFIDENCE,
                 default=default(CONF_SCALE_WITH_CONFIDENCE, False),
