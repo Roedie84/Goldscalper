@@ -33,9 +33,19 @@ def _signal(market, count, side, threshold=0.0):
     over de vraag of er toevallig een signaal sterk genoeg is. Met de
     standaarddrempel hangt de uitkomst af van de marktreeks, en dan meet je
     iets anders dan je denkt."""
-    cfg = ScalpConfig(commission_per_lot_per_side=0.0, volume=0.10,
-                      max_spread=9.0, max_spread_atr_ratio=1.0,
-                      entry_threshold=threshold)
+    # Ook het volatiliteitsfilter uitzetten: deze tests gaan over de
+    # uitsplitsing naar richting, niet over de vraag of de markt toevallig
+    # beweeglijk genoeg is. Anders meet je iets anders dan je denkt.
+    cfg = ScalpConfig(
+        commission_per_lot_per_side=0.0, volume=0.10,
+        # Alle filters open: deze tests gaan over de uitsplitsing naar
+        # richting, niet over de vraag of de markt toevallig beweeglijk
+        # genoeg is of de spread smal genoeg. Anders meet je iets anders
+        # dan je denkt, en slaagt de test om de verkeerde reden.
+        max_spread=9.0, max_spread_atr_ratio=1.0,
+        quiet_floor=0.0, min_edge_multiple=0.01,
+        entry_threshold=threshold,
+    )
     price = market.close[-1]
     return evaluate(market, price - 0.41, price + 0.41, cfg, 12, count, 1e9, side)
 
@@ -45,16 +55,17 @@ def test_no_position_is_not_blocked(market):
 
 
 def test_same_direction_is_labelled(market):
-    # Op deze reeks wijst het signaal short, dus een short-positie is
-    # "dezelfde richting".
-    signal = _signal(market, 1, -1)
+    # Sinds de tekenfix in de RSI-component wijst het signaal op deze reeks
+    # long, dus een long-positie is "dezelfde richting". De richting hangt af
+    # van de strategie; de test gaat over de uitsplitsing.
+    signal = _signal(market, 1, 1)
     assert signal.reject_reason == "max_positions_zelfde_richting"
     assert "bevestigt" in signal.reason
 
 
 def test_opposite_direction_is_labelled(market):
     """De situatie die er werkelijk toe doet."""
-    signal = _signal(market, 1, 1)
+    signal = _signal(market, 1, -1)
     assert signal.reject_reason == "max_positions_tegengesteld"
     assert "andere richting" in signal.reason
 
@@ -62,7 +73,7 @@ def test_opposite_direction_is_labelled(market):
 def test_weak_signal_is_labelled_separately(market):
     """Onder de drempel zou er toch niets gebeuren; dat is iets anders dan
     vastzitten met een sterk tegensignaal."""
-    signal = _signal(market, 1, -1, threshold=0.99)
+    signal = _signal(market, 1, 1, threshold=0.99)
     assert signal.reject_reason == "max_positions_geen_signaal"
 
 
@@ -79,9 +90,16 @@ def test_the_score_survives_the_rejection(market):
 def test_weak_signal_gets_its_own_label(market):
     """Een positie open én geen signaal is geen conflict; dat hoort niet in
     dezelfde categorie als een tegensignaal."""
-    cfg = ScalpConfig(commission_per_lot_per_side=0.0, volume=0.10,
-                      max_spread=9.0, max_spread_atr_ratio=1.0,
-                      entry_threshold=0.99)
+    cfg = ScalpConfig(
+        commission_per_lot_per_side=0.0, volume=0.10,
+        # Alle filters open: deze tests gaan over de uitsplitsing naar
+        # richting, niet over de vraag of de markt toevallig beweeglijk
+        # genoeg is of de spread smal genoeg. Anders meet je iets anders
+        # dan je denkt, en slaagt de test om de verkeerde reden.
+        max_spread=9.0, max_spread_atr_ratio=1.0,
+        quiet_floor=0.0, min_edge_multiple=0.01,
+        entry_threshold=0.99,
+    )
     price = market.close[-1]
     signal = evaluate(market, price - 0.41, price + 0.41, cfg, 12, 1, 1e9, 1)
     assert signal.reject_reason == "max_positions_geen_signaal"
@@ -90,8 +108,16 @@ def test_weak_signal_gets_its_own_label(market):
 def test_cooldown_does_not_mask_the_split(market):
     """Met een open positie is de cooldown irrelevant; hij mag de uitsplitsing
     niet overschaduwen."""
-    cfg = ScalpConfig(commission_per_lot_per_side=0.0, volume=0.10,
-                      max_spread=9.0, max_spread_atr_ratio=1.0)
+    cfg = ScalpConfig(
+        commission_per_lot_per_side=0.0, volume=0.10,
+        # Alle filters open: deze tests gaan over de uitsplitsing naar
+        # richting, niet over de vraag of de markt toevallig beweeglijk
+        # genoeg is of de spread smal genoeg. Anders meet je iets anders
+        # dan je denkt, en slaagt de test om de verkeerde reden.
+        max_spread=9.0, max_spread_atr_ratio=1.0,
+        quiet_floor=0.0, min_edge_multiple=0.01,
+        entry_threshold=0.0,
+    )
     price = market.close[-1]
     signal = evaluate(market, price - 0.41, price + 0.41, cfg, 12, 1, 0.0, -1)
     assert signal.reject_reason.startswith("max_positions_")

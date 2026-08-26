@@ -41,27 +41,27 @@ def test_breakeven_uses_exit_price_not_mid():
 
 
 def test_partial_close_at_first_target():
-    m = ExitManager(ExitConfig(partial_close_trigger_atr=1.0))
+    m = ExitManager(ExitConfig(enable_partial_close=True, partial_close_trigger_atr=1.0))
     a = ev(m, bid=3300.45, current_stop=3300.5)  # 1.125 ATR, stop al voorbij BE
     assert a.kind == "partial_close"
     assert a.close_fraction == pytest.approx(0.5)
 
 
 def test_partial_close_only_once():
-    m = ExitManager(ExitConfig(partial_close_trigger_atr=1.0))
+    m = ExitManager(ExitConfig(enable_partial_close=True, partial_close_trigger_atr=1.0))
     a = ev(m, bid=3300.45, current_stop=3300.5, partial_taken=True)
     assert a.kind != "partial_close"
 
 
 def test_trailing_activates_on_larger_move():
-    m = ExitManager(ExitConfig(trailing_activate_atr=1.5, trailing_distance_atr=1.2))
+    m = ExitManager(ExitConfig(enable_partial_close=True, trailing_activate_atr=1.5, trailing_distance_atr=1.2))
     a = ev(m, bid=3301.0)  # 2.5 ATR
     assert a.kind == "modify_stop"
     assert a.new_stop == pytest.approx(3301.0 - ATR * 1.2, abs=1e-3)
 
 
 def test_trailing_stop_never_moves_backwards():
-    m = ExitManager(ExitConfig(trailing_activate_atr=1.5, trailing_distance_atr=1.2))
+    m = ExitManager(ExitConfig(enable_partial_close=True, trailing_activate_atr=1.5, trailing_distance_atr=1.2))
     a = ev(m, bid=3301.0, current_stop=3300.9)  # bestaande stop al hoger
     assert a.kind != "modify_stop" or a.new_stop > 3300.9
 
@@ -76,7 +76,7 @@ def test_short_position_is_symmetric():
 
 
 def test_time_stop_closes_a_position_going_nowhere():
-    m = ExitManager(ExitConfig(time_stop_seconds=240, time_stop_deadzone_atr=0.3))
+    m = ExitManager(ExitConfig(enable_partial_close=True, time_stop_seconds=240, time_stop_deadzone_atr=0.3))
     a = ev(m, bid=3300.02, ask=3300.37, now=T0 + timedelta(seconds=300))
     assert a.kind == "close" and "kostenpost" in a.reason
 
@@ -89,7 +89,7 @@ def test_time_stop_leaves_a_winning_position_alone():
 
 
 def test_hard_limit_always_closes():
-    m = ExitManager(ExitConfig(max_hold_seconds=900))
+    m = ExitManager(ExitConfig(enable_partial_close=True, max_hold_seconds=900))
     a = ev(m, bid=3302.0, now=T0 + timedelta(seconds=1000))
     assert a.kind == "close" and "maximale positieduur" in a.reason
 
@@ -103,3 +103,36 @@ def test_realised_profit_math():
     # long 0.10 lot (10 oz), 3300 -> 3300.50
     assert m.realised_profit("buy", 0.10, 3300.0, 3300.50) == pytest.approx(5.0)
     assert m.realised_profit("sell", 0.10, 3300.0, 3299.50) == pytest.approx(5.0)
+
+
+# ---------------- de exitstructuur als geheel ----------------
+
+def test_partial_close_is_off_by_default():
+    """Afromen bij 1,0xATR met break-even erachteraan kapte de winnaars af: de
+    helft wordt genomen op 1,0 terwijl het doel op 1,5 ligt, en de rest sluit
+    op break-even zodra de koers even terugvalt.
+
+    Gemeten leverde dat een gemiddelde winst van 9,82 op bij een doel van
+    52,73, terwijl de verliezen hun volle stop liepen. Je hebt dan 84%
+    winnaars nodig om quitte te spelen.
+    """
+    assert ExitConfig().enable_partial_close is False
+
+
+def test_breakeven_stays_at_the_measured_optimum():
+    """Verhogen naar 1,2 lijkt logisch - een vroege break-even kapt winnaars af -
+    maar gemeten verkleint 0,8 het gemiddelde verlies van 48,00 naar 39,62
+    zonder dat de gemiddelde winst verandert.
+
+    Staat hier vastgelegd omdat het contra-intuïtief is en anders bij de
+    volgende herziening opnieuw 'verbeterd' wordt.
+    """
+    assert ExitConfig().breakeven_trigger_atr == pytest.approx(0.8)
+
+
+def test_partial_can_still_be_switched_on():
+    """Uit staan is een standaardwaarde, geen verwijdering: wie een gladdere
+    equitycurve wil boven een hogere verwachting, mag die ruil maken."""
+    config = ExitConfig(enable_partial_close=True)
+    assert config.enable_partial_close is True
+    assert config.partial_close_trigger_atr > 0

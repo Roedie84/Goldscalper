@@ -28,7 +28,8 @@ def _decide(profit_atr: float, partial_taken: bool = False, stop=None):
     """Vraag de exitmanager wat hij zou doen bij deze winst."""
     from datetime import datetime, timedelta, timezone
 
-    manager = ExitManager(ExitConfig())
+    # Deelsluiting staat standaard uit; deze tests gaan er juist over.
+    manager = ExitManager(ExitConfig(enable_partial_close=True))
     opened = datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
     # Voor een long is de uitstapprijs de bid; die moet dus de winst dragen.
     bid = OPEN_PRICE + profit_atr * ATR
