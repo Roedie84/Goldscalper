@@ -443,3 +443,53 @@ def test_state_changing_requests_are_explicit_about_method():
         assert "_method" in body, (
             "IG's sluitverzoek gebruikt geen POST met _method-header"
         )
+
+
+def test_every_documented_service_is_registered():
+    """Een dienst die in services.yaml staat maar niet geregistreerd wordt,
+    verschijnt niet in Home Assistant.
+
+    `reset_day` en `backtest` zijn allebei gebouwd, getest en uitgeleverd
+    zonder ooit aangesloten te zijn: de tests toetsten de onderliggende functie
+    en niet of Home Assistant de dienst kent. Het kwam pas aan het licht toen
+    de gebruiker "Onbekende actie geselecteerd" te zien kreeg.
+    """
+    import yaml
+
+    beschreven = set(
+        yaml.safe_load((PKG / "services.yaml").read_text(encoding="utf-8")) or {}
+    )
+    init = (PKG / "__init__.py").read_text(encoding="utf-8")
+    constants = (PKG / "const.py").read_text(encoding="utf-8")
+
+    ontbreekt = []
+    for naam in beschreven:
+        # Zoek de constante die deze naam draagt.
+        match = re.search(rf'(SERVICE_\w+): Final = "{re.escape(naam)}"', constants)
+        if match is None:
+            ontbreekt.append(f"{naam}: geen SERVICE_-constante")
+            continue
+        if f"async_register(DOMAIN, {match.group(1)}" not in init:
+            ontbreekt.append(f"{naam}: niet geregistreerd in __init__.py")
+
+    assert ontbreekt == [], "\n".join(ontbreekt)
+
+
+def test_every_registered_service_is_documented():
+    """Andersom ook: een dienst zonder beschrijving is onvindbaar in de
+    actielijst van Home Assistant."""
+    import yaml
+
+    beschreven = set(
+        yaml.safe_load((PKG / "services.yaml").read_text(encoding="utf-8")) or {}
+    )
+    init = (PKG / "__init__.py").read_text(encoding="utf-8")
+    constants = (PKG / "const.py").read_text(encoding="utf-8")
+
+    ontbreekt = []
+    for constante in re.findall(r"async_register\(DOMAIN, (SERVICE_\w+)", init):
+        match = re.search(rf'{constante}: Final = "(\w+)"', constants)
+        if match and match.group(1) not in beschreven:
+            ontbreekt.append(match.group(1))
+
+    assert ontbreekt == [], f"niet beschreven in services.yaml: {ontbreekt}"

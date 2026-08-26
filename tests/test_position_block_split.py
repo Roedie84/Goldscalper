@@ -54,18 +54,26 @@ def test_no_position_is_not_blocked(market):
     assert _signal(market, 0, 0).reject_reason != "max_positions"
 
 
+def _signal_direction(market) -> int:
+    """Welke kant wijst het signaal op deze reeks op?
+
+    Uitlezen in plaats van aannemen. De richting kantelt bij elke wijziging in
+    de strategie, en een test die hem hardcodeert faalt dan om een reden die
+    niets met de uitsplitsing te maken heeft - wat hij juist zou moeten toetsen.
+    """
+    return _signal(market, 0, 0).direction
+
+
 def test_same_direction_is_labelled(market):
-    # Sinds de tekenfix in de RSI-component wijst het signaal op deze reeks
-    # long, dus een long-positie is "dezelfde richting". De richting hangt af
-    # van de strategie; de test gaat over de uitsplitsing.
-    signal = _signal(market, 1, 1)
+    richting = _signal_direction(market)
+    signal = _signal(market, 1, richting)
     assert signal.reject_reason == "max_positions_zelfde_richting"
     assert "bevestigt" in signal.reason
 
 
 def test_opposite_direction_is_labelled(market):
     """De situatie die er werkelijk toe doet."""
-    signal = _signal(market, 1, -1)
+    signal = _signal(market, 1, -_signal_direction(market))
     assert signal.reject_reason == "max_positions_tegengesteld"
     assert "andere richting" in signal.reason
 
@@ -73,7 +81,7 @@ def test_opposite_direction_is_labelled(market):
 def test_weak_signal_is_labelled_separately(market):
     """Onder de drempel zou er toch niets gebeuren; dat is iets anders dan
     vastzitten met een sterk tegensignaal."""
-    signal = _signal(market, 1, 1, threshold=0.99)
+    signal = _signal(market, 1, _signal_direction(market), threshold=0.99)
     assert signal.reject_reason == "max_positions_geen_signaal"
 
 
