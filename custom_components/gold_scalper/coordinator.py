@@ -969,6 +969,26 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             await self._close_position(position, "handmatig")
         await self.async_request_refresh()
 
+    async def async_reset_day(self) -> str:
+        """Begin de handelsdag opnieuw, zonder op middernacht te wachten."""
+        balance = self.starting_balance
+        if self.paper is not None:
+            balance = self.paper.balance
+        elif self.mode.places_orders:
+            try:
+                snapshot = await self.venue.account()
+                balance = snapshot.equity
+            except VenueError as err:
+                _LOGGER.warning(
+                    "Kon het saldo niet ophalen; er wordt gerekend met de "
+                    "startbalans: %s", err,
+                )
+
+        bericht = self.risk.reset_day(balance)
+        await self._persist()
+        await self.async_request_refresh()
+        return bericht
+
     async def async_resume(self) -> bool:
         """Hervat na een noodstop. Bewust handmatig.
 

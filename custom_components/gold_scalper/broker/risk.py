@@ -285,6 +285,44 @@ class RiskManager:
         )
         _LOGGER.error("NOODSTOP: %s. Handmatige herstart vereist.", reason)
 
+    def reset_day(self, balance: float) -> str:
+        """Zet de dagtellers terug alsof er een nieuwe handelsdag begint.
+
+        Bestaat omdat de teller anders alleen om middernacht reset, en dat is
+        soms te laat: je hebt de limiet bereikt door een instelling die je
+        inmiddels hebt gecorrigeerd, en dan wachten tot morgen is geen
+        bescherming maar een obstakel.
+
+        De omweg was het bewerken van .storage, en die werkt niet: de
+        integratie houdt de waarde in het geheugen en schrijft hem elke cyclus
+        terug. Een bestand aanpassen dat binnen twintig seconden wordt
+        overschreven, is geen oplossing maar een valstrik.
+
+        Wat hier *niet* gebeurt: het verlies wegpoetsen. Dat blijft in de
+        database staan en telt gewoon mee in je resultaten. Alleen de noodrem
+        begint opnieuw.
+        """
+        verloren = self.state.day_start_balance - balance
+        hervattingen = self.state.resumes_today
+        trades = self.state.trades_today
+
+        self.state.day_start_balance = balance
+        self.state.resumes_today = 0
+        self.state.trades_today = 0
+        self.state.consecutive_losses = 0
+        if self.state.state is TradingState.HALTED:
+            self.state.state = TradingState.RUNNING
+            self.state.halt_reason = None
+
+        bericht = (
+            f"Dagtellers teruggezet. Vandaag stond er {verloren:.2f} verlies, "
+            f"{trades} trades en {hervattingen} hervattingen; die blijven in de "
+            "database staan en tellen mee in je resultaten. Alleen de noodrem "
+            f"begint opnieuw, vanaf een saldo van {balance:.2f}."
+        )
+        _LOGGER.warning(bericht)
+        return bericht
+
     def manual_resume(self, balance: float | None = None) -> tuple[bool, str]:
         """Hervat na een noodstop, met een nieuw dagijkpunt.
 

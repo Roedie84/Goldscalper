@@ -61,3 +61,10 @@ backtest:
           max: 100
           step: 0.01
           mode: box
+reset_day:
+  name: Dagtellers terugzetten
+  description: 'Begint de handelsdag opnieuw: dagverlies, hervattingen en verliesreeks
+    op nul, en een lopende noodstop wordt opgeheven. Het geleden verlies blijft in
+    de database staan en telt mee in je resultaten; alleen de noodrem begint opnieuw.
+    Bedoeld voor het geval je de limiet bereikte door een instelling die je inmiddels
+    hebt gecorrigeerd.'
