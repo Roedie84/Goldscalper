@@ -145,3 +145,30 @@ def test_the_post_mortem_can_classify_a_broker_trade():
     result = analyse_losses(losers, typical_atr=4.0)
     assert result.losses == len(losers)
     assert result.patterns, "geen enkel patroon herkend"
+
+
+def test_vanished_positions_settle_at_the_level_not_the_discovery_price():
+    """De lus draait elke twintig seconden; in die tijd zakt de koers verder
+    door. Op de latere koers afrekenen boekt dat extra stuk als "kosten",
+    waardoor de kostprijs per trade opliep tot ruim het dubbele van de spread -
+    een meetfout die eruitziet als slippage.
+    """
+    body = _method("_settle_vanished_positions")
+    assert "settle = quote" in body, "er wordt niet op het niveau afgerekend"
+    assert "VenueQuote(" in body
+    assert "trade.stop_loss" in body and "trade.take_profit" in body
+
+
+def test_the_settle_quote_keeps_the_spread():
+    """Het niveau is de mid noch de fill; de spread hoort er nog omheen,
+    anders verdwijnt de werkelijke kostprijs uit de berekening."""
+    body = _method("_settle_vanished_positions")
+    assert "quote.spread" in body
+
+
+def test_unclassified_closes_use_the_current_quote():
+    """Kan de reden niet vastgesteld worden, dan is de actuele koers het beste
+    dat er is - en dan hoort er geen niveau verzonnen te worden."""
+    body = _method("_settle_vanished_positions")
+    assert 'reason = "broker_gesloten"' in body
+    assert "level: float | None = None" in body
