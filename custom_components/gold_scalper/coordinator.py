@@ -1616,19 +1616,39 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             reason = "broker_gesloten"
             long = trade.side == "buy"
             price = quote.bid if long else quote.ask
+            level: float | None = None
+
             if trade.stop_loss and (
                 (long and price <= trade.stop_loss)
                 or (not long and price >= trade.stop_loss)
             ):
-                reason = "stop_loss"
+                reason, level = "stop_loss", trade.stop_loss
             elif trade.take_profit and (
                 (long and price >= trade.take_profit)
                 or (not long and price <= trade.take_profit)
             ):
-                reason = "take_profit"
+                reason, level = "take_profit", trade.take_profit
+
+            # Afrekenen op het niveau waarop de broker sloot, niet op de koers
+            # van het moment waarop wij het ontdekken.
+            #
+            # Die twee lopen uiteen: de lus draait elke twintig seconden, en in
+            # die tijd zakt de koers verder door. Op de latere koers afrekenen
+            # boekt dat extra stuk als "kosten", waardoor de kostprijs per trade
+            # opliep tot ruim het dubbele van de spread - een meetfout die
+            # eruitziet als slippage.
+            settle = quote
+            if level is not None:
+                half = quote.spread / 2.0
+                settle = VenueQuote(
+                    bid=level if long else level - 2 * half,
+                    ask=level + 2 * half if long else level,
+                    time=quote.time,
+                    tradeable=quote.tradeable,
+                )
 
             await self._record_broker_close(
-                _TicketOnly(str(trade.broker_ticket)), quote, reason, now
+                _TicketOnly(str(trade.broker_ticket)), settle, reason, now
             )
 
     def _track_excursion(self, position, quote: VenueQuote, ticket: str) -> None:

@@ -197,11 +197,22 @@ def _stretch(close: list[float]) -> tuple[float, str]:
     return score, f"%B {b:.2f}"
 
 
-def _momentum(close: list[float]) -> tuple[float, str]:
+def _rsi_reversion(close: list[float]) -> tuple[float, str]:
+    """RSI als *contraire* maat: hoog betekent overdreven, dus verwacht daling.
+
+    Heette eerder ``_momentum``, en die naam heeft schade aangericht. Momentum
+    bevestigt een beweging; deze functie spreekt hem tegen. Onder de verkeerde
+    naam werd hij in de trendmodus met dertig procent gewicht meegeteld, waar
+    hij dus tegen de trend in duwde.
+
+    Gemeten over vijf onafhankelijke markten leverde de strategie daardoor 33%
+    winnaars op waar de omgekeerde richting er 50 tot 59% haalde - slechter dan
+    willekeurig instappen.
+    """
     r = rsi(close, 7)
     if r[-1] is None:
         return 0.0, "onvoldoende data voor RSI"
-    # RSI(7) op M1: extremen zijn hier veel gewoner dan op hogere tijdsframes,
+    # RSI(7): extremen zijn op korte tijdsframes veel gewoner dan op hogere,
     # dus de drempels liggen ruimer dan de klassieke 30/70.
     value = r[-1]
     if value <= 20:
@@ -210,7 +221,18 @@ def _momentum(close: list[float]) -> tuple[float, str]:
         score = -0.8
     else:
         score = (50.0 - value) / 40.0
-    return max(-1.0, min(1.0, score)), f"RSI(7) {value:.1f}"
+    return max(-1.0, min(1.0, score)), f"RSI(7) {value:.1f} (contrair)"
+
+
+def _rsi_momentum(close: list[float]) -> tuple[float, str]:
+    """RSI als *bevestigende* maat: hoog betekent kracht, dus verwacht meer.
+
+    Dit is wat de trendmodus nodig heeft. Het is precies het spiegelbeeld van
+    de contraire variant, en welke van de twee klopt hangt af van het regime -
+    daarom is er een regimeschakelaar.
+    """
+    score, note = _rsi_reversion(close)
+    return -score, note.replace("contrair", "bevestigend")
 
 
 def _volatility_regime(
@@ -315,7 +337,9 @@ def evaluate(
     close = candles.close
     trend_score, trend_note = _micro_trend(close)
     stretch_score, stretch_note = _stretch(close)
-    mom_score, mom_note = _momentum(close)
+    # In een trend bevestigt de RSI, in een range spreekt hij tegen. Dezelfde
+    # indicator, tegengesteld teken - en welke klopt hangt af van het regime.
+    reversion_score, reversion_note = _rsi_reversion(close)
     # Zonder gemeten spread én zonder tijdvenster is dit de enige bescherming
     # tegen dunne uren; dan mag de drempel niet op de standaardwaarde blijven.
     quiet_floor = 0.6
@@ -326,7 +350,9 @@ def evaluate(
     components.update({
         "trend": round(trend_score, 3),
         "stretch": round(stretch_score, 3),
-        "momentum": round(mom_score, 3),
+        # De contraire lezing; het teken dat de score gebruikt hangt af van het
+        # regime en wordt hieronder toegevoegd als "momentum".
+        "rsi_reversion": round(reversion_score, 3),
         "volatility": round(vol_score, 3),
     })
 
@@ -349,9 +375,24 @@ def evaluate(
         components["adx"] = round(adx_value, 1)
         components["regime"] = "trend" if trending else "range"
         if trending:
+            # Trend volgen: de RSI moet de beweging bevestigen, niet
+            # tegenspreken. Hier stond de contraire variant, waardoor de
+            # score in een trend tegen de trend in werd geduwd.
+            mom_score = -reversion_score
+            mom_note = reversion_note.replace("contrair", "bevestigend")
             score = 0.70 * trend_score + 0.30 * mom_score
             leading, supporting = trend_score, mom_score
         else:
+            # Zijwaarts. De contraire RSI leek hier logisch - hij wijst dezelfde
+            # kant op als de stretch - maar gemeten haalt hij 38% waar de
+            # bevestigende variant er 50% haalt, over vierhonderd waarnemingen.
+            #
+            # Twee indicatoren die hetzelfde zeggen voegen bovendien niets toe;
+            # ze verdubbelen alleen het gewicht van één idee. De bevestigende
+            # lezing is onafhankelijk van de stretch, en dat is wat een tweede
+            # component moet zijn.
+            mom_score = -reversion_score
+            mom_note = reversion_note.replace("contrair", "bevestigend")
             score = 0.70 * stretch_score + 0.30 * mom_score
             leading, supporting = stretch_score, mom_score
         # Vertrouwen op basis van of de steunende component meebeweegt met de
@@ -361,11 +402,15 @@ def evaluate(
     else:
         # Optellen van trend en mean reversion. Bewaard voor vergelijking;
         # zie de toelichting bij ``regime_switching``.
+        mom_score = reversion_score
+        mom_note = reversion_note
         score = 0.40 * trend_score + 0.35 * stretch_score + 0.25 * mom_score
         agreement = 1.0 - (
             abs(trend_score - stretch_score) + abs(trend_score - mom_score)
         ) / 4.0
         confidence = max(0.0, min(1.0, agreement))
+
+    components["momentum"] = round(mom_score, 3)
 
     if structure_read is not None and structure_read.score:
         # Meewegen, niet overrulen. Structuur is trager dan de overige
