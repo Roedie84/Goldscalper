@@ -110,6 +110,13 @@ class ScalpConfig:
     #: werkelijkheid juist uitlopen. De volatiliteitscontrole wordt dan
     #: strenger gezet als vervanging.
     real_spread: bool = True
+    #: Ondergrens voor de volatiliteit, als fractie van de mediane ATR.
+    #:
+    #: Stond hard in de code. Een filter dat je niet kunt uitzetten is ook niet
+    #: los te toetsen: elke test van een ander onderdeel liep er ongemerkt op
+    #: stuk zodra de marktreeks toevallig rustig was, en dan meet je iets
+    #: anders dan je denkt.
+    quiet_floor: float = 0.6
     #: Weeg marktstructuur mee: hogere toppen en bodems tegenover lagere.
     #:
     #: De overige componenten zijn allemaal gemiddelden - EMA's, een
@@ -342,7 +349,7 @@ def evaluate(
     reversion_score, reversion_note = _rsi_reversion(close)
     # Zonder gemeten spread én zonder tijdvenster is dit de enige bescherming
     # tegen dunne uren; dan mag de drempel niet op de standaardwaarde blijven.
-    quiet_floor = 0.6
+    quiet_floor = cfg.quiet_floor
     if not cfg.real_spread and not cfg.enforce_trading_hours:
         quiet_floor = 0.85
     vol_score, vol_note = _volatility_regime(candles, quiet_floor)

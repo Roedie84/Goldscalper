@@ -47,6 +47,16 @@ class ExitConfig:
     """Instellingen voor exitbeheer. Afstanden zijn veelvouden van de ATR."""
 
     #: Verplaats de stop naar break-even zodra deze winst is bereikt.
+    #: Break-even bij 0,8 x ATR.
+    #:
+    #: Ik heb geprobeerd dit naar 1,2 te verhogen met de redenering dat een
+    #: vroege break-even winnaars afkapt. Die redenering klopte niet: gemeten
+    #: verkleint 0,8 het gemiddelde verlies van 48,00 naar 39,62 zonder dat de
+    #: gemiddelde winst verandert - de trade die break-even raakt en daarna
+    #: terugvalt, zou zonder break-even zijn volle stop hebben gelopen.
+    #:
+    #: Het staat hier vermeld omdat het contra-intuïtief is en anders bij de
+    #: volgende herziening opnieuw "verbeterd" wordt.
     breakeven_trigger_atr: float = 0.8
     #: Buffer bovenop het instappunt bij break-even, in veelvouden van de
     #: round-trip kosten. 1.0 betekent: de trade kan hierna niet meer verliezen.
@@ -55,7 +65,7 @@ class ExitConfig:
     #: Sluit dit deel van de positie bij het eerste doel.
     partial_close_fraction: float = 0.5
     partial_close_trigger_atr: float = 1.0
-    enable_partial_close: bool = True
+    enable_partial_close: bool = False
 
     #: Trailing stop op deze ATR-afstand, actief vanaf deze winst.
     trailing_distance_atr: float = 1.2
