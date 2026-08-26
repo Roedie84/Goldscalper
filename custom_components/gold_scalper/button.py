@@ -67,9 +67,12 @@ class ResumeButton(GoldScalperEntity, ButtonEntity):
         # anders zichtbaar niets, en dan blijf je drukken.
         if not await self.coordinator.async_resume():
             raise HomeAssistantError(
-                "Hervatten geweigerd: de daglimiet is al te vaak opnieuw gezet. "
-                "Verder hervatten zou van de limiet een suggestie maken. "
-                "Wacht tot morgen."
+                "Hervatten geweigerd: de daglimiet is vandaag al te vaak "
+                "opnieuw gezet. Verder hervatten zou van de limiet een "
+                "suggestie maken.\n\n"
+                "Wacht tot morgen - de teller reset om middernacht - of roep "
+                "de actie gold_scalper.reset_day aan als je de limiet raakte "
+                "door een instelling die je inmiddels hebt gecorrigeerd."
             )
 
 

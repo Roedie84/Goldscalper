@@ -340,7 +340,10 @@ class RiskManager:
             message = (
                 f"Al {self.state.resumes_today} keer hervat vandaag; de limiet is "
                 f"{self.limits.max_resumes_per_day}. Verder hervatten zou van de "
-                "daglimiet een suggestie maken. Wacht tot morgen."
+                "daglimiet een suggestie maken.\n\nWacht tot morgen - de teller "
+                "reset om middernacht - of roep gold_scalper.reset_day aan als "
+                "je de limiet raakte door een instelling die inmiddels is "
+                "gecorrigeerd."
             )
             _LOGGER.warning(message)
             return False, message

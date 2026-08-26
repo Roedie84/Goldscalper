@@ -13,8 +13,9 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
-    CONF_SHOW_PANEL, DOMAIN, PLATFORMS, REPORT_FILENAME, SERVICE_CLOSE_ALL,
-    SERVICE_GENERATE_REPORT, SERVICE_PREPARE_SHUTDOWN, SERVICE_RESUME,
+    CONF_SHOW_PANEL, DOMAIN, PLATFORMS, REPORT_FILENAME, SERVICE_BACKTEST,
+    SERVICE_CLOSE_ALL, SERVICE_GENERATE_REPORT, SERVICE_PREPARE_SHUTDOWN,
+    SERVICE_RESET_DAY, SERVICE_RESUME,
 )
 from .coordinator import GoldScalperCoordinator
 from .http import async_register_frontend, async_unregister_frontend
@@ -70,7 +71,8 @@ def _register_services(hass: HomeAssistant) -> None:
             if not await coordinator.async_resume():
                 raise HomeAssistantError(
                     "Hervatten geweigerd: de daglimiet is vandaag al te vaak "
-                    "opnieuw gezet. Wacht tot morgen."
+                    "opnieuw gezet.\n\nWacht tot morgen, of roep "
+                    "gold_scalper.reset_day aan om de dag opnieuw te beginnen."
                 )
 
     async def generate_report(call: ServiceCall) -> None:
@@ -86,10 +88,51 @@ def _register_services(hass: HomeAssistant) -> None:
             )
             _LOGGER.info("Keuringsrapport geschreven naar %s", written)
 
+    async def reset_day(call: ServiceCall) -> None:
+        """Begin de handelsdag opnieuw zonder op middernacht te wachten."""
+        for coordinator in _coordinators():
+            bericht = await coordinator.async_reset_day()
+            _LOGGER.warning("Handmatige dagreset: %s", bericht)
+
+    async def backtest(call: ServiceCall) -> None:
+        """Draai de strategie over de opgebouwde historie."""
+        from .analysis.backtest import run_backtest
+
+        for coordinator in _coordinators():
+            candles = coordinator._candles
+            if candles is None or len(candles) < 310:
+                raise HomeAssistantError(
+                    f"Er zijn {0 if candles is None else len(candles)} bars "
+                    "beschikbaar; een backtest heeft er minstens 310 nodig."
+                )
+
+            spread = call.data.get("spread")
+            if spread is None:
+                quote = coordinator._last_quote
+                spread = quote.spread if quote else 0.60
+
+            result = await hass.async_add_executor_job(
+                run_backtest, candles, coordinator.strategy_cfg,
+                coordinator.exits.config, spread,
+                call.data.get("slippage", 0.02),
+                call.data.get("units", coordinator.units),
+            )
+            summary = result.summary()
+            coordinator.backtest = summary
+            _LOGGER.info(
+                "Backtest over %d bars: %d trades, netto %.2f, kosten %.2f",
+                summary["bars"], summary["trades"], summary["net_pnl"],
+                summary["total_costs"],
+            )
+            hass.bus.async_fire(f"{DOMAIN}_backtest_done", summary)
+            await coordinator.async_request_refresh()
+
     hass.services.async_register(DOMAIN, SERVICE_PREPARE_SHUTDOWN, prepare_shutdown)
     hass.services.async_register(DOMAIN, SERVICE_CLOSE_ALL, close_all)
     hass.services.async_register(DOMAIN, SERVICE_RESUME, resume)
     hass.services.async_register(DOMAIN, SERVICE_GENERATE_REPORT, generate_report)
+    hass.services.async_register(DOMAIN, SERVICE_RESET_DAY, reset_day)
+    hass.services.async_register(DOMAIN, SERVICE_BACKTEST, backtest)
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
