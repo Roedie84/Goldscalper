@@ -565,3 +565,60 @@ def test_gate_requires_time_consistency():
         strong, run, daily, {"verdict": "houdbaar", "explanation": "ok"}
     )
     assert goed.checks["houdt_stand_over_tijd"] is True
+
+
+# ---------------- dagreset ----------------
+
+def test_reset_day_clears_the_counters():
+    """De teller reset anders alleen om middernacht, en dat is soms te laat:
+    je bereikte de limiet door een instelling die je inmiddels hebt
+    gecorrigeerd."""
+    rm = fresh(max_resumes_per_day=2)
+    rm.state.resumes_today = 20
+    rm.state.trades_today = 74
+    rm.state.consecutive_losses = 5
+    rm.halt("dagverlies")
+
+    bericht = rm.reset_day(balance=9500.0)
+
+    assert rm.state.resumes_today == 0
+    assert rm.state.trades_today == 0
+    assert rm.state.consecutive_losses == 0
+    assert rm.state.state is TradingState.RUNNING
+    assert rm.state.day_start_balance == 9500.0
+    assert "9500" in bericht
+
+
+def test_reset_day_reports_what_was_wiped():
+    """Stil terugzetten zou verhullen hoe ver je vandaag bent gekomen."""
+    rm = fresh()
+    rm.state.resumes_today = 12
+    rm.state.trades_today = 40
+    bericht = rm.reset_day(balance=9800.0)
+    assert "12 hervattingen" in bericht
+    assert "40 trades" in bericht
+
+
+def test_reset_day_does_not_erase_the_loss():
+    """Het verlies blijft in de database; alleen de noodrem begint opnieuw.
+    Anders zou een reset je resultaten mooier maken dan ze zijn."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "broker" / "risk.py").read_text(encoding="utf-8")
+    body = source.split("def reset_day")[1].split("\n    def ")[0]
+    assert "database" in body
+    for verboden in ("net_pnl", "delete", "DELETE"):
+        assert verboden not in body, f"reset_day raakt {verboden} aan"
+
+
+def test_reset_day_allows_trading_again():
+    rm = fresh(max_daily_loss_pct=2.0)
+    rm.can_open(**args(balance=9700.0, equity=9700.0, starting_balance=10000.0))
+    assert rm.state.state is TradingState.HALTED
+
+    rm.reset_day(balance=9700.0)
+    ok, _ = rm.can_open(
+        **args(balance=9700.0, equity=9700.0, starting_balance=10000.0)
+    )
+    assert ok
