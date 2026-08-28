@@ -357,6 +357,13 @@ class TradeDatabase:
         self.conn.commit()
         return int(cur.lastrowid)
 
+    def latest_open_run(self) -> dict | None:
+        """De meest recente run die nog niet is afgesloten."""
+        row = self.conn.execute(
+            "SELECT * FROM runs WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
     def end_run(self, run_id: int) -> None:
         self.conn.execute("UPDATE runs SET ended_at=? WHERE id=?", (_now(), run_id))
         self.conn.commit()

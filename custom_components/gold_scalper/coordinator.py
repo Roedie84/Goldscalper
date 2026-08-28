@@ -475,6 +475,18 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 self.run_id, existing["started_at"],
             )
         else:
+            # De vorige run afsluiten hoort hier, en alleen hier: bij een
+            # gewijzigde opzet. Niet bij een herstart - dan zou de volgende
+            # start hem niet meer herkennen en telde elke herstart als een
+            # nieuwe bewijsfase.
+            vorige = await self.hass.async_add_executor_job(
+                self.db.latest_open_run
+            )
+            if vorige:
+                await self.hass.async_add_executor_job(
+                    self.db.end_run, vorige["id"]
+                )
+
             self.run_id = await self.hass.async_add_executor_job(
                 self.db.start_run, self.mode.value, STRATEGY_VERSION,
                 self.symbol, config, self.starting_balance, None, fingerprint,
@@ -1918,7 +1930,16 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         if self.db is not None:
             if hasattr(self.db, "flush_signals"):
                 flushes.append(self.db.flush_signals)
-            if self.run_id is not None:
-                flushes.append(lambda: self.db.end_run(self.run_id))
+            # De run bewust NIET afsluiten bij een herstart.
+            #
+            # end_run zet ended_at, en find_matching_run zoekt alleen naar runs
+            # zonder ended_at. Elke herstart sloot de run dus af en de volgende
+            # start herkende hem niet meer - precies het gedrag dat de
+            # adoptiefunctie moest voorkomen. Vijf herstarts leverden vijf
+            # runs op, elk met een handvol trades, en een bewijsfase van
+            # dertig dagen wordt dan nooit gehaald.
+            #
+            # Een run hoort alleen te eindigen als de opzet wijzigt of als je
+            # er zelf een nieuwe begint.
             flushes.append(self.db.close)
         await self.lifecycle.emergency_shutdown(flushes)

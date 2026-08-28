@@ -261,3 +261,59 @@ def test_alphanumeric_ticket_can_be_stored(tmp_path):
     )
     db.insert_trade(trade)
     assert db.open_trades(run)[0].broker_ticket == "DIAAAAYCJETQ7A8"
+
+
+def test_a_restart_does_not_end_the_run(tmp_path):
+    """Het scenario dat vijf keer misging.
+
+    `end_run` zet ended_at, en `find_matching_run` zoekt alleen naar runs
+    zonder ended_at. Bij het afsluiten werd de run dichtgezet, waarna de
+    volgende start hem niet meer herkende - precies het gedrag dat de
+    adoptiefunctie moest voorkomen. Vijf herstarts leverden vijf runs op,
+    elk met een handvol trades, en een bewijsfase van dertig dagen wordt dan
+    nooit gehaald.
+    """
+    db = TradeDatabase(tmp_path / "runs.db")
+    db.connect()
+
+    fingerprint = "abc123"
+    eerste = db.start_run("demo", "v1", "GOLD", {}, 10000.0, None, fingerprint)
+
+    # Herstart: de run wordt NIET afgesloten.
+    db.close()
+    db = TradeDatabase(tmp_path / "runs.db")
+    db.connect()
+
+    gevonden = db.find_matching_run(fingerprint)
+    assert gevonden is not None, "de run is na een herstart niet terug te vinden"
+    assert gevonden["id"] == eerste
+
+
+def test_an_ended_run_is_not_adopted(tmp_path):
+    """Sluiten hoort alleen bij een gewijzigde opzet, en dan mag hij ook niet
+    meer worden opgepakt."""
+    db = TradeDatabase(tmp_path / "runs.db")
+    db.connect()
+    run = db.start_run("demo", "v1", "GOLD", {}, 10000.0, None, "fp")
+    db.end_run(run)
+    assert db.find_matching_run("fp") is None
+
+
+def test_latest_open_run_finds_the_current_one(tmp_path):
+    db = TradeDatabase(tmp_path / "runs.db")
+    db.connect()
+    db.start_run("demo", "v1", "GOLD", {}, 10000.0, None, "fp1")
+    tweede = db.start_run("demo", "v1", "GOLD", {}, 10000.0, None, "fp2")
+    assert db.latest_open_run()["id"] == tweede
+
+
+def test_shutdown_does_not_call_end_run():
+    """Vangt de terugkeer van deze fout."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    afsluiten = source.split("async def async_shutdown")[1][:1200]
+    assert "end_run" not in afsluiten or "# end_run" in afsluiten, (
+        "de run wordt bij het afsluiten dichtgezet"
+    )
