@@ -172,3 +172,31 @@ def test_unclassified_closes_use_the_current_quote():
     body = _method("_settle_vanished_positions")
     assert 'reason = "broker_gesloten"' in body
     assert "level: float | None = None" in body
+
+
+def test_excursion_is_seeded_at_open():
+    """Een positie die tussen twee cycli opent en sluit, of die de broker sluit
+    voordat de beheerlus hem ziet, werd nooit gemeten. Dan blijft mfe leeg en
+    slaat de verliesanalyse die trade over.
+
+    Bij 33 trades met 18 verliezers meldde de analyse er nul, omdat zeventien
+    ervan nooit door de lus waren gezien.
+    """
+    body = _method("_record_broker_open")
+    assert "_excursions.setdefault" in body
+
+
+def test_missing_excursion_falls_back_to_the_outcome():
+    """Minder nauwkeurig dan een gemeten uiterste, maar veel beter dan de trade
+    helemaal buiten de analyse laten."""
+    body = _method("_record_broker_close")
+    assert "if excursion is None:" in body
+    assert "beweging" in body
+
+
+def test_mfe_is_always_written():
+    """Er mag geen pad zijn waarlangs mfe leeg blijft."""
+    body = _method("_record_broker_close")
+    # Buiten een if-blok, dus altijd uitgevoerd.
+    assert "\n        trade.mfe = round(" in body
+    assert "\n        trade.mae = round(" in body

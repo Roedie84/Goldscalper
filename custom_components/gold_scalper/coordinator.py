@@ -1856,6 +1856,18 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             broker_ticket=str(result.ticket) if result.ticket else None,
         )
         await self.hass.async_add_executor_job(self.db.insert_trade, trade)
+
+        # Meteen een beginwaarde zetten. Een positie die tussen twee cycli
+        # opent en sluit, of die de broker sluit voordat de lus hem ziet, werd
+        # anders nooit gemeten - en dan blijft mfe leeg en slaat de
+        # verliesanalyse die trade over. Zeventien van drieëndertig trades
+        # kwamen zo nooit in de ontleding terecht, terwijl de teller ze wel
+        # meerekende.
+        if result.ticket:
+            self._excursions.setdefault(
+                str(result.ticket), {"mfe": 0.0, "mae": 0.0}
+            )
+
         _LOGGER.info(
             "Trade vastgelegd: %s %s @ %.2f (ticket %s, slippage %.3f)",
             side, self.symbol, fill, result.ticket, slippage,
@@ -1902,9 +1914,17 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # Uitersten meenemen. Zonder deze twee kan de verliesanalyse niet
         # vaststellen of een verlies aan het ontwerp lag of aan de markt.
         excursion = self._excursions.pop(ticket, None)
-        if excursion:
-            trade.mfe = round(excursion["mfe"] * units, 4)
-            trade.mae = round(excursion["mae"] * units, 4)
+        if excursion is None:
+            # Nooit door de beheerlus gezien. Dan is het beste dat we hebben de
+            # uitkomst zelf: die begrenst de beweging aan minstens één kant.
+            # Dat is minder nauwkeurig dan een gemeten uiterste, maar veel beter
+            # dan de trade helemaal buiten de verliesanalyse laten.
+            beweging = (exit_price - trade.open_price) * direction
+            excursion = {
+                "mfe": max(0.0, beweging), "mae": min(0.0, beweging),
+            }
+        trade.mfe = round(excursion["mfe"] * units, 4)
+        trade.mae = round(excursion["mae"] * units, 4)
 
         trade.gross_pnl = round(
             (quote.mid - trade.open_mid) * direction * units, 4
