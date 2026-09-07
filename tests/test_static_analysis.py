@@ -493,3 +493,32 @@ def test_every_registered_service_is_documented():
             ontbreekt.append(match.group(1))
 
     assert ontbreekt == [], f"niet beschreven in services.yaml: {ontbreekt}"
+
+
+def test_diagnostics_exposes_the_learning_layer():
+    """De diagnostiek bouwt zijn antwoord met de hand op en liep daardoor
+    achter op wat de coordinator bijhoudt.
+
+    Gevolg: elke export meldde de consistentietoets als "nog niet vastgesteld"
+    en het periodeoverzicht als leeg, ook bij ruim honderd trades. De
+    berekening klopte; hij was alleen onzichtbaar - en juist die export is
+    waarop de beoordeling rust.
+    """
+    source = (PKG / "diagnostics.py").read_text(encoding="utf-8")
+    for veld in ("robustness", "periods", "losses", "sizing", "audit"):
+        assert veld in source, f"{veld} ontbreekt in de diagnostiek"
+
+
+def test_diagnostics_covers_the_coordinator_state():
+    """Vangt de volgende variant: een nieuw veld op de coordinator dat niet in
+    de export belandt."""
+    coordinator = (PKG / "coordinator.py").read_text(encoding="utf-8")
+    diagnostics = (PKG / "diagnostics.py").read_text(encoding="utf-8")
+
+    # Publieke velden die in __init__ worden gezet en een dict bevatten.
+    interessant = set(re.findall(r"self\.(\w+): dict = \{\}", coordinator))
+    ontbreekt = sorted(
+        naam for naam in interessant
+        if naam not in diagnostics and not naam.startswith("_")
+    )
+    assert ontbreekt == [], f"niet in de diagnostiek: {ontbreekt}"

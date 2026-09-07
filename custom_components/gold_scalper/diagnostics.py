@@ -70,6 +70,22 @@ async def async_get_config_entry_diagnostics(
         },
         "performance": stats,
         "daily": daily[-30:],
+
+        # De leerlaag en de periodecijfers zaten wel in de sensorgegevens maar
+        # niet in deze export, omdat dit antwoord met de hand wordt opgebouwd.
+        # Gevolg: elke diagnostiek meldde de consistentietoets als
+        # "nog niet vastgesteld" en het periodeoverzicht als leeg, ook toen er
+        # ruim honderd trades waren.
+        "learning": {
+            "losses": coordinator.postmortem,
+            "robustness": coordinator.robustness,
+            "regimes": coordinator.regime_stats,
+        },
+        "periods": coordinator.periods,
+        "sizing": coordinator.last_sizing,
+        "audit": coordinator.audit,
+        "backtest": coordinator.backtest,
+        "schedule_note": coordinator.schedule_note,
         "gate": data.get("gate"),
         "risk": data.get("risk"),
         "lifecycle": data.get("lifecycle"),
