@@ -41,6 +41,11 @@ STOP_TOO_TIGHT = "stop_te_krap"
 HELD_TOO_SHORT = "te_vroeg_gesloten"
 COSTS_ATE_IT = "kosten_aten_de_winst"
 NO_FOLLOW_THROUGH = "geen_vervolg"
+#: Geen bruikbare meting. Bewust een eigen categorie: een trade waarvan de
+#: uitersten niet zijn vastgelegd, hoort niet stilzwijgend bij een van de
+#: verklaringen te worden opgeteld. Dat gebeurde wel, en leverde 94%
+#: "geen_vervolg" op waar de werkelijke oorzaak onbekend was.
+UNKNOWN = "niet_gemeten"
 WRONG_DIRECTION = "verkeerde_richting"
 
 _EXPLANATION = {
@@ -60,6 +65,12 @@ _EXPLANATION = {
         "De koers bewoog nauwelijks, in geen van beide richtingen. Het signaal "
         "voorspelde beweging die er niet kwam."
     ),
+    UNKNOWN: (
+        "Van deze trade zijn de uitersten niet vastgelegd, meestal omdat de "
+        "broker hem sloot voordat de beheerlus hem zag. De oorzaak is dus niet "
+        "vast te stellen; hem bij een van de verklaringen optellen zou een "
+        "conclusie verzinnen."
+    ),
     WRONG_DIRECTION: (
         "De koers ging meteen de andere kant op. Dit is de normale, "
         "onvermijdelijke soort verlies."
@@ -67,6 +78,9 @@ _EXPLANATION = {
 }
 
 _ACTIONABLE = {STOP_TOO_TIGHT, HELD_TOO_SHORT, COSTS_ATE_IT}
+
+#: Categorieën die niets verklaren en dus buiten de conclusie blijven.
+_UNINFORMATIVE = {UNKNOWN}
 
 
 @dataclass(slots=True)
@@ -117,6 +131,12 @@ def _classify(trade: Trade, target_atr: float, stop_atr: float) -> str:
     mfe = trade.mfe or 0.0
     mae = trade.mae or 0.0
     reason = trade.close_reason or ""
+
+    # Geen enkele beweging in beide richtingen betekent in de praktijk dat er
+    # niets gemeten is: een trade die werkelijk exact op zijn instapprijs sluit
+    # bestaat niet, al is het maar door de spread.
+    if mfe == 0.0 and mae == 0.0:
+        return UNKNOWN
 
     # De trade klopte, alleen de kosten niet. Dit staat vooraan omdat het geen
     # strategieprobleem is en anders onder een andere noemer zou verdwijnen.
@@ -198,10 +218,33 @@ def analyse_losses(
             suggestion=suggestions.get(cause) if share >= 0.20 else None,
         ))
 
+    # Alleen over gemeten verliezen uitspraken doen; ongemeten trades tellen
+    # niet mee in de noemer, anders verdunnen ze elk percentage.
+    meetbaar = sum(
+        p.count for p in result.patterns if p.cause not in _UNINFORMATIVE
+    )
     fixable = sum(p.count for p in result.patterns if p.actionable)
-    result.fixable_share = fixable / len(losers)
+    result.fixable_share = (fixable / meetbaar) if meetbaar else 0.0
 
-    dominant = result.patterns[0]
+    gemeten = [p for p in result.patterns if p.cause not in _UNINFORMATIVE]
+    ongemeten = next(
+        (p for p in result.patterns if p.cause == UNKNOWN), None
+    )
+    if ongemeten and ongemeten.share > 0.5:
+        result.conclusion = (
+            f"Van {ongemeten.share:.0%} van de verliezen zijn de uitersten niet "
+            "vastgelegd, meestal omdat de broker de positie sloot voordat de "
+            "beheerlus hem zag. Daar valt geen oorzaak aan toe te kennen, en "
+            "hem bij een van de verklaringen optellen zou een conclusie "
+            "verzinnen."
+        )
+        return result
+
+    if not gemeten:
+        result.conclusion = "Geen enkele verliezer is bruikbaar gemeten."
+        return result
+
+    dominant = gemeten[0]
     if result.fixable_share < 0.25:
         result.conclusion = (
             f"{result.fixable_share:.0%} van de verliezen is toe te schrijven aan "

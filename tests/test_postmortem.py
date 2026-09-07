@@ -104,3 +104,54 @@ def test_it_never_suggests_avoiding_conditions():
               / "gold_scalper" / "learning" / "postmortem.py").read_text(encoding="utf-8")
     for forbidden in ("blacklist", "avoid_hour", "exclude_regime", "skip_setup"):
         assert forbidden not in source
+
+
+# ---------------- ongemeten trades ----------------
+
+def test_unmeasured_trades_get_their_own_category():
+    """Een trade zonder vastgelegde uitersten hoort niet stilzwijgend bij een
+    van de verklaringen te worden opgeteld.
+
+    Bij het openen wordt {0,0} gezet zodat de sleutel bestaat. Sluit de broker
+    de positie voordat de beheerlus hem ziet - en dat gebeurt bij ruim zestig
+    procent van de trades - dan blijven beide nul. De regel "nauwelijks
+    beweging in beide richtingen" is dan per definitie waar, en de trade werd
+    als 'geen_vervolg' gestempeld.
+
+    Dat leverde 94% 'geen_vervolg' op: geen bevinding maar een artefact.
+    """
+    from gold_scalper.learning.postmortem import UNKNOWN
+
+    losers = [_loss(i, mfe=0.0, mae=0.0, reason="broker_gesloten")
+              for i in range(20)]
+    result = analyse_losses(losers, typical_atr=7.2)
+    assert result.patterns[0].cause == UNKNOWN
+
+
+def test_unmeasured_losses_do_not_produce_a_conclusion():
+    losers = [_loss(i, mfe=0.0, mae=0.0, reason="broker_gesloten")
+              for i in range(20)]
+    result = analyse_losses(losers, typical_atr=7.2)
+    assert "verzinnen" in result.conclusion or "niet vastgelegd" in result.conclusion
+
+
+def test_unmeasured_trades_do_not_dilute_the_fixable_share():
+    """Ongemeten trades horen niet in de noemer: anders drukken ze elk
+    percentage omlaag en lijkt een echt probleem kleiner dan het is."""
+    losers = (
+        [_loss(i, mfe=0.0, mae=0.0, reason="broker_gesloten") for i in range(10)]
+        + [_loss(i + 100, mfe=8.0, mae=-5.0, reason="stop_loss") for i in range(10)]
+    )
+    result = analyse_losses(losers, typical_atr=5.0)
+    # De tien gemeten trades zijn allemaal 'stop te krap'; dat is 100% van het
+    # meetbare deel, niet 50% van alles.
+    assert result.fixable_share > 0.9
+
+
+def test_a_measured_zero_is_impossible_in_practice():
+    """Een trade die exact op zijn instapprijs sluit bestaat niet, al is het
+    maar door de spread. Nul betekent dus 'niet gemeten'."""
+    from gold_scalper.learning.postmortem import UNKNOWN, _classify
+
+    trade = _loss(1, mfe=0.0, mae=0.0)
+    assert _classify(trade, 10.0, 7.0) == UNKNOWN

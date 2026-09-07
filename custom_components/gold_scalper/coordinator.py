@@ -1914,6 +1914,21 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # Uitersten meenemen. Zonder deze twee kan de verliesanalyse niet
         # vaststellen of een verlies aan het ontwerp lag of aan de markt.
         excursion = self._excursions.pop(ticket, None)
+
+        # Ook terugvallen als de meting nog op nul staat.
+        #
+        # Bij het openen wordt {0,0} gezet zodat de sleutel bestaat. Sluit de
+        # positie voordat de beheerlus hem heeft gezien - en dat gebeurt bij
+        # ruim zestig procent van de trades - dan blijven beide nul. De
+        # verliesanalyse leest dat als "nauwelijks beweging in beide
+        # richtingen" en stempelt de trade als 'geen_vervolg'.
+        #
+        # Dat leverde 94% 'geen_vervolg' op: geen bevinding maar een artefact
+        # van deze code. Een niet-gemeten trade hoort als onbekend te gelden,
+        # niet als bewijs voor een conclusie.
+        if excursion is not None and excursion["mfe"] == 0.0 and excursion["mae"] == 0.0:
+            excursion = None
+
         if excursion is None:
             # Nooit door de beheerlus gezien. Dan is het beste dat we hebben de
             # uitkomst zelf: die begrenst de beweging aan minstens één kant.
