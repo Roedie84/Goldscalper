@@ -300,6 +300,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             options.get(CONF_CLOSE_BUFFER_MINUTES), 10
         )
         self.schedule_note: str | None = None
+        #: Laatst gemelde roosterafwijking, om herhaling te onderdrukken.
+        self._last_schedule_note: str | None = None
         self.last_sizing: dict = {}
 
         service = options.get(CONF_NOTIFY_SERVICE, NOTIFY_NONE)
@@ -1159,7 +1161,21 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             tradeable, note = cross_check(quote.tradeable, SPOT_GOLD, now)
             if note:
                 self.schedule_note = note
-                _LOGGER.warning("Handelstijden: %s", note)
+                # Eén keer per afwijking loggen, niet per cyclus.
+                #
+                # Op Labor Day sloten de Amerikaanse markten vervroegd; het
+                # rooster kent geen feestdagen en meldde dat terecht. Maar de
+                # melding stond 903 keer in het logboek over drieënhalf uur -
+                # dezelfde tekst, elke twintig seconden. Zo'n stortvloed maakt
+                # het logboek onbruikbaar voor de meldingen die er wél toe doen.
+                if note != self._last_schedule_note:
+                    _LOGGER.warning("Handelstijden: %s", note)
+                    self._last_schedule_note = note
+            elif self._last_schedule_note is not None:
+                _LOGGER.info(
+                    "Handelstijden: broker en rooster zijn het weer eens."
+                )
+                self._last_schedule_note = None
 
         # -- periodieke controle op onbeschermde posities --------------------- #
         # Een stop kan verdwijnen doordat een wijziging half doorkwam of doordat
@@ -1681,6 +1697,50 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
             await self._record_broker_close(
                 _TicketOnly(str(trade.broker_ticket)), settle, reason, now
+            )
+
+    async def _audit_against_broker(self) -> None:
+        """Leg de brokerposities naast de eigen administratie.
+
+        Tests toetsen of de code doet wat de bedoeling was; ze weten niet of
+        die bedoeling klopt met hoe de broker zich gedraagt. Deze vergelijking
+        vangt dat verschil - en daar zaten de ernstigste fouten: een
+        deelsluiting die alles sloot, een stopverplaatsing die het doel wiste.
+
+        De aanroep hiervan stond er wel, deze methode niet: een tekstvervanging
+        die stil faalde. De vergelijking heeft daardoor nooit gedraaid, en elke
+        cyclus waarin hij aan de beurt was, viel de hele lus om.
+        """
+        try:
+            positions = await self._open_positions(refresh=True)
+            account = await self.venue.account()
+        except VenueError as err:
+            _LOGGER.debug("Kon niet vergelijken met de broker: %s", err)
+            return
+
+        open_trades = await self.hass.async_add_executor_job(
+            self.db.open_trades, self.run_id
+        )
+        audit = compare_positions(
+            positions, open_trades,
+            expected_currency="USD",
+            account_currency=getattr(account, "currency", None),
+        )
+        self.audit = audit.as_dict()
+
+        for finding in audit.findings:
+            log = _LOGGER.error if finding.severity == "kritiek" else _LOGGER.warning
+            log("Controle: %s", finding.message)
+
+        if audit.critical:
+            self.executor_notes = [f.message for f in audit.critical][:3]
+            self.risk.halt(
+                "administratie en broker lopen uiteen: "
+                + audit.critical[0].message
+            )
+            await self.notifier.alert(
+                "audit", "Gold Scalper: administratie klopt niet",
+                audit.critical[0].message,
             )
 
     def _track_excursion(self, position, quote: VenueQuote, ticket: str) -> None:

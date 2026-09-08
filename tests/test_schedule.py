@@ -111,3 +111,14 @@ def test_disagreement_is_reported_not_hidden():
     hoort gemeld te worden zodat je hem kunt beoordelen."""
     _, note = cross_check(True, SPOT_GOLD, _weekday("zo", 12))
     assert note and ("verouderd" in note or "rooster" in note)
+
+
+def test_a_holiday_closure_is_explained_not_alarming():
+    """Op Labor Day sloten de Amerikaanse markten vervroegd. Het rooster kent
+    geen feestdagen en meldde dat terecht - maar de tekst moet duidelijk maken
+    dat dit normaal is en dat de broker gelijk heeft, anders lijkt elke
+    feestdag op een storing."""
+    open_now, note = cross_check(False, SPOT_GOLD, _weekday("ma", 21))
+    assert open_now is False
+    assert "feestdag" in note
+    assert "broker heeft gelijk" in note.lower() or "broker heeft" in note

@@ -522,3 +522,79 @@ def test_diagnostics_covers_the_coordinator_state():
         if naam not in diagnostics and not naam.startswith("_")
     )
     assert ontbreekt == [], f"niet in de diagnostiek: {ontbreekt}"
+
+
+def test_every_called_method_exists():
+    """Vangt een aanroep naar een methode die niet bestaat.
+
+    `_audit_against_broker` werd elke tiende cyclus aangeroepen maar was er
+    nooit: de tekstvervanging die hem moest toevoegen faalde stil, terwijl de
+    aanroep wél werd geplaatst. De brokervergelijking heeft daardoor nooit
+    gedraaid, en elke cyclus waarin hij aan de beurt was, viel de hele
+    handelslus om met een AttributeError.
+
+    Pyflakes ziet dit niet: `self.iets()` is syntactisch altijd geldig.
+    """
+    # Methoden die van een Home Assistant-basisklasse komen. Die staan niet in
+    # onze eigen klasse maar bestaan wel; ze meenemen zou de test vol valse
+    # meldingen zetten en daarmee onbruikbaar maken.
+    overgeerfd = {
+        # DataUpdateCoordinator
+        "async_request_refresh", "async_refresh", "async_config_entry_first_refresh",
+        "async_set_updated_data", "async_add_listener", "async_shutdown",
+        "async_update_listeners",
+        # ConfigFlow en OptionsFlow
+        "async_show_form", "async_create_entry", "async_abort",
+        "async_set_unique_id", "_abort_if_unique_id_configured",
+        "async_update_reload_and_abort", "async_show_menu",
+        # Entity
+        "async_write_ha_state", "schedule_update_ha_state",
+        # Eigen basisklassen binnen dit pakket
+        "positions",
+    }
+
+    problemen = []
+    for path in PKG.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for klasse in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+            gedefinieerd = {
+                n.name for n in klasse.body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            # Alleen attributen die worden *toegewezen* tellen mee. Elk
+            # gebruik meetellen maakt de controle waardeloos: dan geldt de
+            # aanroep zelf als bewijs dat de methode bestaat.
+            gedefinieerd |= {
+                t.attr for n in ast.walk(klasse)
+                if isinstance(n, (ast.Assign, ast.AnnAssign))
+                for t in ast.walk(n)
+                if isinstance(t, ast.Attribute)
+                and isinstance(t.value, ast.Name) and t.value.id == "self"
+            }
+            for node in ast.walk(klasse):
+                if (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "self"
+                        and node.func.attr not in gedefinieerd
+                        and node.func.attr not in overgeerfd):
+                    problemen.append(
+                        f"{path.name}:{node.lineno}  {klasse.name}."
+                        f"{node.func.attr}()"
+                    )
+
+    assert problemen == [], "\n".join(problemen)
+
+
+def test_repeated_warnings_are_throttled():
+    """Een melding die elke cyclus wordt herhaald, maakt het logboek onbruikbaar
+    voor de meldingen die er wél toe doen.
+
+    De roosterafwijking op Labor Day stond 903 keer in het logboek over
+    drieënhalf uur - dezelfde tekst, elke twintig seconden.
+    """
+    source = (PKG / "coordinator.py").read_text(encoding="utf-8")
+    blok = source.split("Handelstijden: %s")[0][-400:]
+    assert "_last_schedule_note" in blok, (
+        "de roosterwaarschuwing wordt niet onderdrukt bij herhaling"
+    )

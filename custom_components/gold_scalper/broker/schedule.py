@@ -155,8 +155,17 @@ def cross_check(
             "is het rooster verouderd en moet het bijgesteld."
         )
 
+    # De broker weet het beter dan het rooster.
+    #
+    # Feestdagen en vervroegde sluitingen staan hier niet in, en een kalender
+    # bijhouden zou betekenen dat je hem elk jaar moet onderhouden - met als
+    # risico dat een vergeten dag je op verouderde koersen laat handelen.
+    #
+    # Andersom is het rooster wél nuttig: als de broker "open" zegt terwijl het
+    # rooster dicht zegt, is er iets mis met het veld en wil je dat weten.
     return False, (
         f"De broker meldt de markt gesloten terwijl het rooster hem open zegt "
-        f"({reason}). Waarschijnlijk een feestdag of vervroegde sluiting; die "
-        "staan niet in het rooster."
+        f"({reason}). Vrijwel altijd een feestdag of vervroegde sluiting - de "
+        "Amerikaanse kalender staat niet in het rooster. De broker heeft "
+        "gelijk; er wordt niet gehandeld."
     )
