@@ -118,3 +118,32 @@ def test_rounding_noise_is_ignored():
     audit = compare_positions([_position(units=10.001, stop_loss=4659.001)],
                               [_trade()])
     assert audit.findings == []
+
+
+def test_zero_size_position_is_not_a_mismatch():
+    """Een positie van nul ounce is geen positie maar een gesloten positie die
+    de broker nog even in de lijst laat staan.
+
+    Die als "omvang verschilt" behandelen levert een kritieke bevinding op en
+    legt de handel stil, terwijl er niets aan de hand is. Dat gebeurde: de
+    eerste keer dat de vergelijking draaide, sloeg hij hierop af.
+    """
+    audit = compare_positions([_position(units=0.0)], [_trade()])
+    assert not audit.critical
+    assert any(f.code == "gesloten_bij_broker" for f in audit.findings)
+
+
+def test_zero_size_does_not_count_as_seen():
+    """Anders blijft de trade eeuwig open in de database: hij geldt als
+    aanwezig bij de broker terwijl er niets meer staat."""
+    audit = compare_positions([_position(units=0.0)], [_trade()])
+    codes = {f.code for f in audit.findings}
+    assert "omvang_verschilt" not in codes
+
+
+def test_a_real_size_difference_is_still_critical():
+    """De echte fout moet blijven afgaan: broker en database die verschillende
+    hoeveelheden melden op een positie die wél openstaat."""
+    audit = compare_positions([_position(units=5.0)],
+                              [_trade(volume=10.0 / CONTRACT_SIZE)])
+    assert any(f.code == "omvang_verschilt" for f in audit.critical)

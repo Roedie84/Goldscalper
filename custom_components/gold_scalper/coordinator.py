@@ -1646,7 +1646,13 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             _LOGGER.debug("Kon posities niet nakijken: %s", err)
             return
 
-        live_tickets = {str(getattr(p, "ticket", "")) for p in live}
+        # Posities van nul ounce tellen als gesloten: de broker laat ze nog
+        # even in de lijst staan, maar er staat niets meer open. Ze als "nog
+        # levend" beschouwen zou de trade eeuwig open houden in de database.
+        live_tickets = {
+            str(getattr(p, "ticket", "")) for p in live
+            if float(getattr(p, "units", 0) or 0) > 0.005
+        }
         open_trades = await self.hass.async_add_executor_job(
             self.db.open_trades, self.run_id
         )

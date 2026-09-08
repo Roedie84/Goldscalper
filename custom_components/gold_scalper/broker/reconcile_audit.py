@@ -87,6 +87,21 @@ def compare_positions(
 
     for position in broker:
         ticket = str(position.ticket)
+
+        # Een positie van nul ounce is geen positie maar een gesloten positie
+        # die de broker nog even in de lijst laat staan. Die als "omvang
+        # verschilt" behandelen levert een kritieke bevinding op en legt de
+        # handel stil, terwijl er niets aan de hand is: de trade hoort gewoon
+        # te worden afgerekend.
+        if position.units <= SIZE_TOLERANCE:
+            audit.findings.append(Finding(
+                "informatie", "gesloten_bij_broker",
+                f"Positie {ticket} staat bij de broker op nul en is dus "
+                "gesloten. Wordt alsnog afgerekend.",
+                ticket,
+            ))
+            continue
+
         seen.add(ticket)
 
         # Het gevaarlijkste geval, en het enige dat blokkeert.
