@@ -86,6 +86,10 @@ async def async_get_config_entry_diagnostics(
         "audit": coordinator.audit,
         "backtest": coordinator.backtest,
         "schedule_note": coordinator.schedule_note,
+        # Wanneer de broker werkelijk sloot. Het rooster is een vermoeden;
+        # dit is de waarneming, en die kan het rooster corrigeren.
+        "closures": coordinator.closures.as_dict(),
+        "closure_hint": coordinator.closures.suggest_break(),
         "gate": data.get("gate"),
         "risk": data.get("risk"),
         "lifecycle": data.get("lifecycle"),

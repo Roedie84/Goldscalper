@@ -30,7 +30,9 @@ from .analysis.signals import Candles
 from .broker.adapter import ExecutionVenue, VenueError, VenueQuote
 from .broker.execution_safety import BrokerLimits, SafeExecutor
 from .broker.reconcile_audit import compare_positions
-from .broker.schedule import SPOT_GOLD, cross_check, minutes_until_close
+from .broker.schedule import (
+    SPOT_GOLD, ClosureObservation, cross_check, minutes_until_close,
+)
 from .broker.exits import ExitConfig, ExitManager
 from .broker.ig_capital import CapitalVenue, IgVenue
 from .broker.oanda import OandaVenue
@@ -302,6 +304,9 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self.schedule_note: str | None = None
         #: Laatst gemelde roosterafwijking, om herhaling te onderdrukken.
         self._last_schedule_note: str | None = None
+        #: Waarneming van wanneer de broker werkelijk sluit. Het rooster is een
+        #: vermoeden; dit is wat er gebeurde.
+        self.closures = ClosureObservation()
         self.last_sizing: dict = {}
 
         service = options.get(CONF_NOTIFY_SERVICE, NOTIFY_NONE)
@@ -1157,6 +1162,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # op een koers van uren geleden kan alles kosten.
         tradeable = quote.tradeable
         self.schedule_note = None
+        # Altijd vastleggen wanneer de broker sluit, ook als het rooster uit
+        # staat: dit is de enige bron die niet op een aanname rust.
+        self.closures.record(now, quote.tradeable)
+
         if self._use_schedule:
             tradeable, note = cross_check(quote.tradeable, SPOT_GOLD, now)
             if note:
@@ -1363,6 +1372,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "backtest": self.backtest,
             "audit": self.audit,
             "schedule_note": self.schedule_note,
+            "closures": self.closures.as_dict(),
+            "closure_hint": self.closures.suggest_break(),
             "run_changed_because": self.run_changed_because,
             "adopted_defaults": self.adopted_defaults,
             "learning": {

@@ -23,7 +23,7 @@ Nederlandse klanten en hoe jij ernaar kijkt.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
@@ -53,6 +53,19 @@ class Session:
 #: spot is die er in de praktijk ook, omdat de onderliggende markt dan sluit.
 #: Hij staat er daarom in - een uur niet handelen kost je weinig, handelen in
 #: een markt zonder liquiditeit kost je de spread.
+#: Het rooster is een *vermoeden*, geen waarheid.
+#:
+#: Twee bronnen geven verschillende tijden voor spot goud bij IG: de
+#: Nederlandse publicatie zegt een pauze van 23:00 tot 24:00 lokale tijd, een
+#: andere bron zegt 22:00 tot 23:00 UTC - dat scheelt een uur in zomertijd.
+#:
+#: Welke klopt valt van buitenaf niet vast te stellen, en het hoeft ook niet:
+#: bij onenigheid wint altijd 'gesloten', dus er wordt nooit tegen de broker in
+#: gehandeld. Het rooster dient alleen om te merken wanneer het veld
+#: ``marketState`` zelf niet deugt.
+#:
+#: Wat wél helpt is meten wanneer de broker de markt werkelijk sluit; zie
+#: ``observed_closures`` hieronder.
 SPOT_GOLD = Session(
     name="spot goud",
     opens_weekday=0, opens_at=time(0, 0),
@@ -169,3 +182,63 @@ def cross_check(
         "Amerikaanse kalender staat niet in het rooster. De broker heeft "
         "gelijk; er wordt niet gehandeld."
     )
+
+
+@dataclass(slots=True)
+class ClosureObservation:
+    """Wanneer de broker de markt werkelijk gesloten meldde.
+
+    Bestaat omdat het rooster een vermoeden is en de waarneming niet. Twee
+    bronnen geven verschillende tijden voor spot goud bij IG, en welke klopt
+    valt van buitenaf niet vast te stellen. Wat je wél kunt doen is bijhouden
+    wanneer de broker sluit, en het rooster daarna bijstellen op grond van wat
+    er werkelijk gebeurde.
+
+    Bewust alleen waarnemen, niet automatisch aanpassen: een rooster dat
+    zichzelf bijstelt op grond van een storing bij de broker, sluit je uit van
+    een markt die gewoon open is.
+    """
+
+    #: Per uur van de dag (lokale tijd) hoe vaak de broker gesloten meldde.
+    closed_by_hour: dict = field(default_factory=dict)
+    #: Per uur hoe vaak er überhaupt gekeken is.
+    seen_by_hour: dict = field(default_factory=dict)
+
+    def record(self, moment: datetime, broker_says_open: bool) -> None:
+        hour = moment.astimezone(MARKET_TZ).hour
+        self.seen_by_hour[hour] = self.seen_by_hour.get(hour, 0) + 1
+        if not broker_says_open:
+            self.closed_by_hour[hour] = self.closed_by_hour.get(hour, 0) + 1
+
+    def as_dict(self) -> dict:
+        """Per uur het aandeel waarnemingen waarin de markt dicht was.
+
+        Uren met minder dan twintig waarnemingen blijven weg: daaronder zegt
+        een percentage niets.
+        """
+        uren = {}
+        for hour, seen in sorted(self.seen_by_hour.items()):
+            if seen < 20:
+                continue
+            closed = self.closed_by_hour.get(hour, 0)
+            uren[hour] = {
+                "waarnemingen": seen,
+                "dicht": closed,
+                "aandeel": round(closed / seen, 3),
+            }
+        return uren
+
+    def suggest_break(self) -> str | None:
+        """Welke uren zijn structureel dicht volgens de waarneming?"""
+        data = self.as_dict()
+        if not data:
+            return None
+        dicht = [h for h, v in data.items() if v["aandeel"] > 0.8]
+        if not dicht:
+            return None
+        return (
+            "Volgens de waarneming is de markt structureel gesloten in de uren "
+            + ", ".join(f"{h:02d}:00" for h in sorted(dicht))
+            + " (lokale tijd). Wijkt dat af van het rooster, dan is het "
+            "rooster verouderd."
+        )

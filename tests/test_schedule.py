@@ -122,3 +122,52 @@ def test_a_holiday_closure_is_explained_not_alarming():
     assert open_now is False
     assert "feestdag" in note
     assert "broker heeft gelijk" in note.lower() or "broker heeft" in note
+
+
+# ---------------- waarneming in plaats van aanname ----------------
+
+def test_closures_are_recorded_per_hour():
+    """Twee bronnen geven verschillende tijden voor spot goud bij IG, en welke
+    klopt valt van buitenaf niet vast te stellen. Wat je wél kunt is bijhouden
+    wanneer de broker werkelijk sluit."""
+    from gold_scalper.broker.schedule import ClosureObservation
+
+    obs = ClosureObservation()
+    for _ in range(30):
+        obs.record(_weekday("wo", 23, 30), broker_says_open=False)
+        obs.record(_weekday("wo", 12, 0), broker_says_open=True)
+
+    data = obs.as_dict()
+    assert data[23]["aandeel"] == 1.0
+    assert data[12]["aandeel"] == 0.0
+
+
+def test_thin_hours_are_left_out():
+    """Onder twintig waarnemingen zegt een percentage niets."""
+    from gold_scalper.broker.schedule import ClosureObservation
+
+    obs = ClosureObservation()
+    for _ in range(5):
+        obs.record(_weekday("wo", 3, 0), broker_says_open=False)
+    assert obs.as_dict() == {}
+
+
+def test_a_structural_closure_is_suggested():
+    from gold_scalper.broker.schedule import ClosureObservation
+
+    obs = ClosureObservation()
+    for _ in range(30):
+        obs.record(_weekday("wo", 0, 30), broker_says_open=False)
+        obs.record(_weekday("wo", 14, 0), broker_says_open=True)
+
+    hint = obs.suggest_break()
+    assert hint and "00:00" in hint
+
+
+def test_no_suggestion_without_a_pattern():
+    from gold_scalper.broker.schedule import ClosureObservation
+
+    obs = ClosureObservation()
+    for _ in range(30):
+        obs.record(_weekday("wo", 14, 0), broker_says_open=True)
+    assert obs.suggest_break() is None
