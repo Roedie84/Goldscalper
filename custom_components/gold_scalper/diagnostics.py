@@ -83,6 +83,10 @@ async def async_get_config_entry_diagnostics(
         },
         "periods": coordinator.periods,
         "sizing": coordinator.last_sizing,
+        # Gemeten uitvoeringsgegevens: spread per uur, stop- en doeltreffers,
+        # werkelijke slippage. Dit is wat de leerlaag gebruikt, en het hoort
+        # dus zichtbaar te zijn in de export waarop de beoordeling rust.
+        "execution_facts": coordinator.execution_facts,
         "audit": coordinator.audit,
         "backtest": coordinator.backtest,
         "schedule_note": coordinator.schedule_note,

@@ -171,9 +171,7 @@ class LifecycleController:
         #
         # Een positie van nul ounce is geen positie maar een gesloten positie
         # die de broker nog even in de lijst laat staan. Die als verweesd
-        # aanmerken legt de handel stil terwijl er niets openstaat - en dat
-        # gebeurde: de vergelijkingslaag herkende hem correct als gesloten,
-        # maar hier ging alsnog de noodstop af.
+        # aanmerken legt de handel stil terwijl er niets openstaat.
         orphaned = [
             p for p in broker_positions
             if str(p["ticket"]) not in db_tickets

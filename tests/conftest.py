@@ -112,5 +112,75 @@ def _install_stubs() -> None:
     ha_const.PERCENTAGE = "%"
     ha_const.EVENT_HOMEASSISTANT_STOP = "homeassistant_stop"
 
+    # DataUpdateCoordinator moet een échte basisklasse zijn, geen _Anything.
+    #
+    # De coordinator roept super().__init__(hass, logger, name=..., ...) aan;
+    # met een stub die naar object valt, faalt dat. Zonder werkende basisklasse
+    # is de hele handelslus niet te draaien in een test - en precies daar zijn
+    # vier fouten op rij doorheen geglipt: een aangeroepen methode die niet
+    # bestond, een aanroep met te weinig argumenten, een nulpositie die als
+    # verweesd gold, en uitersten die op nul bleven staan.
+    import homeassistant.helpers.update_coordinator as huc  # type: ignore
+    from datetime import timedelta as _timedelta
+
+    class _Coordinator:
+        """Genoeg DataUpdateCoordinator om de lus te laten draaien."""
+
+        def __init__(self, hass=None, logger=None, *, name=None,
+                     update_interval=None, **kwargs):
+            self.hass = hass
+            self.name = name
+            self.update_interval = update_interval or _timedelta(seconds=10)
+            self.data = None
+            self.last_update_success = True
+            self._listeners = {}
+
+        def __class_getitem__(cls, item):
+            return cls
+
+        async def async_request_refresh(self):
+            self.data = await self._async_update_data()
+
+        async def async_refresh(self):
+            await self.async_request_refresh()
+
+        async def async_config_entry_first_refresh(self):
+            await self.async_request_refresh()
+
+        def async_set_updated_data(self, data):
+            self.data = data
+
+        def async_add_listener(self, update_callback, context=None):
+            return lambda: None
+
+        def async_update_listeners(self):
+            pass
+
+    huc.DataUpdateCoordinator = _Coordinator
+    huc.UpdateFailed = type("UpdateFailed", (Exception,), {})
+
+    # Store moet echt kunnen opslaan en teruggeven. De stub gaf _Anything
+    # terug, en dat is niet te awaiten - waardoor de handelslus al struikelde
+    # voordat er iets van de handel zelf getest kon worden.
+    import homeassistant.helpers.storage as ha_storage  # type: ignore
+
+    class _Store:
+        """Opslag in het geheugen, met dezelfde vorm als die van HA."""
+
+        def __init__(self, hass=None, version=1, key="", **kwargs):
+            self.key = key
+            self._data = None
+
+        async def async_load(self):
+            return self._data
+
+        async def async_save(self, data):
+            self._data = data
+
+        async def async_remove(self):
+            self._data = None
+
+    ha_storage.Store = _Store
+
 
 _install_stubs()
