@@ -154,3 +154,41 @@ def test_mixed_ticket_types_still_match():
     r = asyncio.run(c.reconcile([{"ticket": 12345}], ["12345"]))
     assert r.consistent
     assert not r.orphaned_at_broker
+
+
+def test_zero_size_broker_position_is_not_orphaned():
+    """Een positie van nul ounce is geen positie maar een gesloten positie die
+    de broker nog even in de lijst laat staan.
+
+    Die als verweesd aanmerken legt de handel stil terwijl er niets openstaat.
+    Dat gebeurde herhaaldelijk: de vergelijkingslaag herkende hem correct als
+    gesloten, maar de levenscyclus ging alsnog in noodstop.
+    """
+    c = LifecycleController()
+    r = asyncio.run(c.reconcile(
+        [{"ticket": "DIAAAAYFEZXSKAC", "volume": 0.0, "side": "buy"}], []
+    ))
+    assert r.consistent
+    assert c.state is LifecycleState.RUNNING
+    assert not r.orphaned_at_broker
+
+
+def test_a_real_orphan_still_halts():
+    """De echte fout moet blijven afgaan: een positie met omvang die niemand
+    bewaakt."""
+    c = LifecycleController()
+    r = asyncio.run(c.reconcile(
+        [{"ticket": "X1", "volume": 1.3, "side": "buy"}], []
+    ))
+    assert not r.consistent
+    assert c.state is LifecycleState.DIVERGED
+
+
+def test_zero_size_does_not_mark_a_trade_as_missing():
+    """Staat de trade wél in de database en meldt de broker nul, dan is hij
+    gesloten en hoort hij als verdwenen te gelden - niet als aanwezig."""
+    c = LifecycleController()
+    r = asyncio.run(c.reconcile(
+        [{"ticket": "X1", "volume": 0.0, "side": "buy"}], ["X1"]
+    ))
+    assert r.missing_at_broker == ["X1"]

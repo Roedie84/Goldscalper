@@ -158,14 +158,26 @@ class LifecycleController:
 
         # Als tekst vergelijken: brokers gebruiken uiteenlopende formaten en
         # een getal naast een string levert altijd 'niet gevonden' op.
-        broker_tickets = {str(p["ticket"]) for p in broker_positions}
+        broker_tickets = {
+            str(p["ticket"]) for p in broker_positions
+            if float(p.get("volume") or p.get("units") or 0) > 0.005
+        }
         db_tickets = {str(t) for t in database_open_tickets}
 
         # Als tekst vergelijken: een getal uit de database naast een string
         # van de broker levert anders altijd 'onbekende positie' op, en dat
         # blokkeert de handel om een verschil dat er niet is.
+        # Nulposities overslaan.
+        #
+        # Een positie van nul ounce is geen positie maar een gesloten positie
+        # die de broker nog even in de lijst laat staan. Die als verweesd
+        # aanmerken legt de handel stil terwijl er niets openstaat - en dat
+        # gebeurde: de vergelijkingslaag herkende hem correct als gesloten,
+        # maar hier ging alsnog de noodstop af.
         orphaned = [
-            p for p in broker_positions if str(p["ticket"]) not in db_tickets
+            p for p in broker_positions
+            if str(p["ticket"]) not in db_tickets
+            and float(p.get("volume") or p.get("units") or 0) > 0.005
         ]
         missing = sorted(db_tickets - broker_tickets)
 

@@ -29,6 +29,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .analysis.signals import Candles
 from .broker.adapter import ExecutionVenue, VenueError, VenueQuote
 from .broker.execution_safety import BrokerLimits, SafeExecutor
+from .broker.currency import Conversion, derive_rate_from_position
 from .broker.reconcile_audit import compare_positions
 from .broker.schedule import (
     SPOT_GOLD, ClosureObservation, cross_check, minutes_until_close,
@@ -307,6 +308,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         #: Waarneming van wanneer de broker werkelijk sluit. Het rooster is een
         #: vermoeden; dit is wat er gebeurde.
         self.closures = ClosureObservation()
+        #: Omrekening tussen instrument- en accountvaluta. Wordt bij elke
+        #: accountopvraging bijgewerkt; zolang de koers onbekend is, wordt er
+        #: niet omgerekend maar gemeld dat het niet kan.
+        self.conversion = Conversion(instrument="USD")
         self.last_sizing: dict = {}
 
         service = options.get(CONF_NOTIFY_SERVICE, NOTIFY_NONE)
@@ -879,6 +884,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             ),
             "max_spread": self.strategy_cfg.max_spread,
             "max_spread_atr_ratio": self.strategy_cfg.max_spread_atr_ratio,
+            # De valuta hoort erbij: zodra er wordt omgerekend, verandert de
+            # positiegrootte bij hetzelfde risicopercentage. Trades van voor en
+            # na die omschakeling zijn niet vergelijkbaar.
+            "account_currency": self.conversion.account,
             "take_profit": (
                 self.strategy_cfg.take_profit_usd
                 or self.strategy_cfg.take_profit_atr
@@ -1373,6 +1382,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "audit": self.audit,
             "schedule_note": self.schedule_note,
             "closures": self.closures.as_dict(),
+            "conversion": self.conversion.as_dict(),
             "closure_hint": self.closures.suggest_break(),
             "run_changed_because": self.run_changed_because,
             "adopted_defaults": self.adopted_defaults,
@@ -1553,6 +1563,27 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             # juist het grootste deel van de tijd. Achteraf zijn ze niet meer
             # te achterhalen.
             self._track_excursion(position, quote, ticket)
+
+            # Wisselkoers afleiden uit wat de broker zelf meldt: hij geeft de
+            # onrealiseerde winst in accountvaluta terwijl de prijsbeweging in
+            # instrumentvaluta staat. De verhouding is de koers, en dat is
+            # degene waarmee hij ook afrekent.
+            if self.conversion.needed:
+                koers = derive_rate_from_position(
+                    getattr(position, "unrealised_pnl", None),
+                    float(getattr(position, "open_price", 0) or 0),
+                    getattr(position, "current_price", None),
+                    float(getattr(position, "units", 0) or 0),
+                    getattr(position, "side", "buy"),
+                )
+                if koers and koers != self.conversion.rate:
+                    self.conversion.rate = koers
+                    self.sizing.account_to_instrument = 1.0 / koers
+                    _LOGGER.info(
+                        "Wisselkoers %s/%s afgeleid uit een open positie: "
+                        "%.4f", self.conversion.instrument,
+                        self.conversion.account, koers,
+                    )
 
             # Pyramiden vóór de exitacties: bijkopen bij bevestiging is een
             # aparte beslissing van de vraag of je moet sluiten.
@@ -1738,10 +1769,19 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         open_trades = await self.hass.async_add_executor_job(
             self.db.open_trades, self.run_id
         )
+        # De accountvaluta pas hier bekend; hem vastleggen zodat de omrekening
+        # weet of er iets om te rekenen valt.
+        valuta = getattr(account, "currency", None)
+        if valuta and valuta != self.conversion.account:
+            self.conversion.account = valuta
+            note = self.conversion.note()
+            if note:
+                _LOGGER.warning("Valuta: %s", note)
+
         audit = compare_positions(
             positions, open_trades,
-            expected_currency="USD",
-            account_currency=getattr(account, "currency", None),
+            expected_currency=self.conversion.instrument,
+            account_currency=valuta,
         )
         self.audit = audit.as_dict()
 

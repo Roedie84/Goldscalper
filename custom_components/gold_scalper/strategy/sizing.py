@@ -54,6 +54,16 @@ class SizingConfig:
     max_confidence_multiple: float = 1.5
     #: Harde bovengrens in ounces, ongeacht de berekening.
     max_units: float = 5.0
+    #: Hoeveel instrumentvaluta één eenheid accountvaluta waard is.
+    #:
+    #: Bij een euro-account en een instrument in dollars is dit ongeveer 1,08.
+    #: Zonder deze omrekening wordt een risicobudget in euro's gedeeld door een
+    #: stopafstand in dollars, en dat levert een positie op die zo'n acht
+    #: procent te groot is.
+    #:
+    #: Nul of None betekent: niet omrekenen. Dat is de veilige keuze wanneer de
+    #: koers onbekend is, want een geschatte koers maakt de fout onzichtbaar.
+    account_to_instrument: float | None = None
     #: Ondergrens: onder deze omvang weigert de broker of wordt de trade
     #: verhoudingsgewijs door kosten opgegeten.
     min_units: float = 0.01
@@ -109,9 +119,23 @@ def position_size(
         )
 
     budget = equity * (cfg.risk_per_trade_pct / 100.0)
-    units = budget / distance
+
+    # Het budget staat in accountvaluta, de stopafstand in instrumentvaluta.
+    # Delen zonder omrekenen mengt twee eenheden.
+    koers = cfg.account_to_instrument
+    if koers and koers > 0:
+        budget_instrument = budget * koers
+        omgerekend = f" (x{koers:.4f} naar instrumentvaluta)"
+    else:
+        budget_instrument = budget
+        omgerekend = ""
+
+    units = budget_instrument / distance
     capped_by = None
-    steps = [f"budget {budget:.2f} / stopafstand {distance:.2f} = {units:.3f} oz"]
+    steps = [
+        f"budget {budget:.2f}{omgerekend} / stopafstand {distance:.2f} "
+        f"= {units:.3f} oz"
+    ]
 
     if cfg.scale_with_confidence:
         # Lineair tussen de drempel en 1,0, begrensd. Onder de drempel wordt er

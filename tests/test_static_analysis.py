@@ -598,3 +598,23 @@ def test_repeated_warnings_are_throttled():
     assert "_last_schedule_note" in blok, (
         "de roosterwaarschuwing wordt niet onderdrukt bij herhaling"
     )
+
+
+def test_zero_size_positions_are_skipped_everywhere():
+    """Een positie van nul ounce is overal een gesloten positie.
+
+    De fix is drie keer los toegepast — in de vergelijkingslaag, in de
+    afwikkeling en in de levenscyclus — en de derde is een keer overgeslagen.
+    Gevolg: de vergelijkingslaag meldde 'gesloten' terwijl de levenscyclus in
+    noodstop ging.
+    """
+    plekken = [
+        (PKG / "broker" / "reconcile_audit.py", "units <= SIZE_TOLERANCE"),
+        (PKG / "lifecycle.py", "> 0.005"),
+        (PKG / "coordinator.py", "> 0.005"),
+    ]
+    for path, merkteken in plekken:
+        bron = path.read_text(encoding="utf-8")
+        assert merkteken in bron, (
+            f"{path.name} slaat nulposities niet over"
+        )
