@@ -618,3 +618,65 @@ def test_zero_size_positions_are_skipped_everywhere():
         assert merkteken in bron, (
             f"{path.name} slaat nulposities niet over"
         )
+
+
+def test_calls_pass_enough_arguments():
+    """Vangt een aanroep met te weinig argumenten.
+
+    `record_close(net_pnl, now)` werd op twee plekken zonder `now` aangeroepen:
+    de twee die ik toevoegde bij de brokerregistratie. De paper-broker riep hem
+    al goed aan, dus het viel niet op — tot een positie door de broker werd
+    gesloten en de hele handelslus omviel.
+
+    De bestaande controle kijkt of een methode *bestaat*, niet of de argumenten
+    kloppen. Pyflakes doet dat evenmin.
+    """
+    def signaturen() -> dict:
+        uit: dict = {}
+        for path in PKG.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for klasse in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+                for fn in klasse.body:
+                    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    # Classmethods en staticmethods overslaan: daar telt het
+                    # eerste argument anders, en dat levert vals alarm op.
+                    versierd = {
+                        d.id for d in fn.decorator_list if isinstance(d, ast.Name)
+                    }
+                    if versierd & {"classmethod", "staticmethod", "property"}:
+                        continue
+                    args = [a.arg for a in fn.args.args if a.arg != "self"]
+                    if fn.args.vararg or fn.args.kwarg:
+                        continue
+                    uit.setdefault(fn.name, []).append(
+                        len(args) - len(fn.args.defaults)
+                    )
+        return uit
+
+    sig = signaturen()
+    # Namen die ook op ingebouwde types voorkomen; daar weten we het type niet.
+    ingebouwd = {"clear", "get", "items", "keys", "values", "append", "pop",
+                 "update", "close", "read", "write", "split", "join", "format"}
+
+    problemen = []
+    for path in PKG.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)):
+                continue
+            naam = node.func.attr
+            if naam in ingebouwd or naam not in sig:
+                continue
+            if len(set(sig[naam])) != 1:
+                continue        # dubbelzinnig: dezelfde naam, andere klassen
+            minimaal = sig[naam][0]
+            gegeven = len(node.args) + len(node.keywords)
+            if gegeven < minimaal:
+                problemen.append(
+                    f"{path.name}:{node.lineno}  {naam}() krijgt {gegeven} "
+                    f"argumenten, heeft er {minimaal} nodig"
+                )
+
+    assert problemen == [], "\n".join(problemen)

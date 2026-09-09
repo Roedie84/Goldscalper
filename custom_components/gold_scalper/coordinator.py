@@ -1938,7 +1938,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         trade.volume = max(0.0, trade.volume - closed_lots)
         await self.hass.async_add_executor_job(self.db.update_trade, trade)
 
-        self.risk.record_close(part.net_pnl or 0.0)
+        self.risk.record_close(part.net_pnl or 0.0, now)
         _LOGGER.info(
             "Deel genomen: %.2f oz, netto %.2f. %s",
             units, part.net_pnl or 0.0, reason,
@@ -2068,7 +2068,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         trade.total_cost = round(trade.gross_pnl - trade.net_pnl, 4)
 
         await self.hass.async_add_executor_job(self.db.update_trade, trade)
-        self.risk.record_close(trade.net_pnl)
+        self.risk.record_close(trade.net_pnl, now)
         _LOGGER.info(
             "Trade gesloten: %s, bruto %.2f, kosten %.2f, netto %.2f",
             reason, trade.gross_pnl, trade.total_cost, trade.net_pnl,
