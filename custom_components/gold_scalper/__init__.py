@@ -14,6 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    SERVICE_NEW_RUN,
     CONF_SHOW_PANEL, DOMAIN, PLATFORMS, REPORT_FILENAME, SERVICE_BACKTEST,
     SERVICE_CLOSE_ALL, SERVICE_GENERATE_REPORT, SERVICE_IMPORT_HISTORY,
     SERVICE_PREPARE_SHUTDOWN, SERVICE_RESET_DAY, SERVICE_RESUME,
@@ -268,6 +269,24 @@ def _register_services(hass: HomeAssistant) -> None:
 
     hass.services.async_register(
         DOMAIN, SERVICE_VALIDATE_BACKTEST, validate_backtest
+    )
+
+    async def new_run(call: ServiceCall) -> None:
+        """Begin bewust een nieuwe bewijsfase.
+
+        Nodig wanneer blijkt dat de meting fout was: dan wil je opnieuw
+        beginnen zonder iets aan de strategie te veranderen. Zonder deze dienst
+        zou je een instelling moeten verzinnen om aan te passen, en dan meet je
+        twee dingen tegelijk.
+        """
+        reden = call.data.get("note")
+        for coordinator in _coordinators():
+            nieuw = await coordinator.async_new_run(reden)
+            _LOGGER.warning("Nieuwe bewijsfase: run %s", nieuw)
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_NEW_RUN, new_run,
+        schema=vol.Schema({vol.Optional("note"): cv.string}),
     )
 
     hass.services.async_register(DOMAIN, SERVICE_RESET_DAY, reset_day)

@@ -317,3 +317,43 @@ def test_shutdown_does_not_call_end_run():
     assert "end_run" not in afsluiten or "# end_run" in afsluiten, (
         "de run wordt bij het afsluiten dichtgezet"
     )
+
+
+def test_a_new_run_can_be_started_deliberately(tmp_path):
+    """Tot nu toe begon een run alleen als de vingerafdruk wijzigde - dus als
+    je een instelling aanpaste.
+
+    Maar er is een geval waarin je opnieuw wilt beginnen zonder iets aan de
+    strategie te veranderen: wanneer blijkt dat de meting fout was. Zonder deze
+    mogelijkheid zou je een instelling moeten verzinnen om aan te passen, en
+    dan meet je twee dingen tegelijk.
+    """
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    assert "async def async_new_run" in source
+    # De vorige run moet worden afgesloten, anders pikt de adoptie hem weer op.
+    body = source.split("async def async_new_run")[1].split("\n    async def ")[0]
+    assert "end_run" in body
+
+
+def test_both_paths_use_the_same_run_config():
+    """Twee kopieën van de opzet zouden uiteenlopen, en dan zijn runs niet meer
+    vergelijkbaar - terwijl vergelijkbaarheid het enige is waar een bewijsfase
+    voor bestaat."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "custom_components"
+              / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    assert source.count("def _run_config") == 1
+    assert source.count("self._run_config()") >= 2
+
+
+def test_the_reason_is_recorded(tmp_path):
+    """Zonder reden weet je later niet waarom een run begon, en dan is de
+    vergelijking met eerdere runs niet te interpreteren."""
+    db = TradeDatabase(tmp_path / "r.db")
+    db.connect()
+    run = db.start_run("demo", "v1", "GOLD", {}, 10000.0, "meting was fout", "fp")
+    assert db.get_run(run)["note"] == "meting was fout"

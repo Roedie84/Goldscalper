@@ -90,3 +90,15 @@ validate_backtest:
     handelde en legt de uitkomsten naast elkaar. Alle hypothesen die je op historische
     data toetst rusten op de aanname dat de backtest de werkelijkheid nabootst; deze
     dienst controleert die aanname.
+new_run:
+  name: Nieuwe bewijsfase beginnen
+  description: 'Sluit de huidige run af en begint een nieuwe, zonder iets aan de strategie
+    te veranderen. Bedoeld voor wanneer blijkt dat de meting fout was: dan zijn de
+    oude cijfers onbruikbaar terwijl de strategie ongewijzigd is. Eerdere runs blijven
+    bewaard en staan onderaan het keuringsrapport.'
+  fields:
+    note:
+      name: Reden
+      description: Waarom je opnieuw begint. Wordt bij de run bewaard.
+      selector:
+        text: null

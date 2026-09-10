@@ -478,17 +478,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         await self.hass.async_add_executor_job(self.archive.connect)
         install_buffered_signals(self.db)
 
-        config = {
-            "symbol": self.symbol, "timeframe": self.timeframe,
-            "mode": self.mode.value, "units": self.units,
-            "strategy": STRATEGY_VERSION,
-            "venue": self.venue.name,
-            # Wordt door LiveGate gelezen. Zonder dit merkteken zou een
-            # geslaagde simulatie de poort kunnen openen.
-            "simulated": getattr(self.venue, "is_simulated", False),
-            "assumed_spread": getattr(self.venue, "assumed_spread", None),
-            "costs_disabled": getattr(self.venue, "costs_disabled", False),
-        }
+        config = self._run_config()
 
         # De accountvaluta vóór de vingerafdruk ophalen.
         #
@@ -911,6 +901,26 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         if self.notifier.hourly_due():
             await self.notifier.send_hourly(payload)
 
+    def _run_config(self) -> dict:
+        """De opzet van een run, zoals die in de database wordt vastgelegd.
+
+        Uit ``async_setup`` gehaald zodat een handmatig gestarte run precies
+        dezelfde opzet vastlegt. Twee kopieën van deze samenstelling zouden
+        uiteenlopen, en dan zijn runs niet meer vergelijkbaar - terwijl
+        vergelijkbaarheid het enige is waar een bewijsfase voor bestaat.
+        """
+        return {
+            "symbol": self.symbol, "timeframe": self.timeframe,
+            "mode": self.mode.value, "units": self.units,
+            "strategy": STRATEGY_VERSION,
+            "venue": self.venue.name,
+            # Wordt door LiveGate gelezen. Zonder dit merkteken zou een
+            # geslaagde simulatie de poort kunnen openen.
+            "simulated": getattr(self.venue, "is_simulated", False),
+            "assumed_spread": getattr(self.venue, "assumed_spread", None),
+            "costs_disabled": getattr(self.venue, "costs_disabled", False),
+        }
+
     def _fingerprint_material(self, config: dict) -> dict:
         """Hash van alles wat het handelsgedrag bepaalt.
 
@@ -1053,6 +1063,47 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         for position in await self._open_positions():
             await self._close_position(position, "handmatig")
         await self.async_request_refresh()
+
+    async def async_new_run(self, note: str | None = None) -> int:
+        """Begin bewust een nieuwe bewijsfase.
+
+        Tot nu toe begon een run alleen als de vingerafdruk wijzigde - dus als
+        je een instelling aanpaste. Maar er is een geval waarin je opnieuw wilt
+        beginnen zonder iets aan de strategie te veranderen: wanneer blijkt dat
+        de meting fout was.
+
+        Dat gebeurde: de uitstapprijzen van door de broker gesloten posities
+        werden op de ontdekkingskoers afgerekend in plaats van op de werkelijke
+        prijs. Alle resultaten daaruit zijn onbruikbaar, terwijl de strategie
+        ongewijzigd is.
+
+        Zonder deze dienst zou je een instelling moeten verzinnen om aan te
+        passen, en dan meet je twee dingen tegelijk.
+        """
+        vorige = self.run_id
+        await self.hass.async_add_executor_job(self.db.flush_signals)
+
+        if vorige is not None:
+            await self.hass.async_add_executor_job(self.db.end_run, vorige)
+
+        config = self._run_config()
+        materiaal = self._fingerprint_material(config)
+        config["fingerprint_material"] = materiaal
+        fingerprint = self._hash_material(materiaal)
+
+        self.run_id = await self.hass.async_add_executor_job(
+            self.db.start_run, self.mode.value, STRATEGY_VERSION,
+            self.symbol, config, self.starting_balance,
+            note or "handmatig gestart", fingerprint,
+        )
+        _LOGGER.warning(
+            "Nieuwe bewijsfase gestart (run %s), de vorige (%s) is afgesloten. "
+            "Reden: %s. Eerdere runs blijven bewaard en staan onderaan het "
+            "rapport.",
+            self.run_id, vorige, note or "handmatig gestart",
+        )
+        await self.async_request_refresh()
+        return self.run_id
 
     async def async_reset_day(self) -> str:
         """Begin de handelsdag opnieuw, zonder op middernacht te wachten."""
