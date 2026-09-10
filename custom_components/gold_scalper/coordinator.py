@@ -310,6 +310,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self.validation: dict = {}
         #: Bevindingen die al gemeld zijn, om herhaling te onderdrukken.
         self._audit_gemeld: set = set()
+        #: Aantal trades dat op een geschatte uitstapprijs is afgerekend.
+        self._geschatte_afwikkelingen = 0
         self.backtest: dict = {}
         self.audit: dict = {}
         self._use_schedule: bool = options.get(CONF_USE_SCHEDULE, True)
@@ -1494,6 +1496,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "closures": self.closures.as_dict(),
             "conversion": self.conversion.as_dict(),
             "validation": self.validation,
+            "estimated_settlements": self._geschatte_afwikkelingen,
             "archive": (
                 self.archive.stats(self.symbol, self.timeframe).as_dict()
                 if self.archive is not None else None
@@ -1872,7 +1875,12 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             zoek = getattr(self.venue, "closed_deal", None)
             if zoek is not None:
                 try:
-                    werkelijk = await zoek(str(trade.broker_ticket))
+                    # De instapprijs meegeven: daarop wordt gezocht, want het
+                    # ticketnummer komt niet overeen met de verwijzing in het
+                    # transactieoverzicht van de broker.
+                    werkelijk = await zoek(
+                        str(trade.broker_ticket), trade.open_price
+                    )
                 except VenueError as err:
                     _LOGGER.debug(
                         "Uitstapprijs van %s niet op te halen: %s",
@@ -1921,6 +1929,20 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 # beste dat er is, maar dan wél als schatting gemarkeerd.
                 settle = quote
                 reason = "broker_gesloten_geschat"
+
+                # En luid melden. Een schatting die stil doorgaat, produceert
+                # cijfers die eruitzien als metingen - dat is precies hoe de
+                # fout van 28 euro per middag onopgemerkt bleef.
+                self._geschatte_afwikkelingen += 1
+                if self._geschatte_afwikkelingen in (1, 5, 20, 50):
+                    _LOGGER.warning(
+                        "%d trade(s) afgerekend op een geschatte uitstapprijs "
+                        "omdat de werkelijke niet bij de broker op te halen "
+                        "was. Die cijfers zijn onbetrouwbaar: bij een trade "
+                        "die op zijn doel sloot en daarna terugveerde, kan het "
+                        "verschil tien dollar per trade zijn.",
+                        self._geschatte_afwikkelingen,
+                    )
 
             await self._record_broker_close(
                 _TicketOnly(str(trade.broker_ticket)), settle, reason, now

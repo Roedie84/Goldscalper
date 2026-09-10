@@ -621,3 +621,47 @@ def test_a_transaction_without_a_level_is_skipped():
     }]}, 200)
     venue = ig({"/history/transactions": transacties})
     assert asyncio.run(venue.closed_deal("T1")) is None
+
+
+def test_the_lookup_matches_on_the_entry_price():
+    """Eerst werd het dealId vergeleken met het veld `reference`, en dat zijn
+    bij deze broker twee verschillende identificaties - ze matchen nooit.
+
+    Gevolg: elke afwikkeling viel terug op de schatting en de fout die dit
+    moest oplossen bleef bestaan. Zichtbaar in de sluitreden
+    `broker_gesloten_geschat`.
+    """
+    transacties = ({"transactions": [
+        {"reference": "HEELANDERS", "openLevel": "4360.06",
+         "closeLevel": "4371.57", "profitAndLoss": "-E8.69",
+         "currency": "EUR", "size": "-0.87"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    deal = asyncio.run(venue.closed_deal("DIAAAAYFPY669AZ", 4360.06))
+    assert deal is not None, "niet gevonden op instapprijs"
+    assert deal["exit_price"] == pytest.approx(4371.57)
+    assert deal["matched_on"] == "instapprijs"
+    assert deal["profit_account"] == pytest.approx(-8.69)
+
+
+def test_a_different_entry_price_does_not_match():
+    """Anders koppel je een willekeurige transactie aan je trade."""
+    transacties = ({"transactions": [
+        {"reference": "X", "openLevel": "4200.00", "closeLevel": "4210.00"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    assert asyncio.run(venue.closed_deal("T1", 4360.06)) is None
+
+
+def test_the_ticket_still_works_if_it_happens_to_match():
+    transacties = ({"transactions": [
+        {"reference": "T1", "openLevel": "4360.06", "closeLevel": "4371.57"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    deal = asyncio.run(venue.closed_deal("T1", None))
+    assert deal["matched_on"] == "ticket"
+
+
+def test_a_negative_amount_survives_the_currency_symbol():
+    from gold_scalper.broker.ig_capital import _als_getal
+    assert _als_getal("-E8.69") == pytest.approx(-8.69)

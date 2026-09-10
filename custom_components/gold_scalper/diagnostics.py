@@ -94,6 +94,9 @@ async def async_get_config_entry_diagnostics(
         # bij een euro-account met een dollarinstrument zo'n acht procent.
         "conversion": coordinator.conversion.as_dict(),
         "validation": coordinator.validation,
+        # Hoeveel trades op een geschatte uitstapprijs zijn afgerekend. Elke
+        # daarvan is een cijfer dat eruitziet als een meting maar er geen is.
+        "estimated_settlements": coordinator._geschatte_afwikkelingen,
         "archive": (
             coordinator.archive.stats(coordinator.symbol, coordinator.timeframe)
             .as_dict() if coordinator.archive is not None else None

@@ -685,7 +685,9 @@ class IgStyleVenue(ExecutionVenue):
         reference = payload.get("dealReference")
         return OrderResult(success=bool(reference), ticket=ticket, units=size)
 
-    async def closed_deal(self, ticket: str) -> dict | None:
+    async def closed_deal(
+        self, ticket: str, open_price: float | None = None,
+    ) -> dict | None:
         """Zoek de werkelijke uitstapprijs van een gesloten positie.
 
         Bestaat omdat afrekenen op de ontdekkingskoers niet werkt. De
@@ -706,15 +708,39 @@ class IgStyleVenue(ExecutionVenue):
             "GET", "/history/transactions", version="2",
             params={"type": "ALL_DEAL", "pageSize": 50},
         )
+
         for tx in payload.get("transactions") or []:
+            # Op de INSTAPPRIJS zoeken, niet op het ticketnummer.
+            #
+            # Eerst werd het dealId vergeleken met het veld ``reference``, en
+            # dat zijn bij deze broker twee verschillende identificaties - ze
+            # matchen nooit. Gevolg: elke afwikkeling viel terug op de
+            # schatting en de fout die dit moest oplossen bleef bestaan.
+            #
+            # De instapprijs is wél betrouwbaar: die staat in de eigen
+            # administratie én in het overzicht van de broker, met vier
+            # decimalen. Twee trades met exact dezelfde instapprijs binnen
+            # vijftig transacties is onwaarschijnlijk genoeg.
+            openings = _als_getal(tx.get("openLevel"))
             verwijzing = str(tx.get("reference") or "")
-            if str(ticket) not in verwijzing and verwijzing not in str(ticket):
+
+            past_op_prijs = (
+                open_price is not None and openings is not None
+                and abs(openings - open_price) < 0.05
+            )
+            past_op_ticket = (
+                str(ticket) in verwijzing or verwijzing in str(ticket)
+            ) if verwijzing else False
+
+            if not (past_op_prijs or past_op_ticket):
                 continue
-            niveau = tx.get("closeLevel") or tx.get("level")
+
+            niveau = _als_getal(tx.get("closeLevel")) or _als_getal(tx.get("level"))
             if niveau is None:
                 continue
             return {
                 "exit_price": float(niveau),
+                "matched_on": "instapprijs" if past_op_prijs else "ticket",
                 # Winst in accountvaluta, zoals de broker hem boekt. Hiermee
                 # is ook de wisselkoers af te leiden.
                 "profit_account": _als_getal(tx.get("profitAndLoss")),

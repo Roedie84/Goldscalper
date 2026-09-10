@@ -231,3 +231,28 @@ def test_the_rate_is_derived_from_a_settled_trade():
     body = _method("_settle_vanished_positions")
     assert "profit_account" in body
     assert "self.conversion.rate = koers" in body
+
+
+def test_an_estimated_settlement_is_reported_loudly():
+    """Een schatting die stil doorgaat, produceert cijfers die eruitzien als
+    metingen - precies hoe een fout van 28 euro per middag onopgemerkt bleef.
+    """
+    body = _method("_settle_vanished_positions")
+    assert "_geschatte_afwikkelingen" in body
+    assert "onbetrouwbaar" in body
+
+
+def test_the_estimate_count_is_visible():
+    """Zonder dit getal weet je niet welk deel van je resultaat op schattingen
+    rust."""
+    from pathlib import Path
+
+    pkg = Path(__file__).resolve().parent.parent / "custom_components" / "gold_scalper"
+    assert "estimated_settlements" in (pkg / "diagnostics.py").read_text(encoding="utf-8")
+
+
+def test_the_entry_price_is_passed_to_the_lookup():
+    """Het ticketnummer komt niet overeen met de verwijzing in het
+    transactieoverzicht; de instapprijs wel."""
+    body = _method("_settle_vanished_positions")
+    assert "trade.open_price" in body.split("zoek(")[1][:120]

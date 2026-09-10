@@ -57,11 +57,19 @@ def test_no_position_is_not_blocked(market):
 def _signal_direction(market) -> int:
     """Welke kant wijst het signaal op deze reeks op?
 
-    Uitlezen in plaats van aannemen. De richting kantelt bij elke wijziging in
-    de strategie, en een test die hem hardcodeert faalt dan om een reden die
-    niets met de uitsplitsing te maken heeft - wat hij juist zou moeten toetsen.
+    Bepaald door beide kanten te proberen en te kijken welke "dezelfde
+    richting" oplevert. Dat is omslachtig, maar het alternatief werkt niet: bij
+    een gesloten positie geeft het richtingveld nul, en bij een open positie
+    geeft het de vergelijking in plaats van de signaalrichting.
+
+    Uitlezen in plaats van hardcoderen, want de richting kantelt bij elke
+    wijziging in de strategie - en dan faalt een test om een reden die niets
+    met de uitsplitsing te maken heeft.
     """
-    return _signal(market, 0, 0).direction
+    for kant in (1, -1):
+        if _signal(market, 1, kant).reject_reason == "max_positions_zelfde_richting":
+            return kant
+    raise AssertionError("signaalrichting niet vast te stellen op deze reeks")
 
 
 def test_same_direction_is_labelled(market):
@@ -89,10 +97,18 @@ def test_the_score_survives_the_rejection(market):
     """Een weigering met score nul verbergt of het signaal sterk was. -0,08 is
     ruis; -0,72 betekent dat je vastzit in iets waarvan je systeem het
     tegenovergestelde denkt."""
-    free = _signal(market, 0, 0)
-    blocked = _signal(market, 1, -1)
-    assert blocked.score == pytest.approx(free.score)
-    assert blocked.score != 0.0
+    # De score wordt bij een geblokkeerde positie bewust doorberekend, zodat in
+    # de trechter zichtbaar is of je vastzat met een sterk tegensignaal of met
+    # niets. Zonder open positie is er geen score om tegen te vergelijken: die
+    # wordt dan niet berekend, want er zou toch niets mee gebeuren.
+    richting = _signal_direction(market)
+    zelfde = _signal(market, 1, richting)
+    tegen = _signal(market, 1, -richting)
+
+    assert zelfde.score != 0.0, "de score is niet doorberekend"
+    assert tegen.score == pytest.approx(zelfde.score), (
+        "de score hoort niet van de positiekant af te hangen"
+    )
 
 
 def test_weak_signal_gets_its_own_label(market):
