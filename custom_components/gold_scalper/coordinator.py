@@ -464,6 +464,25 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "costs_disabled": getattr(self.venue, "costs_disabled", False),
         }
 
+        # De accountvaluta vóór de vingerafdruk ophalen.
+        #
+        # Hij zit in de vingerafdruk omdat de positiegrootte ervan afhangt,
+        # maar hij werd pas bekend bij de eerste accountopvraging in de
+        # handelslus - ruim ná dit punt. De vingerafdruk las dan altijd de
+        # standaardwaarde en veranderde dus nooit, waardoor een
+        # valutaomschakeling stilzwijgend in dezelfde bewijsfase belandde.
+        if self.mode.places_orders:
+            try:
+                snapshot = await self.venue.account()
+                valuta = getattr(snapshot, "currency", None)
+                if valuta:
+                    self.conversion.account = valuta
+            except VenueError as err:
+                _LOGGER.debug(
+                    "Accountvaluta nog niet op te halen: %s. De vingerafdruk "
+                    "gebruikt de standaardwaarde.", err,
+                )
+
         material = self._fingerprint_material(config)
         config["fingerprint_material"] = material
         fingerprint = self._hash_material(material)

@@ -515,8 +515,16 @@ def test_diagnostics_covers_the_coordinator_state():
     coordinator = (PKG / "coordinator.py").read_text(encoding="utf-8")
     diagnostics = (PKG / "diagnostics.py").read_text(encoding="utf-8")
 
-    # Publieke velden die in __init__ worden gezet en een dict bevatten.
+    # Publieke velden die in __init__ worden gezet.
+    #
+    # Eerst alleen dictvelden; daardoor ontsnapte `conversion`, dat een object
+    # is. Nu ook velden met een as_dict-methode, want die zijn juist bedoeld om
+    # geëxporteerd te worden.
     interessant = set(re.findall(r"self\.(\w+): dict = \{\}", coordinator))
+    interessant |= {
+        naam for naam in re.findall(r"self\.(\w+) = \w+\(", coordinator)
+        if f"self.{naam}.as_dict()" in coordinator
+    }
     ontbreekt = sorted(
         naam for naam in interessant
         if naam not in diagnostics and not naam.startswith("_")

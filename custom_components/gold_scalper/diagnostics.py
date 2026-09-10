@@ -87,6 +87,10 @@ async def async_get_config_entry_diagnostics(
         # werkelijke slippage. Dit is wat de leerlaag gebruikt, en het hoort
         # dus zichtbaar te zijn in de export waarop de beoordeling rust.
         "execution_facts": coordinator.execution_facts,
+        # Valutaomrekening. Zonder dit veld is niet te zien of de
+        # positiegrootte in de juiste eenheid wordt berekend, en dat scheelt
+        # bij een euro-account met een dollarinstrument zo'n acht procent.
+        "conversion": coordinator.conversion.as_dict(),
         "audit": coordinator.audit,
         "backtest": coordinator.backtest,
         "schedule_note": coordinator.schedule_note,

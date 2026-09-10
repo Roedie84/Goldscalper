@@ -49,7 +49,18 @@ class FakeHass:
         self.data: dict = {}
         self.services = self
         self.bus = self
-        self.config = type("C", (), {"time_zone": "Europe/Amsterdam"})()
+        import tempfile
+
+        map_pad = tempfile.mkdtemp()
+
+        class _Config:
+            time_zone = "Europe/Amsterdam"
+
+            @staticmethod
+            def path(*delen):
+                return os.path.join(map_pad, *delen)
+
+        self.config = _Config()
         self.calls: list = []
 
     async def async_add_executor_job(self, func, *args):
@@ -410,3 +421,29 @@ def test_the_lifecycle_does_not_halt_on_a_zero_size_position(venue, tmp_path,
     assert coordinator.lifecycle.state.value != "diverged", (
         "een positie van nul ounce geldt als verweesd"
     )
+
+
+def test_the_account_currency_reaches_the_fingerprint(venue, tmp_path,
+                                                      monkeypatch):
+    """De valuta zit in de vingerafdruk omdat de positiegrootte ervan afhangt.
+
+    Maar hij werd pas bekend bij de eerste accountopvraging in de handelslus -
+    ruim ná het bepalen van de run. De vingerafdruk las dan altijd de
+    standaardwaarde en veranderde dus nooit, waardoor een valutaomschakeling
+    stilzwijgend in dezelfde bewijsfase belandde.
+    """
+    coordinator, _ = _coordinator(venue, tmp_path, monkeypatch)
+    asyncio.run(coordinator.async_setup())
+    assert coordinator.conversion.account == "EUR"
+
+
+def test_the_fingerprint_contains_the_currency(venue, tmp_path, monkeypatch):
+    coordinator, _ = _coordinator(venue, tmp_path, monkeypatch)
+    coordinator.conversion.account = "EUR"
+    # Dezelfde velden als de coordinator zelf samenstelt.
+    materiaal = coordinator._fingerprint_material({
+        "symbol": "GOLD", "timeframe": "15m", "strategy": "v1",
+        "simulated": False, "assumed_spread": None, "venue": "ig",
+        "units": 1.3, "costs_disabled": False,
+    })
+    assert materiaal.get("account_currency") == "EUR"
