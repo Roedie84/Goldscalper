@@ -695,3 +695,28 @@ def test_calls_pass_enough_arguments():
                 )
 
     assert problemen == [], "\n".join(problemen)
+
+
+def test_optional_components_are_initialised():
+    """Vangt een veld dat op None wordt gezet en nergens gevuld.
+
+    `self.archive: BarArchive | None = None` stond in de constructor, maar de
+    regel die hem opent ontbrak. Het veld bleef None, elke bar werd stil
+    overgeslagen, en de diensten meldden "Het archief is niet geopend".
+
+    Pyflakes ziet dit niet en de tests op het onderdeel zelf evenmin: die maken
+    hun eigen exemplaar en raken de coordinator niet aan.
+    """
+    source = (PKG / "coordinator.py").read_text(encoding="utf-8")
+
+    # Velden met een expliciet type dat None toestaat en op None beginnen.
+    optioneel = set(re.findall(
+        r"self\.(\w+):\s*\w+\s*\|\s*None\s*=\s*None", source
+    ))
+    ontbreekt = [
+        naam for naam in optioneel
+        if not re.search(rf"self\.{naam}\s*=\s*(?!None)\S", source)
+    ]
+    assert ontbreekt == [], (
+        "veld staat op None en wordt nergens gevuld: " + ", ".join(ontbreekt)
+    )

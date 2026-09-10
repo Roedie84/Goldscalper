@@ -141,6 +141,7 @@ WARMUP_CANDLES: Final = 400
 #: tijdsframe en omgeving, dus wordt er afgebouwd tot dit aantal.
 MIN_WARMUP_CANDLES: Final = 60
 
+ARCHIVE_FILENAME: Final = "gold_scalper_bars.db"
 DATABASE_FILENAME: Final = "gold_scalper.db"
 #: Bewust in www/: alles daarin serveert Home Assistant op /local/, wat de
 #: enige manier is om een eigen HTML-bestand in de UI te tonen zonder extra

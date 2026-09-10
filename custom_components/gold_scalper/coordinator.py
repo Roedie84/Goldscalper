@@ -44,6 +44,7 @@ from .broker.paper import CONTRACT_SIZE, BrokerCosts, PaperBroker
 from .broker.paper import Quote as PaperQuote
 from .broker.risk import RiskLimits, RiskManager, TradingState
 from .const import (
+    ARCHIVE_FILENAME,
     CONF_ACCOUNT_ID, CONF_API_KEY, CONF_ASSUMED_SPREAD, CONF_BUILD_FROM_QUOTES,
     CONF_NOTIFY_CRITICAL, CONF_NOTIFY_HOURLY, CONF_NOTIFY_SERVICE,
     CONF_CLOSE_BUFFER_MINUTES, CONF_USE_SCHEDULE,
@@ -366,13 +367,6 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self.periods: dict = {}
         self.sessions: dict = {}
         self.news_impact: dict = {}
-        #: Archief van bars over herstarts heen. De beperking van dit project
-        #: is het aantal metingen, niet het aantal ideeën: met een jaar
-        #: historie is een hypothese in een minuut te toetsen in plaats van in
-        #: drie weken.
-        self.archive: BarArchive | None = None
-        #: Uitkomst van de vergelijking tussen backtest en live-resultaat.
-        self.validation: dict = {}
         self.backtest: dict = {}
         self.audit: dict = {}
         self.last_sizing: dict = {}
@@ -470,6 +464,16 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         path = self.hass.config.path(DATABASE_FILENAME)
         self.db = TradeDatabase(path)
         await self.hass.async_add_executor_job(self.db.connect)
+
+        # Het archief naast de tradedatabase, in een eigen bestand: bars
+        # groeien veel sneller dan trades en horen los opgeruimd te kunnen
+        # worden.
+        #
+        # Zonder deze twee regels bestaat het archief alleen op papier: het
+        # veld staat op None, elke bar wordt stil overgeslagen en de diensten
+        # melden "Het archief is niet geopend".
+        self.archive = BarArchive(self.hass.config.path(ARCHIVE_FILENAME))
+        await self.hass.async_add_executor_job(self.archive.connect)
         install_buffered_signals(self.db)
 
         config = {

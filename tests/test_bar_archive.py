@@ -151,3 +151,32 @@ def test_the_archive_never_breaks_the_loop():
             / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
     blok = bron.split("Bar niet gearchiveerd")[0][-500:]
     assert "except Exception" in blok
+
+
+def test_the_archive_is_actually_opened():
+    """Het veld bestond, de opening niet.
+
+    `self.archive` stond op None en werd nergens gevuld: elke bar werd stil
+    overgeslagen en de diensten meldden "Het archief is niet geopend". De
+    tests op het archief zelf slaagden allemaal, want die maken hun eigen
+    exemplaar - ze raakten de coordinator niet aan.
+    """
+    from pathlib import Path
+
+    bron = (Path(__file__).resolve().parent.parent / "custom_components"
+            / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    assert "self.archive = BarArchive(" in bron, (
+        "het archief wordt nergens aangemaakt"
+    )
+    assert "self.archive.connect" in bron, "het archief wordt nooit geopend"
+
+
+def test_the_archive_has_its_own_file():
+    """Naast de tradedatabase, niet erin: bars groeien veel sneller dan trades
+    en horen los opgeruimd te kunnen worden."""
+    from pathlib import Path
+
+    pkg = Path(__file__).resolve().parent.parent / "custom_components" / "gold_scalper"
+    const = (pkg / "const.py").read_text(encoding="utf-8")
+    assert "ARCHIVE_FILENAME" in const
+    assert "gold_scalper_bars.db" in const
