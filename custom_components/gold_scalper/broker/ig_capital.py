@@ -70,6 +70,25 @@ ORDER_TIMEOUT = ClientTimeout(total=25, connect=5)
 TIMEOUT = ClientTimeout(total=15, connect=5)
 
 
+def _als_getal(waarde) -> float | None:
+    """Zet een bedrag van de broker om naar een getal.
+
+    De broker zet er een valutateken voor, bijvoorbeeld "E11.77" voor euro's.
+    Blind float() erop laten falen zou de hele afwikkeling laten struikelen op
+    een opmaakdetail.
+    """
+    if waarde is None:
+        return None
+    if isinstance(waarde, (int, float)):
+        return float(waarde)
+    tekst = str(waarde).strip()
+    schoon = "".join(c for c in tekst if c.isdigit() or c in ".-")
+    try:
+        return float(schoon) if schoon not in ("", "-", ".") else None
+    except ValueError:
+        return None
+
+
 class IgStyleVenue(ExecutionVenue):
     """Gedeelde laag voor IG en Capital.com."""
 
@@ -665,6 +684,45 @@ class IgStyleVenue(ExecutionVenue):
         )
         reference = payload.get("dealReference")
         return OrderResult(success=bool(reference), ticket=ticket, units=size)
+
+    async def closed_deal(self, ticket: str) -> dict | None:
+        """Zoek de werkelijke uitstapprijs van een gesloten positie.
+
+        Bestaat omdat afrekenen op de ontdekkingskoers niet werkt. De
+        beheerlus merkt pas na een cyclus dat een positie weg is, en in die
+        tijd is de koers verder gelopen. Bij shorts die op hun doel sloten
+        leverde dat verschillen van tien dollar per trade op: de eigen
+        administratie meldde een verlies van 4,83 waar de broker een winst van
+        28,58 euro boekte.
+
+        Het activiteitenoverzicht van de broker kent de prijs waarop werkelijk
+        is afgerekend. Dat is de enige betrouwbare bron; alles anders is een
+        schatting die er precies naast zit wanneer het het meest uitmaakt.
+
+        Geeft None als de transactie niet gevonden wordt. Dan valt de
+        afwikkeling terug op de schatting, maar dan wél gemarkeerd.
+        """
+        payload = await self._request(
+            "GET", "/history/transactions", version="2",
+            params={"type": "ALL_DEAL", "pageSize": 50},
+        )
+        for tx in payload.get("transactions") or []:
+            verwijzing = str(tx.get("reference") or "")
+            if str(ticket) not in verwijzing and verwijzing not in str(ticket):
+                continue
+            niveau = tx.get("closeLevel") or tx.get("level")
+            if niveau is None:
+                continue
+            return {
+                "exit_price": float(niveau),
+                # Winst in accountvaluta, zoals de broker hem boekt. Hiermee
+                # is ook de wisselkoers af te leiden.
+                "profit_account": _als_getal(tx.get("profitAndLoss")),
+                "currency": tx.get("currency"),
+                "size": _als_getal(tx.get("size")),
+                "closed_at": tx.get("date") or tx.get("dateUtc"),
+            }
+        return None
 
     async def modify_stop(
         self, ticket: str, stop_loss: float, take_profit: float | None = None

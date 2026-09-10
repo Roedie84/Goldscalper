@@ -1810,15 +1810,66 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             # boekt dat extra stuk als "kosten", waardoor de kostprijs per trade
             # opliep tot ruim het dubbele van de spread - een meetfout die
             # eruitziet als slippage.
-            settle = quote
-            if level is not None:
+            # Eerst de broker vragen wat de werkelijke uitstapprijs was.
+            #
+            # Afrekenen op de ontdekkingskoers werkt niet: de lus merkt pas na
+            # een cyclus dat een positie weg is, en in die tijd loopt de koers
+            # verder. Bij shorts die op hun doel sloten gaf dat verschillen van
+            # tien dollar per trade - de eigen administratie meldde een verlies
+            # van 4,83 waar de broker een winst van 28,58 euro boekte.
+            werkelijk = None
+            zoek = getattr(self.venue, "closed_deal", None)
+            if zoek is not None:
+                try:
+                    werkelijk = await zoek(str(trade.broker_ticket))
+                except VenueError as err:
+                    _LOGGER.debug(
+                        "Uitstapprijs van %s niet op te halen: %s",
+                        trade.broker_ticket, err,
+                    )
+
+            if werkelijk and werkelijk.get("exit_price"):
+                exit_price = float(werkelijk["exit_price"])
+                half = quote.spread / 2.0
+                settle = VenueQuote(
+                    bid=exit_price if long else exit_price - 2 * half,
+                    ask=exit_price + 2 * half if long else exit_price,
+                    time=quote.time, tradeable=quote.tradeable,
+                )
+                if reason == "broker_gesloten":
+                    reason = "broker_gesloten_gemeten"
+
+                # De winst in accountvaluta die de broker meldt, geeft ook de
+                # wisselkoers - preciezer dan de afleiding uit een open positie.
+                winst = werkelijk.get("profit_account")
+                if winst and self.conversion.needed:
+                    beweging = (
+                        (exit_price - trade.open_price)
+                        * (1.0 if long else -1.0)
+                        * trade.volume * CONTRACT_SIZE
+                    )
+                    if abs(beweging) > 1.0:
+                        koers = winst / beweging
+                        if 0.1 < koers < 10.0:
+                            self.conversion.rate = koers
+                            self.sizing.account_to_instrument = 1.0 / koers
+                            _LOGGER.info(
+                                "Wisselkoers %s/%s uit een afgerekende trade: "
+                                "%.4f", self.conversion.instrument,
+                                self.conversion.account, koers,
+                            )
+            elif level is not None:
                 half = quote.spread / 2.0
                 settle = VenueQuote(
                     bid=level if long else level - 2 * half,
                     ask=level + 2 * half if long else level,
-                    time=quote.time,
-                    tradeable=quote.tradeable,
+                    time=quote.time, tradeable=quote.tradeable,
                 )
+            else:
+                # Geen gemeten prijs en geen niveau: de ontdekkingskoers is het
+                # beste dat er is, maar dan wél als schatting gemarkeerd.
+                settle = quote
+                reason = "broker_gesloten_geschat"
 
             await self._record_broker_close(
                 _TicketOnly(str(trade.broker_ticket)), settle, reason, now

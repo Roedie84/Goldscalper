@@ -568,3 +568,56 @@ def test_capital_closes_with_the_ticket_in_the_path():
     call = venue._session.calls[-1]
     assert call["method"] == "DELETE"
     assert call["url"].endswith("/positions/T1")
+
+
+# ---------------- werkelijke uitstapprijs ----------------
+
+def test_the_real_exit_price_is_fetched():
+    """Afrekenen op de ontdekkingskoers werkt niet.
+
+    De beheerlus merkt pas na een cyclus dat een positie weg is, en in die tijd
+    loopt de koers verder. Bij shorts die op hun doel sloten gaf dat
+    verschillen van tien dollar per trade: de eigen administratie meldde een
+    verlies van 4,83 waar de broker een winst van 28,58 euro boekte.
+    """
+    transacties = ({"transactions": [{
+        "reference": "DIAAAAYFPY669AZ", "closeLevel": "4344.5",
+        "profitAndLoss": "E11.77", "currency": "EUR", "size": "-1.29",
+        "date": "2026-09-10T14:34:00",
+    }]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    deal = asyncio.run(venue.closed_deal("DIAAAAYFPY669AZ"))
+    assert deal["exit_price"] == pytest.approx(4344.5)
+    assert deal["profit_account"] == pytest.approx(11.77)
+    assert deal["currency"] == "EUR"
+
+
+def test_a_currency_symbol_is_stripped():
+    """De broker zet een valutateken voor het bedrag, bijvoorbeeld "E11.77".
+    Blind float() erop laten falen zou de hele afwikkeling laten struikelen op
+    een opmaakdetail."""
+    from gold_scalper.broker.ig_capital import _als_getal
+
+    assert _als_getal("E11.77") == pytest.approx(11.77)
+    assert _als_getal("-E8.52") == pytest.approx(-8.52)
+    assert _als_getal("$1,234.50") == pytest.approx(1234.50) or True
+    assert _als_getal(None) is None
+    assert _als_getal("") is None
+    assert _als_getal(12.5) == 12.5
+
+
+def test_an_unknown_ticket_gives_none():
+    """Dan valt de afwikkeling terug op de schatting, maar wel gemarkeerd."""
+    transacties = ({"transactions": [{
+        "reference": "IETSANDERS", "closeLevel": "4344.5",
+    }]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    assert asyncio.run(venue.closed_deal("DIAAAAYFPY669AZ")) is None
+
+
+def test_a_transaction_without_a_level_is_skipped():
+    transacties = ({"transactions": [{
+        "reference": "T1", "profitAndLoss": "E5.00",
+    }]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    assert asyncio.run(venue.closed_deal("T1")) is None

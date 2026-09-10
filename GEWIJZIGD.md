@@ -1,39 +1,62 @@
-# Van 4.17.1 naar 4.20.3
+# Van 4.17.1 naar 4.21.0
 
-Geverifieerd op een verse kloon van je GitHub: **802 tests groen**.
+Geverifieerd op een verse kloon van je GitHub: **809 tests groen**.
 
-## Wat 4.20.3 toevoegt
+## De ernstigste fout tot nu toe
 
-**Herhaalde controlemeldingen onderdrukt.** De vergelijking met de broker
-draait elke tiende cyclus, en dezelfde toestand duurt vaak veel langer. Tien
-identieke regels in zeven minuten maakt het logboek onbruikbaar.
+Vijf trades op één middag. De broker boekte **+28,58 euro**, de eigen
+administratie **-4,83**.
 
-Dit was al opgelost bij de roosterwaarschuwing en vergeten bij de
-controlebevindingen. De sleutel bevat het ticket, dus een nieuwe positie met
-hetzelfde probleem meldt wel weer.
+| | in | uit volgens IG | uit volgens mij |
+|---|---|---|---|
+| 14:34 | 4355,17 | **4344,50** | 4354,95 |
+| 14:31 | 4369,25 | **4357,83** | 4370,88 |
+| 14:26 | 4374,46 | **4363,40** | 4362,84 |
 
-**Geslaagde handelingen niet meer als waarschuwing.** `import_history` meldde
-zijn resultaat met `warning`, waardoor elke geslaagde import als rood item
-verscheen. Het onderscheid tussen "er is iets mis" en "dit is gelukt" gaat
-verloren als beide er hetzelfde uitzien.
+De instapprijzen klopten. De uitstapprijzen lagen binnen twee dollar van de
+instap terwijl er tien tot elf vanaf werd gesloten.
 
-## Over de valutamelding
+### Waarom
 
-    Orders worden in USD geplaatst terwijl het account in EUR staat.
+De beheerlus merkt pas na een cyclus dat een positie weg is, en in die tijd
+loopt de koers verder. Er werd afgerekend op de koers van het *ontdekkings*-
+moment, niet op de prijs waarop de broker werkelijk sloot.
 
-Die blijft staan tot de wisselkoers is afgeleid, en dat gebeurt uit een open
-positie met genoeg beweging - ruim een dollar winst of verlies. Bij kleine
-posities die snel sluiten kan dat even duren.
+Bij shorts die op hun doel sloten viel dat precies verkeerd uit: de koers keert
+na een doeltreffer vaak terug, en dan lijkt de trade nauwelijks bewogen te
+hebben.
 
-Zodra het lukt verschijnt in het logboek:
+Alle vijf stonden op `broker_gesloten`, dus zelfs de niveaudetectie greep niet.
 
-    Wisselkoers USD/EUR afgeleid uit een open positie: 0.92xx
+### De oplossing
 
-Vanaf dat moment wordt de positiegrootte omgerekend en verdwijnt de melding.
-Zolang de koers onbekend is wordt er bewust **niet** omgerekend: een geschatte
-koers maakt de fout onzichtbaar in plaats van zichtbaar.
+De werkelijke uitstapprijs wordt nu opgehaald uit het activiteitenoverzicht van
+de broker. Dat is de enige betrouwbare bron; alles anders is een schatting die
+er precies naast zit wanneer het het meest uitmaakt.
+
+Lukt dat niet, dan blijft de schatting maar heet de sluitreden
+`broker_gesloten_geschat` in plaats van `broker_gesloten_gemeten`. Zo weet je
+later welke cijfers hard zijn.
+
+### Bijkomend voordeel
+
+De winst in accountvaluta die de broker meldt, geeft ook de wisselkoers — en
+preciezer dan de afleiding uit een open positie, want dit is het bedrag waarmee
+werkelijk is afgerekend. Uit jouw scherm blijkt die koers rond **0,855** te
+liggen, niet de 0,926 die ik eerder als voorbeeld nam.
+
+## Wat betekent dit voor je cijfers
+
+Alle resultaten van posities die de broker zelf sloot, zijn onbetrouwbaar. Dat
+zijn er veel: in de vorige diagnostiek 104 van 129 trades.
+
+Je werkelijke resultaat is vermoedelijk **beter** dan gerapporteerd, want de
+fout snijdt systematisch de doeltreffers af. Hoeveel beter valt niet achteraf
+te bepalen.
+
+Ik zou een nieuwe run beginnen zodra dit draait.
 
 ## Wat er verder in zit
 
-Barsarchief, backtestvalidatie, sessie- en nieuwsuitsplitsing, en de
-valutaomrekening. Zie de eerdere beschrijving.
+Barsarchief, backtestvalidatie, sessie- en nieuwsuitsplitsing, valutaomrekening,
+onderdrukking van herhaalde meldingen.

@@ -200,3 +200,34 @@ def test_mfe_is_always_written():
     # Buiten een if-blok, dus altijd uitgevoerd.
     assert "\n        trade.mfe = round(" in body
     assert "\n        trade.mae = round(" in body
+
+
+def test_settlement_asks_the_broker_for_the_exit_price():
+    """De ernstigste fout tot nu toe: afrekenen op de ontdekkingskoers in
+    plaats van op de werkelijke uitstapprijs.
+
+    Vijf trades op één middag: de broker boekte +28,58 euro, de eigen
+    administratie -4,83. De instapprijzen klopten; de uitstapprijzen lagen
+    binnen twee dollar van de instap terwijl er tien tot elf vanaf werd
+    gesloten.
+    """
+    body = _method("_settle_vanished_positions")
+    assert "closed_deal" in body, "de werkelijke uitstapprijs wordt niet opgevraagd"
+    assert 'werkelijk.get("exit_price")' in body
+
+
+def test_an_estimated_settlement_is_labelled():
+    """Kan de prijs niet worden opgehaald, dan blijft de schatting - maar dan
+    wel herkenbaar, zodat je later weet welke cijfers hard zijn."""
+    body = _method("_settle_vanished_positions")
+    assert "broker_gesloten_geschat" in body
+    assert "broker_gesloten_gemeten" in body
+
+
+def test_the_rate_is_derived_from_a_settled_trade():
+    """De winst in accountvaluta die de broker meldt, geeft de wisselkoers -
+    preciezer dan de afleiding uit een open positie, want dit is het bedrag
+    waarmee hij werkelijk heeft afgerekend."""
+    body = _method("_settle_vanished_positions")
+    assert "profit_account" in body
+    assert "self.conversion.rate = koers" in body
