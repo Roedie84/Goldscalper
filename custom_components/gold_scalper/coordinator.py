@@ -73,12 +73,14 @@ from .notify import Notifier, NotifierConfig
 from .status import build_status
 from .modes import LiveGate, ModeLockedError, TradingMode, require_live_unlocked
 from .storage import performance
+from .storage.bar_archive import BarArchive
 from .storage.periods import build_periods
 from .storage.database import MODE_LIVE, MODE_PAPER, Trade, TradeDatabase
 from .storage.state import RuntimeState, StateStore
 from .storage.latency import LatencyBudget, LatencyTracker, install_buffered_signals
 from .strategy.scalping import STRATEGY_VERSION, ScalpConfig, evaluate
 from .learning.robustness import evaluate_robustness
+from .learning.sessions import build_news_impact, build_sessions
 from .strategy.aggregator import QuoteAggregator
 from .strategy.pyramid import PyramidConfig, consider_addition
 from .strategy.sizing import SizingConfig, position_size
@@ -296,6 +298,15 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self._excursions: dict[str, dict] = {}
         self.robustness: dict = {}
         self.periods: dict = {}
+        self.sessions: dict = {}
+        self.news_impact: dict = {}
+        #: Archief van bars over herstarts heen. De beperking van dit project
+        #: is het aantal metingen, niet het aantal ideeën: met een jaar
+        #: historie is een hypothese in een minuut te toetsen in plaats van in
+        #: drie weken.
+        self.archive: BarArchive | None = None
+        #: Uitkomst van de vergelijking tussen backtest en live-resultaat.
+        self.validation: dict = {}
         self.backtest: dict = {}
         self.audit: dict = {}
         self._use_schedule: bool = options.get(CONF_USE_SCHEDULE, True)
@@ -353,6 +364,15 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self._excursions: dict[str, dict] = {}
         self.robustness: dict = {}
         self.periods: dict = {}
+        self.sessions: dict = {}
+        self.news_impact: dict = {}
+        #: Archief van bars over herstarts heen. De beperking van dit project
+        #: is het aantal metingen, niet het aantal ideeën: met een jaar
+        #: historie is een hypothese in een minuut te toetsen in plaats van in
+        #: drie weken.
+        self.archive: BarArchive | None = None
+        #: Uitkomst van de vergelijking tussen backtest en live-resultaat.
+        self.validation: dict = {}
         self.backtest: dict = {}
         self.audit: dict = {}
         self.last_sizing: dict = {}
@@ -724,6 +744,18 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         from homeassistant.util import dt as dt_util
 
         self.periods = build_periods(trades, dt_util.DEFAULT_TIME_ZONE).as_dict()
+
+        # Resultaat per handelssessie. Uitsluitend observatie: er wordt niets
+        # gefilterd, want bij vijftig trades per sessie is elk verschil ruis.
+        self.sessions = (
+            await self.hass.async_add_executor_job(build_sessions, trades)
+        ).as_dict()
+
+        # Presteren trades rond publicatietijden anders? Ook dit is alleen
+        # waarnemen: het venster wordt niet geblokkeerd.
+        self.news_impact = (
+            await self.hass.async_add_executor_job(build_news_impact, trades)
+        ).as_dict()
 
         # Verliezen ordenen naar oorzaak. Niet om omstandigheden te vermijden -
         # dat filtert de winnaars mee weg - maar om te zien of ze aan het
@@ -1397,11 +1429,18 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "build_from_quotes": self._build_from_quotes,
             "sizing": self.last_sizing,
             "periods": self.periods,
+            "sessions": self.sessions,
+            "news_impact": self.news_impact,
             "backtest": self.backtest,
             "audit": self.audit,
             "schedule_note": self.schedule_note,
             "closures": self.closures.as_dict(),
             "conversion": self.conversion.as_dict(),
+            "validation": self.validation,
+            "archive": (
+                self.archive.stats(self.symbol, self.timeframe).as_dict()
+                if self.archive is not None else None
+            ),
             "closure_hint": self.closures.suggest_break(),
             "run_changed_because": self.run_changed_because,
             "adopted_defaults": self.adopted_defaults,
@@ -1490,6 +1529,19 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # Bij een gesloten markt niets toevoegen: een weekend levert anders
         # honderden bars met dezelfde prijs op, en die drukken de ATR naar nul.
         closed = self._aggregator.add(quote.mid, quote.time, quote.tradeable)
+
+        # Een afgesloten bar meteen bewaren. Er gaat geen extra verzoek naar de
+        # broker: dit is de bar die er toch al was, en zonder dit archief werd
+        # hij bij de volgende herstart weggegooid.
+        if closed and self.archive is not None:
+            try:
+                await self.hass.async_add_executor_job(
+                    self.archive.store, self.symbol, self.timeframe,
+                    self._aggregator.candles(2),
+                    "quotes" if self._build_from_quotes else "broker",
+                )
+            except Exception as err:  # noqa: BLE001 - archiveren mag nooit de lus slopen
+                _LOGGER.debug("Bar niet gearchiveerd: %s", err)
         if not closed:
             return
 

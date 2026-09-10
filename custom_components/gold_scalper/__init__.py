@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 import voluptuous as vol
 
@@ -14,8 +15,9 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import (
     CONF_SHOW_PANEL, DOMAIN, PLATFORMS, REPORT_FILENAME, SERVICE_BACKTEST,
-    SERVICE_CLOSE_ALL, SERVICE_GENERATE_REPORT, SERVICE_PREPARE_SHUTDOWN,
-    SERVICE_RESET_DAY, SERVICE_RESUME,
+    SERVICE_CLOSE_ALL, SERVICE_GENERATE_REPORT, SERVICE_IMPORT_HISTORY,
+    SERVICE_PREPARE_SHUTDOWN, SERVICE_RESET_DAY, SERVICE_RESUME,
+    SERVICE_VALIDATE_BACKTEST,
 )
 from .coordinator import GoldScalperCoordinator
 from .http import async_register_frontend, async_unregister_frontend
@@ -99,11 +101,29 @@ def _register_services(hass: HomeAssistant) -> None:
         from .analysis.backtest import run_backtest
 
         for coordinator in _coordinators():
-            candles = coordinator._candles
+            # Eerst het archief: dat groeit over herstarts heen en bevat
+            # doorgaans veel meer dan wat er in het geheugen staat. Zonder
+            # historie is een hypothese pas na weken te toetsen; met historie
+            # in een minuut.
+            candles = None
+            if coordinator.archive is not None:
+                try:
+                    candles = await hass.async_add_executor_job(
+                        coordinator.archive.load,
+                        coordinator.symbol, coordinator.timeframe,
+                    )
+                except (ValueError, RuntimeError):
+                    candles = None
+
+            if candles is None or len(candles) < 310:
+                # Terugvallen op wat er in het geheugen zit.
+                candles = coordinator._candles
+
             if candles is None or len(candles) < 310:
                 raise HomeAssistantError(
                     f"Er zijn {0 if candles is None else len(candles)} bars "
-                    "beschikbaar; een backtest heeft er minstens 310 nodig."
+                    "beschikbaar; een backtest heeft er minstens 310 nodig. "
+                    "Het archief vult zich vanaf nu vanzelf."
                 )
 
             spread = call.data.get("spread")
@@ -131,6 +151,122 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, SERVICE_CLOSE_ALL, close_all)
     hass.services.async_register(DOMAIN, SERVICE_RESUME, resume)
     hass.services.async_register(DOMAIN, SERVICE_GENERATE_REPORT, generate_report)
+    async def import_history(call: ServiceCall) -> None:
+        """Vul het archief met historie van de broker.
+
+        In één stap zoveel bars als de broker in één keer geeft. Bewust
+        handmatig en niet automatisch: elk datapunt telt tegen het weekquotum,
+        en een importlus die zichzelf start kan dat in een uur opmaken.
+        """
+        gevraagd = int(call.data.get("bars", 1000))
+
+        for coordinator in _coordinators():
+            if coordinator.archive is None:
+                raise HomeAssistantError("Het archief is niet geopend.")
+
+            try:
+                candles = await coordinator.venue.candles(
+                    coordinator.symbol, coordinator.timeframe, gevraagd
+                )
+            except Exception as err:  # noqa: BLE001
+                raise HomeAssistantError(
+                    f"Historie ophalen mislukte: {err}. Bij IG telt elk "
+                    "datapunt tegen het weekquotum; is dat op, probeer het "
+                    "volgende week opnieuw of vraag minder bars."
+                ) from err
+
+            nieuw = await hass.async_add_executor_job(
+                coordinator.archive.store, coordinator.symbol,
+                coordinator.timeframe, candles, "import",
+            )
+            stats = await hass.async_add_executor_job(
+                coordinator.archive.stats, coordinator.symbol,
+                coordinator.timeframe,
+            )
+            _LOGGER.warning(
+                "Historie ingelezen: %d bars opgehaald, %d nieuw. Archief nu "
+                "%d bars over %.1f dagen, %d gaten, dekking %.0f%%.",
+                len(candles), nieuw, stats.bars, stats.span_days,
+                stats.gaps, stats.coverage * 100,
+            )
+            await coordinator.async_request_refresh()
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_IMPORT_HISTORY, import_history,
+        schema=vol.Schema({
+            vol.Optional("bars"): vol.All(vol.Coerce(int), vol.Range(100, 5000)),
+        }),
+    )
+
+    async def validate_backtest(call: ServiceCall) -> None:
+        """Draai de backtest over de periode waarin de bot werkelijk handelde.
+
+        Alle hypothesen die je op historische data toetst, rusten op de aanname
+        dat de backtest de werkelijkheid nabootst. Die aanname is zelden
+        gecontroleerd, en als hij niet klopt is elke toets erop waardeloos.
+        """
+        from .analysis.backtest import run_backtest
+        from .analysis.validation import compare
+
+        for coordinator in _coordinators():
+            if coordinator.archive is None:
+                raise HomeAssistantError("Het archief is niet geopend.")
+
+            trades = await hass.async_add_executor_job(
+                coordinator.db.closed_trades, coordinator.run_id
+            )
+            if not trades:
+                raise HomeAssistantError(
+                    "Geen gesloten trades in deze run om tegen te vergelijken."
+                )
+
+            # Precies de periode waarin gehandeld is, met wat aanloop voor de
+            # indicatoren. Zonder die aanloop begint de backtest blind.
+            eerste = min(t.open_time for t in trades)
+            laatste = max(t.close_time or t.open_time for t in trades)
+            start = int(
+                datetime.fromisoformat(eerste).timestamp()
+            ) - 400 * 900
+            eind = int(datetime.fromisoformat(laatste).timestamp())
+
+            try:
+                candles = await hass.async_add_executor_job(
+                    lambda: coordinator.archive.load(
+                        coordinator.symbol, coordinator.timeframe, start, eind
+                    )
+                )
+            except (ValueError, RuntimeError) as err:
+                raise HomeAssistantError(
+                    f"Het archief heeft geen bars over deze periode: {err}. "
+                    "Vul het eerst met gold_scalper.import_history."
+                ) from err
+
+            quote = coordinator._last_quote
+            result = await hass.async_add_executor_job(
+                run_backtest, candles, coordinator.strategy_cfg,
+                coordinator.exits.config,
+                quote.spread if quote else 0.60,
+                coordinator.strategy_cfg.expected_slippage,
+                coordinator.units,
+            )
+            validatie = await hass.async_add_executor_job(
+                compare, trades, result
+            )
+            coordinator.validation = validatie.as_dict()
+
+            _LOGGER.warning(
+                "Backtestvalidatie: %s. %s",
+                validatie.verdict, validatie.explanation.split("\n")[0],
+            )
+            hass.bus.async_fire(
+                f"{DOMAIN}_validation_done", coordinator.validation
+            )
+            await coordinator.async_request_refresh()
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_VALIDATE_BACKTEST, validate_backtest
+    )
+
     hass.services.async_register(DOMAIN, SERVICE_RESET_DAY, reset_day)
     hass.services.async_register(DOMAIN, SERVICE_BACKTEST, backtest)
 

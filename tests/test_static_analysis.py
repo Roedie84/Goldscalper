@@ -469,7 +469,13 @@ def test_every_documented_service_is_registered():
         if match is None:
             ontbreekt.append(f"{naam}: geen SERVICE_-constante")
             continue
-        if f"async_register(DOMAIN, {match.group(1)}" not in init:
+        # Over meerdere regels zoeken: een registratie met een schema staat
+        # vaak verspreid, en de constante belandt dan op een eigen regel.
+        # Alleen op één regel zoeken meldde een dienst als ontbrekend terwijl
+        # hij er gewoon stond - een test die vals alarm geeft, leer je negeren.
+        genormaliseerd = re.sub(r"\s+", " ", init)
+        if f"async_register( DOMAIN, {match.group(1)}" not in genormaliseerd \
+                and f"async_register(DOMAIN, {match.group(1)}" not in genormaliseerd:
             ontbreekt.append(f"{naam}: niet geregistreerd in __init__.py")
 
     assert ontbreekt == [], "\n".join(ontbreekt)
@@ -665,7 +671,8 @@ def test_calls_pass_enough_arguments():
     sig = signaturen()
     # Namen die ook op ingebouwde types voorkomen; daar weten we het type niet.
     ingebouwd = {"clear", "get", "items", "keys", "values", "append", "pop",
-                 "update", "close", "read", "write", "split", "join", "format"}
+                 "update", "close", "read", "write", "split", "join", "format",
+                 "count", "index", "extend", "insert", "remove", "sort"}
 
     problemen = []
     for path in PKG.rglob("*.py"):

@@ -68,3 +68,25 @@ reset_day:
     de database staan en telt mee in je resultaten; alleen de noodrem begint opnieuw.
     Bedoeld voor het geval je de limiet bereikte door een instelling die je inmiddels
     hebt gecorrigeerd.'
+import_history:
+  name: Historie inlezen
+  description: 'Haalt bars bij de broker op en bewaart ze in het archief. Bewust handmatig:
+    elk datapunt telt tegen het weekquotum, en een importlus die zichzelf start kan
+    dat in een uur opmaken. Het archief groeit daarnaast vanzelf met elke bar die
+    de bot tijdens het draaien afsluit.'
+  fields:
+    bars:
+      name: Aantal bars
+      description: Hoeveel bars in één keer (100 tot 5000).
+      selector:
+        number:
+          min: 100
+          max: 5000
+          step: 100
+          mode: box
+validate_backtest:
+  name: Backtest valideren tegen live
+  description: Draait de backtest over precies de periode waarin de bot werkelijk
+    handelde en legt de uitkomsten naast elkaar. Alle hypothesen die je op historische
+    data toetst rusten op de aanname dat de backtest de werkelijkheid nabootst; deze
+    dienst controleert die aanname.

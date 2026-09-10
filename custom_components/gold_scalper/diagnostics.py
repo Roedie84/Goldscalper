@@ -82,6 +82,8 @@ async def async_get_config_entry_diagnostics(
             "regimes": coordinator.regime_stats,
         },
         "periods": coordinator.periods,
+        "sessions": coordinator.sessions,
+        "news_impact": coordinator.news_impact,
         "sizing": coordinator.last_sizing,
         # Gemeten uitvoeringsgegevens: spread per uur, stop- en doeltreffers,
         # werkelijke slippage. Dit is wat de leerlaag gebruikt, en het hoort
@@ -91,6 +93,11 @@ async def async_get_config_entry_diagnostics(
         # positiegrootte in de juiste eenheid wordt berekend, en dat scheelt
         # bij een euro-account met een dollarinstrument zo'n acht procent.
         "conversion": coordinator.conversion.as_dict(),
+        "validation": coordinator.validation,
+        "archive": (
+            coordinator.archive.stats(coordinator.symbol, coordinator.timeframe)
+            .as_dict() if coordinator.archive is not None else None
+        ),
         "audit": coordinator.audit,
         "backtest": coordinator.backtest,
         "schedule_note": coordinator.schedule_note,

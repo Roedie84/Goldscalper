@@ -157,6 +157,8 @@ SERVICE_GENERATE_REPORT: Final = "generate_report"
 SERVICE_NEW_RUN: Final = "new_run"
 SERVICE_BACKTEST: Final = "backtest"
 SERVICE_RESET_DAY: Final = "reset_day"
+SERVICE_IMPORT_HISTORY: Final = "import_history"
+SERVICE_VALIDATE_BACKTEST: Final = "validate_backtest"
 
 DISCLAIMER: Final = (
     "Technische indicatoranalyse, geen financieel advies. "
