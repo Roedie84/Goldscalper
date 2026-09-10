@@ -720,3 +720,43 @@ def test_optional_components_are_initialised():
     assert ontbreekt == [], (
         "veld staat op None en wordt nergens gevuld: " + ", ".join(ontbreekt)
     )
+
+
+def test_successful_actions_are_not_logged_as_warnings():
+    """Een geslaagde handeling hoort niet als rood item in het logboek.
+
+    `import_history` meldde zijn resultaat met `warning`, waardoor elke
+    geslaagde import in Home Assistant als fout verscheen. Het onderscheid
+    tussen "er is iets mis" en "dit is gelukt" gaat verloren als beide er
+    hetzelfde uitzien - en dan lees je geen van beide meer.
+    """
+    source = (PKG / "__init__.py").read_text(encoding="utf-8")
+    geslaagd = ("Historie ingelezen", "Backtestvalidatie")
+
+    problemen = []
+    for melding in geslaagd:
+        if melding not in source:
+            continue
+        # Zoek het logniveau vlak vóór de melding.
+        aanloop = source.split(melding)[0][-200:]
+        if "_LOGGER.warning" in aanloop or "_LOGGER.error" in aanloop:
+            problemen.append(melding)
+
+    assert problemen == [], (
+        "geslaagde handeling gelogd als waarschuwing: " + ", ".join(problemen)
+    )
+
+
+def test_repeated_findings_are_suppressed():
+    """De vergelijking met de broker draait elke tiende cyclus, en dezelfde
+    toestand duurt vaak veel langer. Zonder onderdrukking staat het logboek vol
+    met dezelfde regel.
+
+    Dit was al opgelost bij de roosterwaarschuwing en vergeten bij de
+    controlebevindingen.
+    """
+    source = (PKG / "coordinator.py").read_text(encoding="utf-8")
+    blok = source.split('log("Controle: %s"')[0][-600:]
+    assert "_audit_gemeld" in blok, (
+        "controlebevindingen worden bij elke controle opnieuw gemeld"
+    )

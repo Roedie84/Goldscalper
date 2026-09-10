@@ -1,50 +1,39 @@
-# Van 4.17.1 naar 4.20.2
+# Van 4.17.1 naar 4.20.3
 
-Dertien bestanden. Geverifieerd op een verse kloon van je GitHub: **800 tests
-groen**.
+Geverifieerd op een verse kloon van je GitHub: **802 tests groen**.
 
-## De fout in 4.20.1
+## Wat 4.20.3 toevoegt
 
-Het archief werd nooit geopend. `self.archive` stond op None en werd nergens
-gevuld — de regel die het bestand aanmaakt ontbrak, terwijl het veld en alle
-gebruik ervan er wel stonden.
+**Herhaalde controlemeldingen onderdrukt.** De vergelijking met de broker
+draait elke tiende cyclus, en dezelfde toestand duurt vaak veel langer. Tien
+identieke regels in zeven minuten maakt het logboek onbruikbaar.
 
-Gevolg: elke bar werd stil overgeslagen en `import_history` meldde *"Het
-archief is niet geopend"*.
+Dit was al opgelost bij de roosterwaarschuwing en vergeten bij de
+controlebevindingen. De sleutel bevat het ticket, dus een nieuwe positie met
+hetzelfde probleem meldt wel weer.
 
-En het veld stond twee keer in de constructor; die invoeging was gedupliceerd.
+**Geslaagde handelingen niet meer als waarschuwing.** `import_history` meldde
+zijn resultaat met `warning`, waardoor elke geslaagde import als rood item
+verscheen. Het onderscheid tussen "er is iets mis" en "dit is gelukt" gaat
+verloren als beide er hetzelfde uitzien.
 
-## Waarom 800 tests dit niet vingen
+## Over de valutamelding
 
-De tests op het archief maken hun eigen exemplaar en raken de coordinator niet
-aan. Ze toetsten of een archief werkt, niet of het wordt geopend.
+    Orders worden in USD geplaatst terwijl het account in EUR staat.
 
-Er staan nu drie controles op:
+Die blijft staan tot de wisselkoers is afgeleid, en dat gebeurt uit een open
+positie met genoeg beweging - ruim een dollar winst of verlies. Bij kleine
+posities die snel sluiten kan dat even duren.
 
-* `test_the_archive_is_actually_opened` — de coordinator maakt en opent het
-* `test_the_archive_has_its_own_file` — apart bestand naast de trades
-* `test_optional_components_are_initialised` — statisch: een veld dat op None
-  begint en nergens gevuld wordt
+Zodra het lukt verschijnt in het logboek:
 
-Die laatste vangt de volgende variant van deze fout, ongeacht welk onderdeel
-het betreft.
+    Wisselkoers USD/EUR afgeleid uit een open positie: 0.92xx
+
+Vanaf dat moment wordt de positiegrootte omgerekend en verdwijnt de melding.
+Zolang de koers onbekend is wordt er bewust **niet** omgerekend: een geschatte
+koers maakt de fout onzichtbaar in plaats van zichtbaar.
 
 ## Wat er verder in zit
 
-| Nieuw | |
-|---|---|
-| `storage/bar_archive.py` | bars bewaren over herstarts heen |
-| `analysis/validation.py` | backtest vergelijken met het live-resultaat |
-| `learning/sessions.py` | resultaat per handelssessie en rond publicatietijden |
-
-## Na installatie
-
-Herstart Home Assistant, en dan:
-
-    action: gold_scalper.import_history
-    data:
-      bars: 1000
-
-In het logboek verschijnt hoeveel bars zijn opgehaald en wat de dekking is. Bij
-goud hoort die rond de 75% te liggen — weekenden en de dagelijkse onderbreking
-zitten in het gat.
+Barsarchief, backtestvalidatie, sessie- en nieuwsuitsplitsing, en de
+valutaomrekening. Zie de eerdere beschrijving.

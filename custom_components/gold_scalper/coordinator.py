@@ -308,6 +308,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self.archive: BarArchive | None = None
         #: Uitkomst van de vergelijking tussen backtest en live-resultaat.
         self.validation: dict = {}
+        #: Bevindingen die al gemeld zijn, om herhaling te onderdrukken.
+        self._audit_gemeld: set = set()
         self.backtest: dict = {}
         self.audit: dict = {}
         self._use_schedule: bool = options.get(CONF_USE_SCHEDULE, True)
@@ -1860,9 +1862,24 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         )
         self.audit = audit.as_dict()
 
-        for finding in audit.findings:
+        # Eén melding per bevinding, niet per controle.
+        #
+        # De vergelijking draait elke tiende cyclus, en dezelfde toestand duurt
+        # vaak veel langer dan dat. Zonder onderdrukking staat het logboek vol
+        # met dezelfde regel - precies wat ik bij de roosterwaarschuwing wél
+        # had opgelost en hier vergat.
+        #
+        # De sleutel bevat het ticket, zodat een nieuwe positie met hetzelfde
+        # probleem wel weer meldt.
+        nieuw = {
+            f"{f.code}:{f.ticket or ''}": f for f in audit.findings
+        }
+        for sleutel, finding in nieuw.items():
+            if sleutel in self._audit_gemeld:
+                continue
             log = _LOGGER.error if finding.severity == "kritiek" else _LOGGER.warning
             log("Controle: %s", finding.message)
+        self._audit_gemeld = set(nieuw)
 
         if audit.critical:
             self.executor_notes = [f.message for f in audit.critical][:3]

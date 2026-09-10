@@ -183,7 +183,10 @@ def _register_services(hass: HomeAssistant) -> None:
                 coordinator.archive.stats, coordinator.symbol,
                 coordinator.timeframe,
             )
-            _LOGGER.warning(
+            # Informatief, geen waarschuwing: een geslaagde import hoort niet
+            # als rood item in het logboek te staan. Het onderscheid gaat
+            # verloren als elke geslaagde handeling eruitziet als een probleem.
+            _LOGGER.info(
                 "Historie ingelezen: %d bars opgehaald, %d nieuw. Archief nu "
                 "%d bars over %.1f dagen, %d gaten, dekking %.0f%%.",
                 len(candles), nieuw, stats.bars, stats.span_days,
@@ -254,7 +257,7 @@ def _register_services(hass: HomeAssistant) -> None:
             )
             coordinator.validation = validatie.as_dict()
 
-            _LOGGER.warning(
+            _LOGGER.info(
                 "Backtestvalidatie: %s. %s",
                 validatie.verdict, validatie.explanation.split("\n")[0],
             )
