@@ -312,6 +312,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self._audit_gemeld: set = set()
         #: Aantal trades dat op een geschatte uitstapprijs is afgerekend.
         self._geschatte_afwikkelingen = 0
+        #: Cyclusteller voor het bijwerken van geschatte afwikkelingen.
+        self._correctie_teller = 0
         self.backtest: dict = {}
         self.audit: dict = {}
         self._use_schedule: bool = options.get(CONF_USE_SCHEDULE, True)
@@ -1266,6 +1268,14 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         if self.mode.places_orders and quote.tradeable:
             await self._settle_vanished_positions(quote, now)
 
+            # Eerder geschatte afwikkelingen bijwerken. Het overzicht van de
+            # broker loopt uren achter, dus de eerste poging mislukt vaak en
+            # een tweede kans is onmisbaar.
+            self._correctie_teller += 1
+            if self._correctie_teller >= 30:
+                self._correctie_teller = 0
+                await self._correct_estimated_settlements()
+
         # -- open posities beheren, vóór alles anders ------------------------ #
         # Bij een gesloten markt niet ingrijpen: een stop verplaatsen of een
         # positie sluiten op een koers van uren geleden is erger dan wachten.
@@ -1808,6 +1818,69 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             self._last_entry_ts = now.timestamp()
         except (ModeLockedError, VenueError) as err:
             _LOGGER.error("Openen mislukt: %s", err)
+
+    async def _correct_estimated_settlements(self) -> None:
+        """Werk eerder geschatte afwikkelingen bij zodra de prijs beschikbaar is.
+
+        Het transactieoverzicht van de broker loopt achter - in de praktijk
+        uren. Op het moment dat de lus een positie afwikkelt, staat de
+        werkelijke uitstapprijs er nog niet in, en dan valt de afwikkeling
+        terug op een schatting die tien dollar mis kan zijn.
+
+        Eén keer proberen is dus niet genoeg. Hier wordt elke trade die als
+        schatting is geboekt later opnieuw opgezocht en gecorrigeerd. Dat is de
+        enige manier om zowel snel af te wikkelen als juist te boeken.
+        """
+        zoek = getattr(self.venue, "closed_deal", None)
+        if zoek is None or self.run_id is None:
+            return
+
+        geschat = await self.hass.async_add_executor_job(
+            self.db.estimated_trades, self.run_id
+        )
+        if not geschat:
+            return
+
+        for trade in geschat[:5]:      # hoogstens vijf per cyclus
+            try:
+                werkelijk = await zoek(
+                    str(trade.broker_ticket), trade.open_price
+                )
+            except VenueError:
+                return
+
+            if not werkelijk or not werkelijk.get("exit_price"):
+                continue
+
+            exit_price = float(werkelijk["exit_price"])
+            long = trade.side == "buy"
+            richting = 1.0 if long else -1.0
+            units = trade.volume * CONTRACT_SIZE
+            half = (trade.close_spread or 0.6) / 2.0
+
+            oud = trade.net_pnl or 0.0
+            trade.close_price = exit_price
+            trade.close_mid = exit_price + (half if long else -half)
+            trade.close_reason = "broker_gesloten_gecorrigeerd"
+            trade.gross_pnl = round(
+                (trade.close_mid - trade.open_mid) * richting * units, 4
+            )
+            trade.net_pnl = round(
+                (exit_price - trade.open_price) * richting * units, 4
+            )
+            trade.total_cost = round(
+                (trade.gross_pnl or 0) - (trade.net_pnl or 0), 4
+            )
+
+            await self.hass.async_add_executor_job(self.db.update_trade, trade)
+            self._geschatte_afwikkelingen = max(
+                0, self._geschatte_afwikkelingen - 1
+            )
+            _LOGGER.info(
+                "Trade %s gecorrigeerd: netto van %.2f naar %.2f "
+                "(uitstapprijs %.2f in plaats van een schatting).",
+                trade.broker_ticket, oud, trade.net_pnl, exit_price,
+            )
 
     async def _settle_vanished_positions(
         self, quote: VenueQuote, now: datetime

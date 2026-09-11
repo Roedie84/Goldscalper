@@ -1,57 +1,54 @@
-# Van 4.17.1 naar 4.21.4
+# Van 4.17.1 naar 4.22.0
 
-Geverifieerd op een verse kloon van je GitHub: **826 tests groen**.
+Geverifieerd op een verse kloon van je GitHub: **830 tests groen**.
 
-## De oorzaak, eindelijk gevonden
+## Wat de logregel verder liet zien
 
-De logregel uit 4.21.3 gaf het antwoord:
+Het datumbereik werkt: **33 transacties** in plaats van één.
 
-    Transactieoverzicht van de broker: 1 transacties.
-    Velden: [..., 'closeLevel', ..., 'openLevel', 'profitAndLoss', ...]
+Maar er staat nog iets in die regel:
 
-**De veldnamen klopten al.** `openLevel`, `closeLevel` en `profitAndLoss` zijn
-precies wat de code leest.
+    nieuwste transactie: 2026-09-11T06:07:47
+    opgevraagd om:       10:30:15
 
-Het probleem was **één transactie**. Zonder `from` en `to` levert dit endpoint
-een heel smal venster: in de praktijk alleen de meest recente transactie. Alle
-andere posities vonden dus nooit een match — en de veldnamen, die gewoon goed
-waren, kregen twee ronden lang de schuld.
+**Het transactieoverzicht loopt ruim vier uur achter.** Op het moment dat de
+lus een positie afwikkelt, staat de werkelijke uitstapprijs er nog niet in.
+E�n poging is dus principieel niet genoeg, hoe goed de zoekopdracht ook is.
 
-Nu wordt er vierentwintig uur teruggevraagd met `pageSize: 200`. Dat kost niets
-tegen het datapuntenquotum, want dit endpoint telt daar niet tegen.
+## Daarom: later corrigeren
 
-## En de tolerantie terug naar strak
+Elke tien minuten worden trades die als schatting zijn geboekt opnieuw
+opgezocht. Lukt het dan, dan wordt de trade bijgewerkt:
 
-In 4.21.3 had ik de prijsmarge naar 0,60 verruimd, voor het geval de broker
-zou afronden. Uit de werkelijke gegevens blijkt dat `openLevel` **exact**
-overeenkomt met de eigen instapprijs, tot op de cent.
+    Trade FZC2JGB2 gecorrigeerd: netto van -0.05 naar -8.69
+    (uitstapprijs 4358.34 in plaats van een schatting).
 
-Een ruime marge zou hier juist schaden: bij goud liggen opeenvolgende instappen
-vaak binnen een dollar van elkaar, en dan koppel je de verkeerde trade. Terug
-naar 0,05.
+De sluitreden wordt `broker_gesloten_gecorrigeerd`, zodat je in het rapport ziet
+welke cijfers uit een correctie komen.
 
-## Nieuw: melding bij een smal venster
+Hoogstens vijf per cyclus, anders loopt de handelslus vast op netwerkverzoeken.
 
-Komen er minder dan drie transacties over een etmaal terug, dan verschijnt er
-een waarschuwing. Dat is minder dan er trades zijn geweest, en precies het
-signaal dat het datumbereik niet aankomt.
+## En bij een mislukte match: zeggen waarom
+
+Wordt er niets gevonden, dan staat er nu in het logboek welke prijs werd
+gezocht, hoeveel transacties er lagen, van wanneer de nieuwste en oudste waren,
+en de drie dichtstbijzijnde instapprijzen met hun verschil.
+
+Twee eerdere pogingen faalden op een aanname die ik niet kon controleren. Deze
+regel maakt dat onmogelijk.
 
 ## Wat je moet controleren
 
-Bij de eerste afgewikkelde trade na installatie:
+Na installatie en een paar trades:
 
-* `broker_gesloten_gemeten` in de sluitreden — het werkt
-* `conversion` in de diagnostiek krijgt een koers rond 0,868
-* `estimated_settlements` blijft op nul staan
+* `broker_gesloten_gecorrigeerd` in de sluitredenen — de correctie werkt
+* `estimated_settlements` loopt terug naar nul
+* `conversion.rate` krijgt een waarde rond 0,868
 
-Gaat het mis, dan staat er weer een logregel met het aantal transacties.
+Blijft alles op `geschat` staan, dan staat er een logregel met de gezochte
+prijs en de kandidaten. Stuur die op.
 
-## Over run 94
+## Over de lopende run
 
-Onbruikbaar. Alle 21 trades zijn op een geschatte uitstapprijs afgerekend, en
-uit de vergelijking met het overzicht van de broker blijkt dat die gemiddeld
-**9,31 dollar** mis waren — bij twee trades zelfs met het verkeerde teken: een
-verlies geboekt als winst, en een winst van bijna dertien dollar als verlies.
-
-Begin opnieuw met `gold_scalper.new_run` zodra dit draait en de sluitreden
-`gemeten` is.
+Run 95 heeft één trade en die is geschat. Zodra de correctie werkt, wordt hij
+bijgewerkt en kan de run gewoon doorlopen — een nieuwe run is niet nodig.

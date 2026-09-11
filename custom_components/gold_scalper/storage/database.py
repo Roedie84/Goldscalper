@@ -405,6 +405,21 @@ class TradeDatabase:
         )
         self.conn.commit()
 
+    def estimated_trades(self, run_id: int) -> list[Trade]:
+        """Trades die op een geschatte uitstapprijs zijn afgerekend.
+
+        Het transactieoverzicht van de broker loopt uren achter, dus de eerste
+        poging om de werkelijke prijs op te halen mislukt vaak. Deze lijst is
+        wat er later nog te corrigeren valt.
+        """
+        rijen = self.conn.execute(
+            "SELECT * FROM trades WHERE run_id=? "
+            "AND close_reason='broker_gesloten_geschat' "
+            "ORDER BY close_time DESC LIMIT 50",
+            (run_id,),
+        ).fetchall()
+        return [self._row_to_trade(r) for r in rijen]
+
     def open_trades(self, run_id: int) -> list[Trade]:
         rows = self.conn.execute(
             "SELECT * FROM trades WHERE run_id=? AND close_time IS NULL", (run_id,)

@@ -832,6 +832,35 @@ class IgStyleVenue(ExecutionVenue):
                 "size": _als_getal(tx.get("size")),
                 "closed_at": tx.get("date") or tx.get("dateUtc"),
             }
+
+        # Niets gevonden: laat zien wat er gezocht werd en wat er lag.
+        #
+        # Twee eerdere pogingen faalden op een aanname die ik niet kon
+        # controleren. Deze regel maakt dat onmogelijk: hij noemt de gezochte
+        # prijs en de dichtstbijzijnde kandidaten, zodat direct zichtbaar is of
+        # het om een afrondingsverschil gaat, om een ontbrekende transactie, of
+        # om iets anders.
+        if open_price is not None and transacties:
+            kandidaten = []
+            for tx in transacties:
+                niveau = _als_getal(tx.get("openLevel"))
+                if niveau is None:
+                    continue
+                kandidaten.append((abs(niveau - open_price), niveau, tx))
+            kandidaten.sort()
+            dichtst = [
+                f"{n} (verschil {v:.2f}, gesloten {t.get('dateUtc')})"
+                for v, n, t in kandidaten[:3]
+            ]
+            _LOGGER.warning(
+                "Geen transactie gevonden voor instapprijs %.2f (ticket %s). "
+                "%d transacties bekeken, nieuwste %s, oudste %s. "
+                "Dichtstbijzijnde instapprijzen: %s",
+                open_price, ticket, len(transacties),
+                transacties[0].get("dateUtc"),
+                transacties[-1].get("dateUtc"),
+                "; ".join(dichtst) or "geen enkele met openLevel",
+            )
         return None
 
     async def modify_stop(

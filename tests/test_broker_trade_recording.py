@@ -256,3 +256,56 @@ def test_the_entry_price_is_passed_to_the_lookup():
     transactieoverzicht; de instapprijs wel."""
     body = _method("_settle_vanished_positions")
     assert "trade.open_price" in body.split("zoek(")[1][:120]
+
+
+# ---------------- correctie van schattingen ----------------
+
+def test_estimated_settlements_are_corrected_later():
+    """Het transactieoverzicht van de broker loopt uren achter: de nieuwste
+    transactie was van 06:07 terwijl er om 10:30 werd opgevraagd.
+
+    Op het moment dat de lus een positie afwikkelt staat de werkelijke
+    uitstapprijs er dus nog niet in, en valt de afwikkeling terug op een
+    schatting die tien dollar mis kan zijn. Eén poging is niet genoeg.
+    """
+    body = _method("_correct_estimated_settlements")
+    assert "estimated_trades" in body
+    assert "broker_gesloten_gecorrigeerd" in body
+    assert "update_trade" in body
+
+
+def test_the_correction_runs_periodically():
+    """Elke cyclus zou de broker onnodig belasten; nooit zou de schattingen
+    laten staan."""
+    body = _method("_async_update_data")
+    assert "_correct_estimated_settlements" in body
+    assert "_correctie_teller" in body
+
+
+def test_the_correction_is_batched():
+    """Vijftig trades in één cyclus corrigeren zou de lus laten vastlopen op
+    netwerkverzoeken."""
+    body = _method("_correct_estimated_settlements")
+    assert "geschat[:5]" in body
+
+
+def test_estimated_trades_are_findable(tmp_path):
+    from gold_scalper.storage.database import Trade, TradeDatabase
+
+    db = TradeDatabase(tmp_path / "e.db")
+    db.connect()
+    run = db.start_run("demo", "v1", "GOLD", {}, 10000.0, None, "fp")
+
+    for reden in ("broker_gesloten_geschat", "broker_gesloten_gemeten",
+                  "stop_loss"):
+        db.insert_trade(Trade(
+            run_id=run, mode="demo", symbol="GOLD", side="sell", volume=0.012,
+            open_time="2026-09-11T10:00:00+00:00", open_price=4349.40,
+            open_mid=4349.10, open_spread=0.6,
+            close_time="2026-09-11T10:05:00+00:00", net_pnl=-0.05,
+            close_reason=reden, broker_ticket=f"T-{reden}",
+        ))
+
+    geschat = db.estimated_trades(run)
+    assert len(geschat) == 1
+    assert geschat[0].close_reason == "broker_gesloten_geschat"
