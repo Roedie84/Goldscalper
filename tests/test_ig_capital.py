@@ -685,13 +685,22 @@ def test_alternative_field_names_are_tried():
         assert deal["exit_price"] == pytest.approx(4371.57)
 
 
-def test_the_price_tolerance_allows_rounding():
-    """De broker kan afronden; een te strenge vergelijking laat de match
-    precies mislukken waar hij nodig is."""
+def test_the_price_match_is_exact():
+    """Een ruime marge leek verstandig omdat de broker zou kunnen afronden.
+    Uit de werkelijke gegevens blijkt dat `openLevel` exact overeenkomt met de
+    eigen instapprijs - en bij goud liggen opeenvolgende instappen vaak binnen
+    een dollar van elkaar, dus een ruime marge koppelt de verkeerde trade.
+    """
     transacties = ({"transactions": [
         {"openLevel": "4360.50", "closeLevel": "4371.57"},
     ]}, 200)
     venue = ig({"/history/transactions": transacties})
+    assert asyncio.run(venue.closed_deal("T1", 4360.06)) is None
+
+    exact = ({"transactions": [
+        {"openLevel": "4360.06", "closeLevel": "4371.57"},
+    ]}, 200)
+    venue = ig({"/history/transactions": exact})
     assert asyncio.run(venue.closed_deal("T1", 4360.06)) is not None
 
 
@@ -708,3 +717,47 @@ def test_an_empty_transaction_list_is_reported():
     niet stil te gebeuren."""
     venue = ig({"/history/transactions": ({"transactions": []}, 200)})
     assert asyncio.run(venue.closed_deal("T1", 4360.06)) is None
+
+
+def test_the_request_carries_a_date_range():
+    """Zonder `from` en `to` geeft dit endoint één transactie terug: de meest
+    recente. Alle andere posities vonden dus nooit een match, en de veldnamen -
+    die gewoon klopten - kregen de schuld."""
+    transacties = ({"transactions": [
+        {"openLevel": "4340.23", "closeLevel": "4349.27",
+         "profitAndLoss": "E-8.79", "reference": "FYJDV3B2", "size": "-1.12"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    asyncio.run(venue.closed_deal("DIAAAAYFPY669AZ", 4340.23))
+    call = next(c for c in venue._session.calls if "transactions" in c["url"])
+    assert "from" in call["params"] and "to" in call["params"]
+    assert call["params"]["pageSize"] >= 100
+
+
+def test_the_real_broker_fields_are_read():
+    """De veldnamen zoals de broker ze werkelijk levert, uit een logregel van
+    een echte aanroep."""
+    transacties = ({"transactions": [{
+        "date": "2026-09-11", "dateUtc": "2026-09-11T05:55:31",
+        "openDateUtc": "2026-09-11T05:34:24", "period": "-",
+        "profitAndLoss": "E-8.79", "transactionType": "Transactie",
+        "reference": "FYJDV3B2", "openLevel": "4340.23",
+        "closeLevel": "4349.27", "size": "-1.12", "currency": "E",
+        "cashTransaction": False,
+    }]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    deal = asyncio.run(venue.closed_deal("DIAAAAYFPY669AZ", 4340.23))
+    assert deal is not None
+    assert deal["exit_price"] == pytest.approx(4349.27)
+    assert deal["profit_account"] == pytest.approx(-8.79)
+    assert deal["matched_on"] == "instapprijs"
+
+
+def test_a_nearby_entry_does_not_match():
+    """Bij goud liggen opeenvolgende instappen vaak binnen een dollar van
+    elkaar; een ruime marge koppelt dan de verkeerde trade."""
+    transacties = ({"transactions": [
+        {"openLevel": "4340.61", "closeLevel": "4330.00"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    assert asyncio.run(venue.closed_deal("T1", 4340.23)) is None

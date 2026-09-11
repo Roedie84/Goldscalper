@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
@@ -707,9 +707,25 @@ class IgStyleVenue(ExecutionVenue):
         Geeft None als de transactie niet gevonden wordt. Dan valt de
         afwikkeling terug op de schatting, maar dan wél gemarkeerd.
         """
+        # Met een datumbereik, anders levert de broker er één.
+        #
+        # Zonder ``from`` en ``to`` geeft dit endpoint een heel smal venster
+        # terug: in de praktijk precies één transactie, de meest recente. Alle
+        # andere posities vonden dus nooit een match, en de veldnamen - die
+        # gewoon klopten - kregen de schuld.
+        #
+        # Vierentwintig uur terugkijken is ruim: de lus wikkelt binnen enkele
+        # cycli af, en meer transacties ophalen kost hier niets omdat dit
+        # endpoint niet tegen het datapuntenquotum telt.
+        nu = datetime.now(timezone.utc)
         payload = await self._request(
             "GET", "/history/transactions", version="2",
-            params={"type": "ALL_DEAL", "pageSize": 50},
+            params={
+                "type": "ALL_DEAL",
+                "from": (nu - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S"),
+                "to": nu.strftime("%Y-%m-%dT%H:%M:%S"),
+                "pageSize": 200,
+            },
         )
 
         transacties = payload.get("transactions") or []
@@ -733,9 +749,19 @@ class IgStyleVenue(ExecutionVenue):
             )
         elif not transacties:
             _LOGGER.warning(
-                "Het transactieoverzicht van de broker is leeg. Zonder die "
-                "gegevens is de werkelijke uitstapprijs niet te achterhalen en "
-                "blijft elke afwikkeling een schatting."
+                "Het transactieoverzicht van de broker is leeg over de "
+                "afgelopen vierentwintig uur. Zonder die gegevens is de "
+                "werkelijke uitstapprijs niet te achterhalen en blijft elke "
+                "afwikkeling een schatting."
+            )
+        elif len(transacties) < 3:
+            # Eén of twee transacties over een etmaal wijst erop dat het
+            # datumbereik niet aankomt - precies de fout die dit moest
+            # oplossen.
+            _LOGGER.warning(
+                "Slechts %d transactie(s) over de afgelopen vierentwintig uur. "
+                "Dat is minder dan er trades zijn geweest; het datumbereik in "
+                "het verzoek komt vermoedelijk niet aan.", len(transacties),
             )
 
         for tx in transacties:
@@ -766,12 +792,14 @@ class IgStyleVenue(ExecutionVenue):
                 for k in ("reference", "dealId", "deal_id", "dealReference")
             )
 
-            # Tolerantie op de prijs: de broker kan afronden op een halve tick,
-            # en een te strenge vergelijking laat de match precies mislukken
-            # waar hij nodig is.
+            # Strak op de prijs. Uit de vergelijking met het overzicht van de
+            # broker blijkt dat ``openLevel`` exact overeenkomt met de eigen
+            # instapprijs, tot op de cent. Een ruime marge zou hier juist
+            # schaden: bij goud liggen opeenvolgende instappen vaak binnen een
+            # dollar van elkaar, en dan koppel je de verkeerde trade.
             past_op_prijs = (
                 open_price is not None and openings is not None
-                and abs(openings - open_price) < 0.6
+                and abs(openings - open_price) < 0.05
             )
             past_op_ticket = (
                 str(ticket) in verwijzing or verwijzing in str(ticket)
