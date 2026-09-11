@@ -342,3 +342,20 @@ def test_the_rate_is_derived_from_the_correction():
     body = _method("_correct_estimated_settlements")
     assert "profit_account" in body
     assert "self.conversion.rate = koers" in body
+
+
+def test_the_correction_runs_soon_after_startup():
+    """Dertig cycli is tien minuten, en dat is te lang om twee redenen: bij een
+    herstart staan er vaak al schattingen uit de vorige sessie, en zolang de
+    correctie niet heeft gedraaid blijft ook de wisselkoers onbekend - die komt
+    uit dezelfde lus."""
+    body = _method("_async_update_data")
+    assert "_correctie_teller == 1" in body, "de eerste correctie wacht te lang"
+
+
+def test_the_estimate_count_is_updated_while_learning():
+    """Anders staat het rapport op nul tot de correctielus voor het eerst
+    draait, en dan lijkt er niets te corrigeren terwijl er trades op een
+    schatting staan."""
+    body = _method("_relearn")
+    assert "estimated_trades" in body

@@ -770,6 +770,16 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             self.state.atr.value,
         )
         self.postmortem = post.as_dict()
+
+        # Het aantal openstaande schattingen hier ook bijwerken. Anders staat
+        # het rapport op nul tot de correctielus voor het eerst draait, en dan
+        # lijkt er niets te corrigeren terwijl er trades op een schatting
+        # staan.
+        if self.run_id is not None:
+            geschat = await self.hass.async_add_executor_job(
+                self.db.estimated_trades, self.run_id
+            )
+            self._geschatte_afwikkelingen = len(geschat)
         if post.patterns and post.patterns[0].actionable and post.fixable_share >= 0.25:
             _LOGGER.info("Verliesanalyse: %s", post.conclusion)
 
@@ -1271,9 +1281,15 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             # Eerder geschatte afwikkelingen bijwerken. Het overzicht van de
             # broker loopt uren achter, dus de eerste poging mislukt vaak en
             # een tweede kans is onmisbaar.
+            # Elke tien cycli, en de eerste keer meteen.
+            #
+            # Dertig cycli is tien minuten, en dat is te lang om twee redenen:
+            # bij een herstart staan er vaak al schattingen uit de vorige
+            # sessie, en zolang de correctie niet heeft gedraaid blijft ook de
+            # wisselkoers onbekend - die komt uit dezelfde lus.
             self._correctie_teller += 1
-            if self._correctie_teller >= 30:
-                self._correctie_teller = 0
+            if self._correctie_teller == 1 or self._correctie_teller >= 10:
+                self._correctie_teller = 2
                 await self._correct_estimated_settlements()
 
         # -- open posities beheren, vóór alles anders ------------------------ #

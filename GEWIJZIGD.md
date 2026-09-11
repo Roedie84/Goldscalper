@@ -1,43 +1,44 @@
-# Van 4.17.1 naar 4.22.1
+# Van 4.17.1 naar 4.22.2
 
-Geverifieerd op een verse kloon van je GitHub: **833 tests groen**.
+Geverifieerd op een verse kloon van je GitHub: **835 tests groen**.
 
-## De correctie werkt
+## Wat 4.22.2 repareert
 
-Uit je rapport:
+**De correctie wachtte te lang.** Hij ging pas na dertig cycli, oftewel tien
+minuten. Dat is te lang om twee redenen: bij een herstart staan er vaak al
+schattingen uit de vorige sessie, en zolang de correctie niet heeft gedraaid
+blijft ook de **wisselkoers** onbekend — die komt uit dezelfde lus.
 
-| gesloten | in | uit | netto | reden |
-|---|---|---|---|---|
-| 10:30 | 4351,43 | 4346,07 | -6,27 | **gecorrigeerd** |
-| 10:57 | 4346,61 | 4343,66 | -3,54 | **gecorrigeerd** |
-| 11:10 | 4344,01 | 4344,02 | +0,02 | geschat |
+Nu draait hij meteen bij de eerste cyclus en daarna elke tien.
 
-De twee gecorrigeerde hebben uitstapprijzen die vijf en drie dollar van de
-instap liggen. De derde staat op één cent verschil — precies het patroon van
-een schatting, die alles naar nul comprimeert.
+**De teller stond op nul.** `estimated_settlements` werd alleen bijgewerkt
+binnen de correctielus, dus hij meldde nul zolang die nog niet had gedraaid —
+terwijl er twee trades op een schatting stonden.
 
-## Twee dingen die 4.22.1 repareert
+Het getal wordt nu ook bij het leren bijgewerkt, zodat het klopt vóór de eerste
+correctie.
 
-**De teller stond verkeerd.** `estimated_settlements` meldde nul terwijl er nog
-één trade te corrigeren was. Die teller begon bij elke herstart opnieuw en werd
-alleen verhoogd bij nieuwe schattingen; nu wordt de stand uit de database
-gelezen.
+## Wat er al werkte
 
-Een getal dat verkeerd kan staan is erger dan geen getal, want je vertrouwt
-erop.
+De twee gecorrigeerde trades uit je rapport kloppen tot op de cent met het
+overzicht van de broker:
 
-**De wisselkoers bleef leeg.** De afleiding uit een open positie lukte nooit:
-posities sluiten te snel om genoeg beweging te tonen.
+| instap | mijn netto | omgerekend | broker |
+|---|---|---|---|
+| 4346,61 | US$ -3,54 | EUR -3,08 | **EUR -3,08** |
+| 4351,43 | US$ -6,27 | EUR -5,45 | **EUR -5,45** |
 
-Bij een correctie is het bedrag waarmee de broker werkelijk heeft afgerekend
-wél bekend. Dat geeft de koers rechtstreeks, en preciezer — uit jouw scherm
-blijkt die rond **0,868** te liggen.
-
-Zodra hij bekend is wordt de positiegrootte omgerekend en verdwijnt de
-waarschuwing over twee eenheden.
+Nul verschil. Mijn cijfers staan in dollars, die van de broker in euro's;
+vermenigvuldig met 0,869 en ze zijn identiek.
 
 ## Wat je hierna ziet
 
-* `broker_gesloten_gecorrigeerd` bij vrijwel elke trade
-* `estimated_settlements` dat oploopt en weer terugvalt naar nul
-* `conversion.rate` met een waarde rond 0,868
+Binnen een minuut na de herstart:
+
+* `estimated_settlements` met het werkelijke aantal
+* `conversion.rate` rond 0,868
+* de geschatte trades die omslaan naar `gecorrigeerd`
+
+Zodra de koers bekend is verandert je positiegrootte met ongeveer acht procent,
+en dat begint automatisch een nieuwe run. Terecht: trades van voor en na die
+omschakeling zijn niet vergelijkbaar.
