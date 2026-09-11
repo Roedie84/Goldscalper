@@ -685,6 +685,9 @@ class IgStyleVenue(ExecutionVenue):
         reference = payload.get("dealReference")
         return OrderResult(success=bool(reference), ticket=ticket, units=size)
 
+    #: Of de veldnamen van het transactieoverzicht al zijn gelogd.
+    _velden_gelogd: bool = False
+
     async def closed_deal(
         self, ticket: str, open_price: float | None = None,
     ) -> dict | None:
@@ -709,7 +712,33 @@ class IgStyleVenue(ExecutionVenue):
             params={"type": "ALL_DEAL", "pageSize": 50},
         )
 
-        for tx in payload.get("transactions") or []:
+        transacties = payload.get("transactions") or []
+
+        # Loggen wat er werkelijk terugkomt, niet raden.
+        #
+        # Twee pogingen om de uitstapprijs te matchen zijn mislukt: eerst op
+        # het dealId tegen het veld ``reference``, daarna op de instapprijs
+        # tegen ``openLevel``. Beide keren viel de afwikkeling terug op een
+        # schatting, en beide keren was de oorzaak een aanname over veldnamen
+        # die ik niet kon controleren.
+        #
+        # Eén regel met de werkelijke sleutels maakt dat gokken onnodig.
+        if transacties and not self._velden_gelogd:
+            self._velden_gelogd = True
+            _LOGGER.warning(
+                "Transactieoverzicht van de broker: %d transacties. Velden van "
+                "de eerste: %s. Eerste transactie: %s",
+                len(transacties), sorted(transacties[0].keys()),
+                {k: v for k, v in transacties[0].items() if k != "instrumentName"},
+            )
+        elif not transacties:
+            _LOGGER.warning(
+                "Het transactieoverzicht van de broker is leeg. Zonder die "
+                "gegevens is de werkelijke uitstapprijs niet te achterhalen en "
+                "blijft elke afwikkeling een schatting."
+            )
+
+        for tx in transacties:
             # Op de INSTAPPRIJS zoeken, niet op het ticketnummer.
             #
             # Eerst werd het dealId vergeleken met het veld ``reference``, en
@@ -721,12 +750,28 @@ class IgStyleVenue(ExecutionVenue):
             # administratie én in het overzicht van de broker, met vier
             # decimalen. Twee trades met exact dezelfde instapprijs binnen
             # vijftig transacties is onwaarschijnlijk genoeg.
-            openings = _als_getal(tx.get("openLevel"))
-            verwijzing = str(tx.get("reference") or "")
+            # Meerdere veldnamen proberen. De broker documenteert
+            # ``openLevel``, maar de praktijk wijkt af: twee pogingen die op
+            # één naam vertrouwden zijn mislukt. Alle plausibele namen
+            # aflopen kost niets en maakt het robuust tegen een
+            # naamsverandering.
+            openings = None
+            for naam in ("openLevel", "open_level", "openingLevel", "level"):
+                openings = _als_getal(tx.get(naam))
+                if openings:
+                    break
 
+            verwijzing = " ".join(
+                str(tx.get(k) or "")
+                for k in ("reference", "dealId", "deal_id", "dealReference")
+            )
+
+            # Tolerantie op de prijs: de broker kan afronden op een halve tick,
+            # en een te strenge vergelijking laat de match precies mislukken
+            # waar hij nodig is.
             past_op_prijs = (
                 open_price is not None and openings is not None
-                and abs(openings - open_price) < 0.05
+                and abs(openings - open_price) < 0.6
             )
             past_op_ticket = (
                 str(ticket) in verwijzing or verwijzing in str(ticket)
@@ -735,7 +780,11 @@ class IgStyleVenue(ExecutionVenue):
             if not (past_op_prijs or past_op_ticket):
                 continue
 
-            niveau = _als_getal(tx.get("closeLevel")) or _als_getal(tx.get("level"))
+            niveau = None
+            for naam in ("closeLevel", "close_level", "closingLevel", "level"):
+                niveau = _als_getal(tx.get(naam))
+                if niveau:
+                    break
             if niveau is None:
                 continue
             return {
@@ -743,7 +792,14 @@ class IgStyleVenue(ExecutionVenue):
                 "matched_on": "instapprijs" if past_op_prijs else "ticket",
                 # Winst in accountvaluta, zoals de broker hem boekt. Hiermee
                 # is ook de wisselkoers af te leiden.
-                "profit_account": _als_getal(tx.get("profitAndLoss")),
+                "profit_account": next(
+                    (
+                        _als_getal(tx.get(k)) for k in
+                        ("profitAndLoss", "profit_and_loss", "profit", "pnl")
+                        if tx.get(k) is not None
+                    ),
+                    None,
+                ),
                 "currency": tx.get("currency"),
                 "size": _als_getal(tx.get("size")),
                 "closed_at": tx.get("date") or tx.get("dateUtc"),

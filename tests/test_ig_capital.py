@@ -665,3 +665,46 @@ def test_the_ticket_still_works_if_it_happens_to_match():
 def test_a_negative_amount_survives_the_currency_symbol():
     from gold_scalper.broker.ig_capital import _als_getal
     assert _als_getal("-E8.69") == pytest.approx(-8.69)
+
+
+def test_alternative_field_names_are_tried():
+    """Twee pogingen die op één veldnaam vertrouwden zijn mislukt. Alle
+    plausibele namen aflopen kost niets en maakt het robuust tegen een
+    naamsverandering bij de broker."""
+    for open_naam, close_naam in [
+        ("openLevel", "closeLevel"),
+        ("open_level", "close_level"),
+        ("openingLevel", "closingLevel"),
+    ]:
+        transacties = ({"transactions": [
+            {open_naam: "4360.06", close_naam: "4371.57", "reference": "X"},
+        ]}, 200)
+        venue = ig({"/history/transactions": transacties})
+        deal = asyncio.run(venue.closed_deal("T1", 4360.06))
+        assert deal is not None, f"niet gevonden met {open_naam}/{close_naam}"
+        assert deal["exit_price"] == pytest.approx(4371.57)
+
+
+def test_the_price_tolerance_allows_rounding():
+    """De broker kan afronden; een te strenge vergelijking laat de match
+    precies mislukken waar hij nodig is."""
+    transacties = ({"transactions": [
+        {"openLevel": "4360.50", "closeLevel": "4371.57"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    assert asyncio.run(venue.closed_deal("T1", 4360.06)) is not None
+
+
+def test_a_far_price_still_does_not_match():
+    transacties = ({"transactions": [
+        {"openLevel": "4300.00", "closeLevel": "4310.00"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    assert asyncio.run(venue.closed_deal("T1", 4360.06)) is None
+
+
+def test_an_empty_transaction_list_is_reported():
+    """Zonder die gegevens blijft elke afwikkeling een schatting, en dat hoort
+    niet stil te gebeuren."""
+    venue = ig({"/history/transactions": ({"transactions": []}, 200)})
+    assert asyncio.run(venue.closed_deal("T1", 4360.06)) is None

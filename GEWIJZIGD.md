@@ -1,49 +1,56 @@
-# Van 4.17.1 naar 4.21.2
+# Van 4.17.1 naar 4.21.3
 
-Geverifieerd op een verse kloon van je GitHub: **819 tests groen**.
+Geverifieerd op een verse kloon van je GitHub: **823 tests groen**.
 
-## Waarom 4.21.0 niet werkte
+## De stand van zaken
 
-De sluitreden stond op `broker_gesloten_geschat`: het ophalen van de werkelijke
-uitstapprijs mislukte elke keer.
+Alle 21 trades in run 94 staan op `broker_gesloten_geschat`. De werkelijke
+uitstapprijs wordt nog steeds niet gevonden.
 
-Oorzaak: ik vergeleek het **dealId** (`DIAAAAYFPY669AZ`) met het veld
-`reference` uit het transactieoverzicht van de broker. Dat zijn twee
-verschillende identificaties — ze matchen nooit.
+Twee pogingen zijn mislukt:
 
-Gevolg: de fix die de fout van 28 euro per middag moest oplossen, viel elke
-keer stil terug op precies die fout.
+1. Zoeken op het **dealId** tegen het veld `reference` — twee verschillende
+   identificaties, die matchen nooit.
+2. Zoeken op de **instapprijs** tegen `openLevel` — werkt evenmin.
 
-## Nu wordt op de instapprijs gezocht
+Beide keren was de oorzaak een aanname over veldnamen die ik niet kon
+controleren, want ik heb geen toegang tot je account.
 
-Die staat in de eigen administratie én in het overzicht van de broker, met vier
-decimalen. Twee trades met exact dezelfde instapprijs binnen vijftig
-transacties is onwaarschijnlijk genoeg.
+## Daarom eerst kijken, dan repareren
 
-Uit jouw scherm:
+Deze versie logt bij de eerste poging **precies wat de broker teruggeeft**:
 
-| | in | uit volgens IG | uit volgens mij |
-|---|---|---|---|
-| 15:38 | 4360,06 | **4371,57** | 4361,28 |
-| 15:32 | 4350,12 | **4360,85** | — |
+    Transactieoverzicht van de broker: 34 transacties. Velden van de eerste:
+    ['cashTransaction', 'closeLevel', 'currency', 'date', ...]. Eerste
+    transactie: {...}
 
-IG boekte -8,69 en -8,95 euro; mijn administratie -0,10 en -1,06. Ook hier
-zaten mijn cijfers dicht bij nul waar de werkelijkheid tien dollar bewoog.
+Die regel staat één keer in het logboek, bij `custom_components.gold_scalper
+.broker.ig_capital`. **Stuur hem op** — dan weet ik welk veld ik moet lezen in
+plaats van te blijven gokken.
 
-## En een schatting is nu luidruchtig
+Is het overzicht leeg, dan staat er:
 
-Mislukt het ophalen alsnog, dan verschijnt bij de eerste, vijfde, twintigste en
-vijftigste keer een waarschuwing in het logboek, en staat het aantal in de
-diagnostiek onder `estimated_settlements`.
+    Het transactieoverzicht van de broker is leeg.
 
-Een schatting die stil doorgaat produceert cijfers die eruitzien als metingen.
-Dat is precies hoe deze fout twee keer onopgemerkt bleef: eerst omdat er geen
-onderscheid was, daarna omdat de terugval niets zei.
+Dat zou betekenen dat het endpoint of de rechten niet deugen, en dan is het een
+ander probleem.
 
-## Na installatie
+## Wat er ondertussen verruimd is
 
-Geen nieuwe run nodig — die heb je net begonnen. Kijk bij de eerste trades naar
-de sluitreden:
+* Vier veldnamen geprobeerd voor de instapprijs, vier voor de uitstapprijs,
+  vier voor de winst.
+* De prijstolerantie van 0,05 naar 0,6, want de broker kan afronden en een te
+  strenge vergelijking laat de match precies mislukken waar hij nodig is.
 
-* `broker_gesloten_gemeten` — de fix werkt
-* `broker_gesloten_geschat` — hij werkt nog steeds niet, laat het weten
+Misschien werkt het daarmee al. De logregel vertelt het.
+
+## Over je cijfers
+
+Run 94: 21 trades, netto -13,21, t = -2,51.
+
+**Negeer die t-waarde.** Bij 21 trades zegt hij niets, en bovendien zijn alle
+21 op een geschatte uitstapprijs afgerekend. Uit de vergelijking met jouw
+IG-scherm bleek dat die schattingen tien dollar per trade kunnen schelen — in
+beide richtingen.
+
+Deze run is pas bruikbaar als de sluitreden `broker_gesloten_gemeten` wordt.
