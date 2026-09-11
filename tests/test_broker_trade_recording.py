@@ -309,3 +309,36 @@ def test_estimated_trades_are_findable(tmp_path):
     geschat = db.estimated_trades(run)
     assert len(geschat) == 1
     assert geschat[0].close_reason == "broker_gesloten_geschat"
+
+
+def test_the_estimate_count_comes_from_the_database():
+    """Een losse teller begint bij elke herstart op nul en wordt alleen
+    verhoogd bij nieuwe schattingen. Het rapport meldde daardoor nul te
+    corrigeren trades terwijl er nog één stond.
+
+    Een getal dat verkeerd kan staan is erger dan geen getal, want je
+    vertrouwt erop.
+    """
+    body = _method("_correct_estimated_settlements")
+    assert "self._geschatte_afwikkelingen = len(geschat)" in body
+
+
+def test_the_correction_also_derives_the_exchange_rate():
+    """De correctie heeft de winst in accountvaluta al in handen. Die niet
+    gebruiken zou betekenen dat de koers onbekend blijft terwijl hij op tafel
+    ligt - en dan blijft de positiegrootte acht procent naast de bedoeling."""
+    body = _method("_correct_estimated_settlements")
+    assert "profit_account" in body
+    assert "self.conversion.rate = koers" in body
+
+
+def test_the_rate_is_derived_from_the_correction():
+    """De afleiding uit een open positie lukte nooit: posities sluiten te snel
+    om genoeg beweging te tonen.
+
+    Bij een correctie is het bedrag waarmee de broker werkelijk heeft
+    afgerekend wél bekend, en dat is preciezer dan elke schatting.
+    """
+    body = _method("_correct_estimated_settlements")
+    assert "profit_account" in body
+    assert "self.conversion.rate = koers" in body

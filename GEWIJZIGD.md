@@ -1,54 +1,43 @@
-# Van 4.17.1 naar 4.22.0
+# Van 4.17.1 naar 4.22.1
 
-Geverifieerd op een verse kloon van je GitHub: **830 tests groen**.
+Geverifieerd op een verse kloon van je GitHub: **833 tests groen**.
 
-## Wat de logregel verder liet zien
+## De correctie werkt
 
-Het datumbereik werkt: **33 transacties** in plaats van één.
+Uit je rapport:
 
-Maar er staat nog iets in die regel:
+| gesloten | in | uit | netto | reden |
+|---|---|---|---|---|
+| 10:30 | 4351,43 | 4346,07 | -6,27 | **gecorrigeerd** |
+| 10:57 | 4346,61 | 4343,66 | -3,54 | **gecorrigeerd** |
+| 11:10 | 4344,01 | 4344,02 | +0,02 | geschat |
 
-    nieuwste transactie: 2026-09-11T06:07:47
-    opgevraagd om:       10:30:15
+De twee gecorrigeerde hebben uitstapprijzen die vijf en drie dollar van de
+instap liggen. De derde staat op één cent verschil — precies het patroon van
+een schatting, die alles naar nul comprimeert.
 
-**Het transactieoverzicht loopt ruim vier uur achter.** Op het moment dat de
-lus een positie afwikkelt, staat de werkelijke uitstapprijs er nog niet in.
-E�n poging is dus principieel niet genoeg, hoe goed de zoekopdracht ook is.
+## Twee dingen die 4.22.1 repareert
 
-## Daarom: later corrigeren
+**De teller stond verkeerd.** `estimated_settlements` meldde nul terwijl er nog
+één trade te corrigeren was. Die teller begon bij elke herstart opnieuw en werd
+alleen verhoogd bij nieuwe schattingen; nu wordt de stand uit de database
+gelezen.
 
-Elke tien minuten worden trades die als schatting zijn geboekt opnieuw
-opgezocht. Lukt het dan, dan wordt de trade bijgewerkt:
+Een getal dat verkeerd kan staan is erger dan geen getal, want je vertrouwt
+erop.
 
-    Trade FZC2JGB2 gecorrigeerd: netto van -0.05 naar -8.69
-    (uitstapprijs 4358.34 in plaats van een schatting).
+**De wisselkoers bleef leeg.** De afleiding uit een open positie lukte nooit:
+posities sluiten te snel om genoeg beweging te tonen.
 
-De sluitreden wordt `broker_gesloten_gecorrigeerd`, zodat je in het rapport ziet
-welke cijfers uit een correctie komen.
+Bij een correctie is het bedrag waarmee de broker werkelijk heeft afgerekend
+wél bekend. Dat geeft de koers rechtstreeks, en preciezer — uit jouw scherm
+blijkt die rond **0,868** te liggen.
 
-Hoogstens vijf per cyclus, anders loopt de handelslus vast op netwerkverzoeken.
+Zodra hij bekend is wordt de positiegrootte omgerekend en verdwijnt de
+waarschuwing over twee eenheden.
 
-## En bij een mislukte match: zeggen waarom
+## Wat je hierna ziet
 
-Wordt er niets gevonden, dan staat er nu in het logboek welke prijs werd
-gezocht, hoeveel transacties er lagen, van wanneer de nieuwste en oudste waren,
-en de drie dichtstbijzijnde instapprijzen met hun verschil.
-
-Twee eerdere pogingen faalden op een aanname die ik niet kon controleren. Deze
-regel maakt dat onmogelijk.
-
-## Wat je moet controleren
-
-Na installatie en een paar trades:
-
-* `broker_gesloten_gecorrigeerd` in de sluitredenen — de correctie werkt
-* `estimated_settlements` loopt terug naar nul
-* `conversion.rate` krijgt een waarde rond 0,868
-
-Blijft alles op `geschat` staan, dan staat er een logregel met de gezochte
-prijs en de kandidaten. Stuur die op.
-
-## Over de lopende run
-
-Run 95 heeft één trade en die is geschat. Zodra de correctie werkt, wordt hij
-bijgewerkt en kan de run gewoon doorlopen — een nieuwe run is niet nodig.
+* `broker_gesloten_gecorrigeerd` bij vrijwel elke trade
+* `estimated_settlements` dat oploopt en weer terugvalt naar nul
+* `conversion.rate` met een waarde rond 0,868

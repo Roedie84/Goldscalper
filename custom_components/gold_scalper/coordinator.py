@@ -1838,6 +1838,15 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         geschat = await self.hass.async_add_executor_job(
             self.db.estimated_trades, self.run_id
         )
+
+        # De stand uit de database halen, niet uit een losse teller.
+        #
+        # Die teller begon bij elke herstart op nul en werd alleen verhoogd bij
+        # nieuwe schattingen. Gevolg: het rapport meldde nul te corrigeren
+        # trades terwijl er nog één stond - een getal dat verkeerd kan staan is
+        # erger dan geen getal, want je vertrouwt erop.
+        self._geschatte_afwikkelingen = len(geschat)
+
         if not geschat:
             return
 
@@ -1873,9 +1882,24 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             )
 
             await self.hass.async_add_executor_job(self.db.update_trade, trade)
-            self._geschatte_afwikkelingen = max(
-                0, self._geschatte_afwikkelingen - 1
-            )
+            # De wisselkoers uit dezelfde gegevens halen.
+            #
+            # De correctie heeft de winst in accountvaluta al in handen; die
+            # niet gebruiken zou betekenen dat de koers onbekend blijft
+            # terwijl hij op tafel ligt - en dan blijft de positiegrootte acht
+            # procent naast de bedoeling.
+            winst = werkelijk.get("profit_account")
+            if winst and self.conversion.needed and trade.net_pnl:
+                koers = winst / trade.net_pnl
+                if 0.1 < koers < 10.0 and koers != self.conversion.rate:
+                    self.conversion.rate = koers
+                    self.sizing.account_to_instrument = 1.0 / koers
+                    _LOGGER.info(
+                        "Wisselkoers %s/%s uit een gecorrigeerde trade: %.4f",
+                        self.conversion.instrument, self.conversion.account,
+                        koers,
+                    )
+
             _LOGGER.info(
                 "Trade %s gecorrigeerd: netto van %.2f naar %.2f "
                 "(uitstapprijs %.2f in plaats van een schatting).",
