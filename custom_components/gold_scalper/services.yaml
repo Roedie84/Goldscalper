@@ -102,3 +102,9 @@ new_run:
       description: Waarom je opnieuw begint. Wordt bij de run bewaard.
       selector:
         text: null
+recheck_exits:
+  name: Uitstapprijzen opnieuw opzoeken
+  description: 'Zet alle afgerekende trades terug op ''geschat'' zodat hun uitstapprijs
+    opnieuw bij de broker wordt opgehaald. Nodig na een versie die de verkeerde transactie
+    kon koppelen: twee posities met bijna dezelfde instapprijs maar tegengestelde
+    richting waren niet te scheiden.'

@@ -1869,7 +1869,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         for trade in geschat[:5]:      # hoogstens vijf per cyclus
             try:
                 werkelijk = await zoek(
-                    str(trade.broker_ticket), trade.open_price
+                    str(trade.broker_ticket), trade.open_price, trade.side
                 )
             except VenueError:
                 return
@@ -1991,8 +1991,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                     # De instapprijs meegeven: daarop wordt gezocht, want het
                     # ticketnummer komt niet overeen met de verwijzing in het
                     # transactieoverzicht van de broker.
+                    # Richting meegeven: twee transacties met bijna dezelfde
+                    # instapprijs zijn alleen op hun richting te scheiden.
                     werkelijk = await zoek(
-                        str(trade.broker_ticket), trade.open_price
+                        str(trade.broker_ticket), trade.open_price, trade.side
                     )
                 except VenueError as err:
                     _LOGGER.debug(

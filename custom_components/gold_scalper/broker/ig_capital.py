@@ -690,6 +690,7 @@ class IgStyleVenue(ExecutionVenue):
 
     async def closed_deal(
         self, ticket: str, open_price: float | None = None,
+        side: str | None = None,
     ) -> dict | None:
         """Zoek de werkelijke uitstapprijs van een gesloten positie.
 
@@ -764,23 +765,19 @@ class IgStyleVenue(ExecutionVenue):
                 "het verzoek komt vermoedelijk niet aan.", len(transacties),
             )
 
+        # Alle kandidaten wegen, niet de eerste pakken.
+        #
+        # Twee transacties kunnen vrijwel dezelfde instapprijs hebben: op
+        # 15 september stond er een short op 4287.29 naast een long op
+        # 4287.31. Binnen de tolerantie van vijf cent zijn die niet te
+        # onderscheiden, en de eerste pakken koppelde de short aan de
+        # uitstapprijs van de long - een winst van ruim vijftien euro werd zo
+        # een verlies van veertien cent.
+        #
+        # De RICHTING sluit dat uit: de ene grootte is negatief, de andere
+        # positief. Samen met de prijs is dat eenduidig.
+        kandidaten = []
         for tx in transacties:
-            # Op de INSTAPPRIJS zoeken, niet op het ticketnummer.
-            #
-            # Eerst werd het dealId vergeleken met het veld ``reference``, en
-            # dat zijn bij deze broker twee verschillende identificaties - ze
-            # matchen nooit. Gevolg: elke afwikkeling viel terug op de
-            # schatting en de fout die dit moest oplossen bleef bestaan.
-            #
-            # De instapprijs is wél betrouwbaar: die staat in de eigen
-            # administratie én in het overzicht van de broker, met vier
-            # decimalen. Twee trades met exact dezelfde instapprijs binnen
-            # vijftig transacties is onwaarschijnlijk genoeg.
-            # Meerdere veldnamen proberen. De broker documenteert
-            # ``openLevel``, maar de praktijk wijkt af: twee pogingen die op
-            # één naam vertrouwden zijn mislukt. Alle plausibele namen
-            # aflopen kost niets en maakt het robuust tegen een
-            # naamsverandering.
             openings = None
             for naam in ("openLevel", "open_level", "openingLevel", "level"):
                 openings = _als_getal(tx.get(naam))
@@ -792,22 +789,6 @@ class IgStyleVenue(ExecutionVenue):
                 for k in ("reference", "dealId", "deal_id", "dealReference")
             )
 
-            # Strak op de prijs. Uit de vergelijking met het overzicht van de
-            # broker blijkt dat ``openLevel`` exact overeenkomt met de eigen
-            # instapprijs, tot op de cent. Een ruime marge zou hier juist
-            # schaden: bij goud liggen opeenvolgende instappen vaak binnen een
-            # dollar van elkaar, en dan koppel je de verkeerde trade.
-            past_op_prijs = (
-                open_price is not None and openings is not None
-                and abs(openings - open_price) < 0.05
-            )
-            past_op_ticket = (
-                str(ticket) in verwijzing or verwijzing in str(ticket)
-            ) if verwijzing else False
-
-            if not (past_op_prijs or past_op_ticket):
-                continue
-
             niveau = None
             for naam in ("closeLevel", "close_level", "closingLevel", "level"):
                 niveau = _als_getal(tx.get(naam))
@@ -815,11 +796,36 @@ class IgStyleVenue(ExecutionVenue):
                     break
             if niveau is None:
                 continue
+
+            # Richting uit het teken van de grootte. Negatief is een verkoop.
+            omvang = _als_getal(tx.get("size"))
+            richting_broker = None
+            if omvang is not None and omvang != 0:
+                richting_broker = "sell" if omvang < 0 else "buy"
+
+            if side is not None and richting_broker is not None:
+                if richting_broker != side:
+                    continue
+
+            if open_price is not None and openings is not None:
+                afstand = abs(openings - open_price)
+                if afstand < 0.05:
+                    kandidaten.append((afstand, "instapprijs", niveau, tx))
+                continue
+
+            if verwijzing and (
+                str(ticket) in verwijzing or verwijzing in str(ticket)
+            ):
+                kandidaten.append((0.0, "ticket", niveau, tx))
+
+        if kandidaten:
+            # De dichtstbijzijnde. Bij gelijke afstand maakt het niet uit.
+            kandidaten.sort(key=lambda k: k[0])
+            _, hoe, niveau, tx = kandidaten[0]
             return {
                 "exit_price": float(niveau),
-                "matched_on": "instapprijs" if past_op_prijs else "ticket",
-                # Winst in accountvaluta, zoals de broker hem boekt. Hiermee
-                # is ook de wisselkoers af te leiden.
+                "matched_on": hoe,
+                "candidates": len(kandidaten),
                 "profit_account": next(
                     (
                         _als_getal(tx.get(k)) for k in

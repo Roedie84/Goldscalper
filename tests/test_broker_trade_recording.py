@@ -359,3 +359,31 @@ def test_the_estimate_count_is_updated_while_learning():
     schatting staan."""
     body = _method("_relearn")
     assert "estimated_trades" in body
+
+
+def test_exits_can_be_rechecked(tmp_path):
+    """Trades die verkeerd zijn gekoppeld staan als gecorrigeerd in de
+    database terwijl hun uitstapprijs van een andere trade komt. Zonder een
+    manier om ze opnieuw te laten opzoeken, blijft die fout erin zitten.
+    """
+    from gold_scalper.storage.database import Trade, TradeDatabase
+
+    db = TradeDatabase(tmp_path / "r.db")
+    db.connect()
+    run = db.start_run("demo", "v1", "GOLD", {}, 10000.0, None, "fp")
+
+    for reden in ("broker_gesloten_gecorrigeerd", "broker_gesloten_gemeten",
+                  "stop_loss", "take_profit"):
+        db.insert_trade(Trade(
+            run_id=run, mode="demo", symbol="GOLD", side="sell", volume=0.017,
+            open_time="2026-09-15T09:53:00+00:00", open_price=4287.29,
+            open_mid=4287.0, open_spread=0.6,
+            close_time="2026-09-15T10:08:00+00:00", net_pnl=-0.14,
+            close_reason=reden, broker_ticket=f"T-{reden}",
+        ))
+
+    # Alleen de broker-afgewikkelde trades opnieuw; een stop of doel is op het
+    # niveau afgerekend en daar valt niets te herzien.
+    aantal = db.mark_for_recheck(run)
+    assert aantal == 2
+    assert len(db.estimated_trades(run)) == 2

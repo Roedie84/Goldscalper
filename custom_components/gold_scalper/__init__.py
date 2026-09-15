@@ -14,6 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    SERVICE_RECHECK_EXITS,
     SERVICE_NEW_RUN,
     CONF_SHOW_PANEL, DOMAIN, PLATFORMS, REPORT_FILENAME, SERVICE_BACKTEST,
     SERVICE_CLOSE_ALL, SERVICE_GENERATE_REPORT, SERVICE_IMPORT_HISTORY,
@@ -287,6 +288,28 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_NEW_RUN, new_run,
         schema=vol.Schema({vol.Optional("note"): cv.string}),
+    )
+
+    async def recheck_exits(call: ServiceCall) -> None:
+        """Laat alle uitstapprijzen opnieuw bij de broker opzoeken.
+
+        Nodig omdat een eerdere versie de verkeerde transactie kon koppelen:
+        twee posities met bijna dezelfde instapprijs maar tegengestelde
+        richting waren niet te scheiden. Die trades staan als gecorrigeerd in
+        de database terwijl hun uitstapprijs van een andere trade komt.
+        """
+        for coordinator in _coordinators():
+            aantal = await hass.async_add_executor_job(
+                coordinator.db.mark_for_recheck, coordinator.run_id
+            )
+            _LOGGER.warning(
+                "%d trade(s) worden opnieuw opgezocht bij de broker. Dat "
+                "gebeurt in stappen van vijf, elke paar minuten.", aantal,
+            )
+            await coordinator.async_request_refresh()
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_RECHECK_EXITS, recheck_exits
     )
 
     hass.services.async_register(DOMAIN, SERVICE_RESET_DAY, reset_day)

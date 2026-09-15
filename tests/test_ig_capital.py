@@ -761,3 +761,49 @@ def test_a_nearby_entry_does_not_match():
     ]}, 200)
     venue = ig({"/history/transactions": transacties})
     assert asyncio.run(venue.closed_deal("T1", 4340.23)) is None
+
+
+def test_direction_separates_two_similar_entries():
+    """Twee transacties kunnen vrijwel dezelfde instapprijs hebben.
+
+    Op 15 september stond er een short op 4287.29 naast een long op 4287.31.
+    Binnen de tolerantie van vijf cent zijn die niet te onderscheiden, en de
+    eerste pakken koppelde de short aan de uitstapprijs van de long: een winst
+    van ruim vijftien euro werd een verlies van veertien cent.
+    """
+    transacties = ({"transactions": [
+        {"openLevel": "4287.31", "closeLevel": "4287.37", "size": "+1.74",
+         "profitAndLoss": "E0.09"},
+        {"openLevel": "4287.29", "closeLevel": "4277.08", "size": "-1.74",
+         "profitAndLoss": "E15.27"},
+    ]}, 200)
+
+    venue = ig({"/history/transactions": transacties})
+    short = asyncio.run(venue.closed_deal("T1", 4287.29, "sell"))
+    assert short["exit_price"] == pytest.approx(4277.08)
+    assert short["profit_account"] == pytest.approx(15.27)
+
+    venue = ig({"/history/transactions": transacties})
+    long = asyncio.run(venue.closed_deal("T2", 4287.31, "buy"))
+    assert long["exit_price"] == pytest.approx(4287.37)
+
+
+def test_the_closest_candidate_wins():
+    """Bij meerdere kandidaten binnen de tolerantie hoort de dichtstbijzijnde
+    gekozen te worden, niet de eerste in de lijst."""
+    transacties = ({"transactions": [
+        {"openLevel": "4287.33", "closeLevel": "4200.00", "size": "-1.0"},
+        {"openLevel": "4287.30", "closeLevel": "4277.08", "size": "-1.0"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    deal = asyncio.run(venue.closed_deal("T1", 4287.30, "sell"))
+    assert deal["exit_price"] == pytest.approx(4277.08)
+    assert deal["candidates"] == 2
+
+
+def test_a_wrong_direction_is_never_matched():
+    transacties = ({"transactions": [
+        {"openLevel": "4287.29", "closeLevel": "4277.08", "size": "-1.74"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    assert asyncio.run(venue.closed_deal("T1", 4287.29, "buy")) is None

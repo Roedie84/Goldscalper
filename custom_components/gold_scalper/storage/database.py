@@ -405,6 +405,24 @@ class TradeDatabase:
         )
         self.conn.commit()
 
+    def mark_for_recheck(self, run_id: int) -> int:
+        """Zet gecorrigeerde trades terug op 'geschat' zodat ze opnieuw worden
+        opgezocht.
+
+        Nodig omdat een eerdere versie de verkeerde transactie kon koppelen:
+        twee posities met bijna dezelfde instapprijs maar tegengestelde
+        richting waren niet te scheiden. Die trades staan als gecorrigeerd in
+        de database terwijl hun uitstapprijs van een andere trade komt.
+        """
+        cur = self.conn.execute(
+            "UPDATE trades SET close_reason='broker_gesloten_geschat' "
+            "WHERE run_id=? AND close_reason IN "
+            "('broker_gesloten_gecorrigeerd','broker_gesloten_gemeten')",
+            (run_id,),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
     def estimated_trades(self, run_id: int) -> list[Trade]:
         """Trades die op een geschatte uitstapprijs zijn afgerekend.
 
