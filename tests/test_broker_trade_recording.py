@@ -387,3 +387,42 @@ def test_exits_can_be_rechecked(tmp_path):
     aantal = db.mark_for_recheck(run)
     assert aantal == 2
     assert len(db.estimated_trades(run)) == 2
+
+
+def test_an_unfindable_exit_keeps_its_price():
+    """Eeuwig blijven proberen kost elke ronde een netwerkverzoek en houdt de
+    trade als schatting in het rapport, ook wanneer de prijs niet meer te
+    achterhalen is.
+
+    Een eigen label maakt het verschil zichtbaar tussen "nog niet geprobeerd"
+    en "niet te vinden".
+    """
+    body = _method("_correct_estimated_settlements")
+    assert "broker_gesloten_onvindbaar" in body
+    assert "_herzoek_pogingen" in body
+    assert "pogingen >= 3" in body
+
+
+def test_the_close_time_is_passed_to_the_lookup():
+    """Zonder het sluitmoment ligt het zoekvenster rond nu, en dan is een trade
+    van gisteren onvindbaar."""
+    body = _method("_correct_estimated_settlements")
+    assert "_as_datetime(trade.close_time" in body
+
+
+def test_unfindable_trades_can_be_rechecked_again(tmp_path):
+    """Anders blijven ze onvindbaar staan, ook nadat een fout in de
+    zoekopdracht is gerepareerd."""
+    from gold_scalper.storage.database import Trade, TradeDatabase
+
+    db = TradeDatabase(tmp_path / "u.db")
+    db.connect()
+    run = db.start_run("demo", "v1", "GOLD", {}, 10000.0, None, "fp")
+    db.insert_trade(Trade(
+        run_id=run, mode="demo", symbol="GOLD", side="sell", volume=0.017,
+        open_time="2026-09-15T09:53:00+00:00", open_price=4287.29,
+        open_mid=4287.0, open_spread=0.6,
+        close_time="2026-09-15T10:08:00+00:00", net_pnl=-0.14,
+        close_reason="broker_gesloten_onvindbaar", broker_ticket="T1",
+    ))
+    assert db.mark_for_recheck(run) == 1

@@ -414,10 +414,17 @@ class TradeDatabase:
         richting waren niet te scheiden. Die trades staan als gecorrigeerd in
         de database terwijl hun uitstapprijs van een andere trade komt.
         """
+        # Alleen de trades die de broker zelf sloot. Een stop of doel is op
+        # het niveau afgerekend en daar valt niets te herzien.
+        #
+        # Bewust geen tijdsgrens: het zoekvenster ligt nu rond de sluittijd
+        # van elke trade, dus ook oude blijven vindbaar. Een grens hier zou
+        # juist de trades uitsluiten waarvoor dit bedoeld is.
         cur = self.conn.execute(
             "UPDATE trades SET close_reason='broker_gesloten_geschat' "
             "WHERE run_id=? AND close_reason IN "
-            "('broker_gesloten_gecorrigeerd','broker_gesloten_gemeten')",
+            "('broker_gesloten_gecorrigeerd','broker_gesloten_gemeten',"
+            " 'broker_gesloten_onvindbaar')",
             (run_id,),
         )
         self.conn.commit()

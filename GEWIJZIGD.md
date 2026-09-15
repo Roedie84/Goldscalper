@@ -1,60 +1,52 @@
-# Van 4.17.1 naar 4.23.0
+# Van 4.17.1 naar 4.23.1
 
-Geverifieerd op een verse kloon van je GitHub: **839 tests groen**.
+Geverifieerd op een verse kloon van je GitHub: **844 tests groen**.
 
-## De fout die je vond
+## Wat de diagnostiek blootlegde
 
-Twee transacties met bijna dezelfde instapprijs, maar tegengestelde richting:
+    Geen transactie gevonden voor instapprijs 4279.75.
+    23 transacties bekeken, nieuwste 15-09T10:51, oudste 14-09T12:35.
 
-| tijd | grootte | opening | gesloten | winst |
-|---|---|---|---|---|
-| 09:53 | **-1.74** (sell) | 4287,29 | **4277,08** | EUR +15,27 |
-| 09:11 | **+1.74** (buy) | 4287,31 | 4287,37 | EUR +0,09 |
+Twee dingen:
 
-Het verschil in instapprijs is **twee cent** — binnen de tolerantie van vijf.
-De eerste kandidaat pakken koppelde de short aan de uitstapprijs van de long.
+**De twee onvindbare trades sloten ná 10:51.** Die staan nog niet in het
+overzicht van de broker — dat loopt uren achter. Ze worden later gecorrigeerd;
+dat is goed gedrag.
 
-Gevolg in het rapport:
+**Maar ernstiger: mijn herzoekopdracht was schadelijk.** Hij zette
+vierendertig trades terug op "geschat", terwijl het zoekvenster maar tot
+14-09 12:35 reikte. Alles wat daarvoor sloot was daarmee nooit meer te vinden —
+en die trades hádden een juiste uitstapprijs.
 
-    09:45  sell  in 4287.29  uit 4287.37  netto -0.14   <- fout
-    08:06  buy   in 4287.31  uit 4287.37  netto +0.10   <- klopt
-
-Een winst van ruim vijftien euro werd een verlies van veertien cent.
+Correcte cijfers werden zo als schatting in het rapport gezet.
 
 ## De oplossing
 
-Er wordt nu ook op **richting** vergeleken: het teken van de grootte. Een short
-kan niet meer aan een long worden gekoppeld.
+**Het zoekvenster ligt nu rond de sluittijd van elke trade**, niet rond het
+huidige moment. Zes uur ervoor tot twaalf uur erna. Daarmee blijft elke trade
+vindbaar, hoe oud ook.
 
-En bij meerdere kandidaten binnen de tolerantie wordt de **dichtstbijzijnde**
-gekozen in plaats van de eerste in de lijst.
-
-## Nieuwe dienst: opnieuw opzoeken
-
-    action: gold_scalper.recheck_exits
-
-De trades die al verkeerd gekoppeld zijn, staan als `gecorrigeerd` in de
-database terwijl hun uitstapprijs van een andere trade komt. Deze dienst zet ze
-terug op `geschat` zodat ze opnieuw worden opgehaald, nu met de richting erbij.
-
-Gebeurt in stappen van vijf, elke paar minuten. Stops en doelen worden
-overgeslagen: die zijn op hun niveau afgerekend en daar valt niets te herzien.
-
-## Wat er wél goed ging
-
-Alle andere gecorrigeerde trades kloppen tot op de cent met het overzicht van
-de broker. Bijvoorbeeld:
-
-| instap | mijn netto | omgerekend | broker |
-|---|---|---|---|
-| 4272,11 | US$ -11,64 | EUR -10,17 | **EUR -10,17** |
-| 4265,36 | US$ -11,43 | EUR -9,98 | **EUR -9,99** |
-| 4276,25 | US$ +17,14 | EUR +14,74 | **EUR +14,74** |
+**En na drie mislukte pogingen wordt opgegeven**, met een eigen label
+`broker_gesloten_onvindbaar`. Eeuwig blijven proberen kost elke ronde een
+netwerkverzoek en houdt de trade als schatting in het rapport, ook wanneer de
+prijs niet meer te achterhalen is. De geboekte prijs blijft staan.
 
 ## Na installatie
 
-1. Herstart Home Assistant.
-2. `gold_scalper.recheck_exits` — de bestaande trades opnieuw laten opzoeken.
-3. Wacht een kwartier en controleer of de vijftien-euro-trade nu klopt.
+    action: gold_scalper.recheck_exits
 
-Geen nieuwe run: de trades worden gecorrigeerd, niet weggegooid.
+Draai die opnieuw. Nu worden ook de oudere trades gevonden, en de
+vierendertig die ik onbedoeld naar "geschat" degradeerde krijgen hun juiste
+label terug.
+
+Reken op een half uur: vijf per keer, elke paar minuten.
+
+## Wat dit betekent
+
+Dit is de vierde ronde aan deze reparatie. Elke ronde loste een echte fout op
+en legde de volgende bloot — en elke keer was de diagnostiek die ik erbij
+bouwde de reden dat we hem vonden.
+
+Het patroon dat overblijft: ik kan niet bij jouw brokeraccount, dus elke
+aanname over wat de broker teruggeeft moet blijken uit een logregel. Dat is
+langzamer dan gokken, maar het is de enige weg die eindigt.

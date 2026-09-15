@@ -314,6 +314,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self._geschatte_afwikkelingen = 0
         #: Cyclusteller voor het bijwerken van geschatte afwikkelingen.
         self._correctie_teller = 0
+        #: Aantal mislukte pogingen per ticket, om niet eeuwig te blijven zoeken.
+        self._herzoek_pogingen: dict = {}
         self.backtest: dict = {}
         self.audit: dict = {}
         self._use_schedule: bool = options.get(CONF_USE_SCHEDULE, True)
@@ -1868,13 +1870,36 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
 
         for trade in geschat[:5]:      # hoogstens vijf per cyclus
             try:
+                # Het sluitmoment meegeven zodat het zoekvenster erom heen
+                # ligt. Zonder dat ligt het venster rond nu, en is een trade
+                # van gisteren onvindbaar - precies waardoor een
+                # herzoekopdracht correcte cijfers als schatting liet staan.
                 werkelijk = await zoek(
-                    str(trade.broker_ticket), trade.open_price, trade.side
+                    str(trade.broker_ticket), trade.open_price, trade.side,
+                    _as_datetime(trade.close_time, None),
                 )
             except VenueError:
                 return
 
             if not werkelijk or not werkelijk.get("exit_price"):
+                # Na drie pogingen opgeven en dat vastleggen.
+                #
+                # Eeuwig blijven proberen kost elke ronde een netwerkverzoek en
+                # houdt de trade als "schatting" in het rapport, ook wanneer de
+                # prijs gewoon niet meer te achterhalen is. Een eigen label
+                # maakt het verschil zichtbaar tussen "nog niet geprobeerd" en
+                # "niet te vinden".
+                pogingen = self._herzoek_pogingen.get(trade.broker_ticket, 0) + 1
+                self._herzoek_pogingen[trade.broker_ticket] = pogingen
+                if pogingen >= 3:
+                    trade.close_reason = "broker_gesloten_onvindbaar"
+                    await self.hass.async_add_executor_job(
+                        self.db.update_trade, trade
+                    )
+                    _LOGGER.info(
+                        "Uitstapprijs van %s blijft onvindbaar bij de broker; "
+                        "de geboekte prijs blijft staan.", trade.broker_ticket,
+                    )
                 continue
 
             exit_price = float(werkelijk["exit_price"])
@@ -1993,6 +2018,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                     # transactieoverzicht van de broker.
                     # Richting meegeven: twee transacties met bijna dezelfde
                     # instapprijs zijn alleen op hun richting te scheiden.
+                    # Hier is het sluitmoment nu, dus het standaardvenster
+                    # rond het huidige tijdstip is juist.
                     werkelijk = await zoek(
                         str(trade.broker_ticket), trade.open_price, trade.side
                     )

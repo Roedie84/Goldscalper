@@ -807,3 +807,39 @@ def test_a_wrong_direction_is_never_matched():
     ]}, 200)
     venue = ig({"/history/transactions": transacties})
     assert asyncio.run(venue.closed_deal("T1", 4287.29, "buy")) is None
+
+
+def test_the_window_follows_the_trade():
+    """Een vast venster van vierentwintig uur maakt oudere trades onvindbaar.
+
+    Dat bleek pijnlijk: een herzoekopdracht zette vierendertig trades terug op
+    'geschat', waarna alles buiten het venster nooit meer gevonden kon worden -
+    en correcte cijfers bleven als schatting in het rapport staan.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    toen = datetime.now(timezone.utc) - timedelta(days=9)
+    transacties = ({"transactions": [
+        {"openLevel": "4287.29", "closeLevel": "4277.08", "size": "-1.74"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    deal = asyncio.run(venue.closed_deal("T1", 4287.29, "sell", toen))
+    assert deal is not None, "een oude trade moet vindbaar blijven"
+
+    call = next(c for c in venue._session.calls if "transactions" in c["url"])
+    van = call["params"]["from"]
+    assert van.startswith(
+        (toen - timedelta(hours=6)).strftime("%Y-%m-%d")
+    ), f"het venster volgt de trade niet: {van}"
+
+
+def test_the_window_never_ends_in_the_future():
+    """Een 'tot' in de toekomst kan de broker weigeren."""
+    from datetime import datetime, timezone
+
+    venue = ig({"/history/transactions": ({"transactions": []}, 200)})
+    asyncio.run(venue.closed_deal("T1", 4287.29, "sell",
+                                  datetime.now(timezone.utc)))
+    call = next(c for c in venue._session.calls if "transactions" in c["url"])
+    tot = datetime.strptime(call["params"]["to"], "%Y-%m-%dT%H:%M:%S")
+    assert tot <= datetime.now(timezone.utc).replace(tzinfo=None)

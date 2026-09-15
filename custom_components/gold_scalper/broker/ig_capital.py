@@ -690,7 +690,7 @@ class IgStyleVenue(ExecutionVenue):
 
     async def closed_deal(
         self, ticket: str, open_price: float | None = None,
-        side: str | None = None,
+        side: str | None = None, around: datetime | None = None,
     ) -> dict | None:
         """Zoek de werkelijke uitstapprijs van een gesloten positie.
 
@@ -718,13 +718,31 @@ class IgStyleVenue(ExecutionVenue):
         # Vierentwintig uur terugkijken is ruim: de lus wikkelt binnen enkele
         # cycli af, en meer transacties ophalen kost hier niets omdat dit
         # endpoint niet tegen het datapuntenquotum telt.
+        # Het venster rond de sluittijd van de trade leggen.
+        #
+        # Een vast venster van vierentwintig uur maakt oudere trades
+        # onvindbaar. Dat bleek pijnlijk: een herzoekopdracht zette
+        # vierendertig trades terug op "geschat", waarna alles wat buiten het
+        # venster viel nooit meer gevonden kon worden - en correcte cijfers
+        # bleven als schatting in het rapport staan.
+        #
+        # Met een venster rond het sluitmoment blijft elke trade vindbaar,
+        # hoe oud ook. De marge naar voren dekt de vertraging waarmee de
+        # broker zijn overzicht vult; die liep in de praktijk op tot enkele
+        # uren.
         nu = datetime.now(timezone.utc)
+        midden = around or nu
+        van = midden - timedelta(hours=6)
+        tot = min(midden + timedelta(hours=12), nu)
+        if tot <= van:
+            tot = nu
+
         payload = await self._request(
             "GET", "/history/transactions", version="2",
             params={
                 "type": "ALL_DEAL",
-                "from": (nu - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S"),
-                "to": nu.strftime("%Y-%m-%dT%H:%M:%S"),
+                "from": van.strftime("%Y-%m-%dT%H:%M:%S"),
+                "to": tot.strftime("%Y-%m-%dT%H:%M:%S"),
                 "pageSize": 200,
             },
         )
