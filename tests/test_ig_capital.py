@@ -843,3 +843,60 @@ def test_the_window_never_ends_in_the_future():
     call = next(c for c in venue._session.calls if "transactions" in c["url"])
     tot = datetime.strptime(call["params"]["to"], "%Y-%m-%dT%H:%M:%S")
     assert tot <= datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def test_size_separates_entries_one_cent_apart():
+    """Op 16 september stonden er twee longs met instapprijzen 4336.13 en
+    4336.14 - één cent verschil, dus met prijs en richting niet te
+    onderscheiden. Beide kregen dezelfde uitstapprijs, waarvan er één verkeerd
+    was.
+
+    Hun omvang was 1.69 en 1.75 ounce; dat verschil scheidt ze wel.
+    """
+    transacties = ({"transactions": [
+        {"openLevel": "4336.13", "closeLevel": "4331.23", "size": "+1.69",
+         "profitAndLoss": "-E7.23"},
+        {"openLevel": "4336.14", "closeLevel": "4329.28", "size": "+1.75",
+         "profitAndLoss": "-E10.48"},
+    ]}, 200)
+
+    venue = ig({"/history/transactions": transacties})
+    groot = asyncio.run(venue.closed_deal("T1", 4336.14, "buy", None, 1.75))
+    assert groot["exit_price"] == pytest.approx(4329.28)
+    assert groot["profit_account"] == pytest.approx(-10.48)
+
+    venue = ig({"/history/transactions": transacties})
+    klein = asyncio.run(venue.closed_deal("T2", 4336.13, "buy", None, 1.69))
+    assert klein["exit_price"] == pytest.approx(4331.23)
+    assert klein["profit_account"] == pytest.approx(-7.23)
+
+
+def test_a_wildly_different_size_does_not_match():
+    """Anders koppel je een trade van twee ounce aan een van twintig."""
+    transacties = ({"transactions": [
+        {"openLevel": "4336.14", "closeLevel": "4329.28", "size": "+20.0"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    assert asyncio.run(
+        venue.closed_deal("T1", 4336.14, "buy", None, 1.75)
+    ) is None
+
+
+def test_matching_still_works_without_a_size():
+    """De omvang is een scheidsrechter, geen eis."""
+    transacties = ({"transactions": [
+        {"openLevel": "4336.14", "closeLevel": "4329.28", "size": "+1.75"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    assert asyncio.run(venue.closed_deal("T1", 4336.14, "buy")) is not None
+
+
+def test_the_close_time_prefers_the_timestamp():
+    """Het veld `date` bevat alleen de dag en is als sluitmoment onbruikbaar."""
+    transacties = ({"transactions": [{
+        "openLevel": "4345.09", "closeLevel": "4339.82", "size": "+1.80",
+        "date": "2026-09-16", "dateUtc": "2026-09-16T14:20:33",
+    }]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    deal = asyncio.run(venue.closed_deal("T1", 4345.09, "buy", None, 1.80))
+    assert deal["closed_at"] == "2026-09-16T14:20:33"

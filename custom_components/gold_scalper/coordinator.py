@@ -1875,6 +1875,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 werkelijk = await zoek(
                     str(trade.broker_ticket), trade.open_price, trade.side,
                     _as_datetime(trade.close_time, None),
+                    trade.volume * CONTRACT_SIZE,
                 )
             except VenueError:
                 return
@@ -1923,15 +1924,73 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             trade.close_price = exit_price
             trade.close_mid = exit_price + (half if long else -half)
             trade.close_reason = "broker_gesloten_gecorrigeerd"
-            trade.gross_pnl = round(
-                (trade.close_mid - trade.open_mid) * richting * units, 4
-            )
-            trade.net_pnl = round(
-                (exit_price - trade.open_price) * richting * units, 4
-            )
-            trade.total_cost = round(
-                (trade.gross_pnl or 0) - (trade.net_pnl or 0), 4
-            )
+
+            # Het resultaat van de broker overnemen, niet zelf narekenen.
+            #
+            # De broker meldt het bedrag waarmee hij werkelijk heeft
+            # afgerekend. Zelf narekenen uit prijzen leverde steeds weer
+            # afwijkingen op - bij één trade 7,46 tegen de 10,48 die de broker
+            # boekte - en elke keer was de oorzaak een detail dat ik niet kon
+            # controleren: afronding, een halve spread, een gedeeltelijke
+            # sluiting.
+            #
+            # Het bedrag van de broker is per definitie juist: dat is wat er op
+            # de rekening gebeurde. Alles wat ik eruit afleid kan dat alleen
+            # benaderen.
+            # Het sluitmoment van de broker overnemen.
+            #
+            # Het eigen tijdstempel is het moment waarop de beheerlus de
+            # positie afwikkelde, en dat liep tot negentig minuten uit de pas
+            # met wat de broker meldt. Naast het overzicht van de broker was
+            # het rapport daardoor niet te lezen: je vergelijkt rijen op
+            # tijdstip en koppelt dan de verkeerde trades aan elkaar.
+            #
+            # De broker bepaalt wanneer een positie sloot, dus zijn tijdstip is
+            # het juiste.
+            gemeld = werkelijk.get("closed_at")
+            if gemeld:
+                try:
+                    moment = datetime.fromisoformat(str(gemeld))
+                except (TypeError, ValueError):
+                    moment = None
+                # Alleen overnemen als er een tijd in zit; een datum zonder
+                # tijd zou het sluitmoment op middernacht zetten.
+                if moment is not None and (
+                    moment.hour or moment.minute or moment.second
+                ):
+                    if moment.tzinfo is None:
+                        moment = moment.replace(tzinfo=timezone.utc)
+                    trade.close_time = moment.isoformat()
+                    # De looptijd volgt eruit en moet meeschuiven.
+                    opende = _as_datetime(trade.open_time, moment)
+                    trade.duration_seconds = max(
+                        0, int((moment - opende).total_seconds())
+                    )
+
+            winst_account = werkelijk.get("profit_account")
+            koers = self.conversion.rate
+
+            if winst_account is not None and koers and koers > 0:
+                # Van accountvaluta naar instrumentvaluta, want de hele
+                # administratie rekent in die laatste.
+                trade.net_pnl = round(winst_account / koers, 4)
+                trade.total_cost = round(
+                    abs(trade.close_spread or 0.6) * units, 4
+                )
+                trade.gross_pnl = round(
+                    (trade.net_pnl or 0) + (trade.total_cost or 0), 4
+                )
+            else:
+                # Zonder koers of zonder bedrag terugvallen op de berekening.
+                trade.gross_pnl = round(
+                    (trade.close_mid - trade.open_mid) * richting * units, 4
+                )
+                trade.net_pnl = round(
+                    (exit_price - trade.open_price) * richting * units, 4
+                )
+                trade.total_cost = round(
+                    (trade.gross_pnl or 0) - (trade.net_pnl or 0), 4
+                )
 
             await self.hass.async_add_executor_job(self.db.update_trade, trade)
             # De wisselkoers uit dezelfde gegevens halen.
@@ -1950,6 +2009,25 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                         "Wisselkoers %s/%s uit een gecorrigeerde trade: %.4f",
                         self.conversion.instrument, self.conversion.account,
                         koers,
+                    )
+
+            # Narekenen en melden bij afwijking.
+            #
+            # Als de prijs die de broker meldt en het bedrag dat hij boekt niet
+            # met elkaar rijmen, is er iets aan de hand dat ik niet ken - een
+            # gedeeltelijke sluiting, een aanpassing, een fout van mijn kant.
+            # Die afwijking hoort zichtbaar te zijn en niet weggerekend.
+            if winst_account is not None and koers:
+                verwacht = (exit_price - trade.open_price) * richting * units
+                afwijking = abs(verwacht - (trade.net_pnl or 0))
+                if afwijking > max(1.0, abs(verwacht) * 0.25):
+                    _LOGGER.warning(
+                        "Trade %s: het bedrag van de broker (%.2f) en de "
+                        "prijsbeweging (%.2f) verschillen %.2f. Het bedrag "
+                        "van de broker is aangehouden; het verschil wijst op "
+                        "een gedeeltelijke sluiting of een aanpassing.",
+                        trade.broker_ticket, trade.net_pnl, verwacht,
+                        afwijking,
                     )
 
             _LOGGER.info(
@@ -2032,7 +2110,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                     # Hier is het sluitmoment nu, dus het standaardvenster
                     # rond het huidige tijdstip is juist.
                     werkelijk = await zoek(
-                        str(trade.broker_ticket), trade.open_price, trade.side
+                        str(trade.broker_ticket), trade.open_price, trade.side,
+                        None, trade.volume * CONTRACT_SIZE,
                     )
                 except VenueError as err:
                     _LOGGER.debug(

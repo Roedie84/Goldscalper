@@ -691,6 +691,7 @@ class IgStyleVenue(ExecutionVenue):
     async def closed_deal(
         self, ticket: str, open_price: float | None = None,
         side: str | None = None, around: datetime | None = None,
+        units: float | None = None,
     ) -> dict | None:
         """Zoek de werkelijke uitstapprijs van een gesloten positie.
 
@@ -827,8 +828,31 @@ class IgStyleVenue(ExecutionVenue):
 
             if open_price is not None and openings is not None:
                 afstand = abs(openings - open_price)
-                if afstand < 0.05:
-                    kandidaten.append((afstand, "instapprijs", niveau, tx))
+                if afstand >= 0.05:
+                    continue
+
+                # Omvang meewegen om trades te scheiden die op één cent van
+                # elkaar liggen.
+                #
+                # Op 16 september stonden er twee longs met instapprijzen
+                # 4336.13 en 4336.14 - één cent verschil, dus met prijs en
+                # richting niet te onderscheiden. Beide kregen dezelfde
+                # uitstapprijs, waarvan er één verkeerd was.
+                #
+                # Hun omvang was 1.69 en 1.75 ounce. Dat verschil van zes
+                # honderdsten is ruim meetbaar en scheidt ze wel.
+                omvang_afstand = 0.0
+                if units is not None and omvang is not None:
+                    omvang_afstand = abs(abs(omvang) - abs(units))
+                    if omvang_afstand > 0.25:
+                        continue
+
+                # Prijs en omvang samen wegen. De prijs zwaarder, want die is
+                # nauwkeuriger; de omvang als scheidsrechter bij een gelijke
+                # prijs.
+                kandidaten.append(
+                    (afstand + omvang_afstand * 0.1, "instapprijs", niveau, tx)
+                )
                 continue
 
             if verwijzing and (
@@ -854,7 +878,9 @@ class IgStyleVenue(ExecutionVenue):
                 ),
                 "currency": tx.get("currency"),
                 "size": _als_getal(tx.get("size")),
-                "closed_at": tx.get("date") or tx.get("dateUtc"),
+                # dateUtc eerst: die bevat het tijdstip. Het veld ``date``
+                # heeft alleen de dag, en dat is als sluitmoment onbruikbaar.
+                "closed_at": tx.get("dateUtc") or tx.get("date"),
             }
 
         # Niets gevonden: laat zien wat er gezocht werd en wat er lag.

@@ -447,3 +447,62 @@ def test_unfindable_trades_can_be_rechecked_again(tmp_path):
         close_reason="broker_gesloten_onvindbaar", broker_ticket="T1",
     ))
     assert db.mark_for_recheck(run) == 1
+
+
+def test_the_brokers_own_amount_is_used():
+    """Zelf narekenen uit prijzen leverde steeds weer afwijkingen op: bij één
+    trade 7,46 tegen de 10,48 die de broker boekte.
+
+    Elke keer was de oorzaak een detail dat niet te controleren viel -
+    afronding, een halve spread, een gedeeltelijke sluiting. Het bedrag van de
+    broker is per definitie juist: dat is wat er op de rekening gebeurde.
+    """
+    body = _method("_correct_estimated_settlements")
+    assert "winst_account / koers" in body, (
+        "het resultaat wordt nog zelf berekend in plaats van overgenomen"
+    )
+
+
+def test_a_mismatch_between_price_and_amount_is_reported():
+    """Rijmen de prijs en het bedrag van de broker niet, dan is er iets aan de
+    hand dat de code niet kent. Die afwijking hoort zichtbaar te zijn en niet
+    weggerekend."""
+    body = _method("_correct_estimated_settlements")
+    assert "verschillen" in body
+    assert "gedeeltelijke sluiting" in body
+
+
+def test_there_is_a_fallback_without_a_rate():
+    """Zonder wisselkoers is het bedrag van de broker niet om te rekenen; dan
+    moet de berekening uit prijzen overblijven."""
+    body = _method("_correct_estimated_settlements")
+    assert "else:" in body
+    assert "(exit_price - trade.open_price)" in body
+
+
+def test_the_brokers_close_time_is_adopted():
+    """Het eigen tijdstempel is het moment waarop de beheerlus de positie
+    afwikkelde, en dat liep tot negentig minuten uit de pas met wat de broker
+    meldt.
+
+    Naast het overzicht van de broker was het rapport daardoor niet te lezen:
+    je vergelijkt rijen op tijdstip en koppelt dan de verkeerde trades aan
+    elkaar. De broker bepaalt wanneer een positie sloot, dus zijn tijdstip is
+    het juiste.
+    """
+    body = _method("_correct_estimated_settlements")
+    assert 'werkelijk.get("closed_at")' in body
+    assert "trade.close_time = moment.isoformat()" in body
+
+
+def test_a_date_without_a_time_is_ignored():
+    """Het veld `date` bevat alleen de dag; dat overnemen zou het sluitmoment
+    op middernacht zetten."""
+    body = _method("_correct_estimated_settlements")
+    assert "moment.hour or moment.minute or moment.second" in body
+
+
+def test_the_duration_follows_the_close_time():
+    """Anders staat er een looptijd die niet bij de tijdstempels past."""
+    body = _method("_correct_estimated_settlements")
+    assert "trade.duration_seconds" in body
