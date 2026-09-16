@@ -314,8 +314,6 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self._geschatte_afwikkelingen = 0
         #: Cyclusteller voor het bijwerken van geschatte afwikkelingen.
         self._correctie_teller = 0
-        #: Aantal mislukte pogingen per ticket, om niet eeuwig te blijven zoeken.
-        self._herzoek_pogingen: dict = {}
         self.backtest: dict = {}
         self.audit: dict = {}
         self._use_schedule: bool = options.get(CONF_USE_SCHEDULE, True)
@@ -1292,7 +1290,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             self._correctie_teller += 1
             if self._correctie_teller == 1 or self._correctie_teller >= 10:
                 self._correctie_teller = 2
-                await self._correct_estimated_settlements()
+                await self._correct_estimated_settlements(now)
 
         # -- open posities beheren, vóór alles anders ------------------------ #
         # Bij een gesloten markt niet ingrijpen: een stop verplaatsen of een
@@ -1837,7 +1835,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         except (ModeLockedError, VenueError) as err:
             _LOGGER.error("Openen mislukt: %s", err)
 
-    async def _correct_estimated_settlements(self) -> None:
+    async def _correct_estimated_settlements(self, now: datetime) -> None:
         """Werk eerder geschatte afwikkelingen bij zodra de prijs beschikbaar is.
 
         Het transactieoverzicht van de broker loopt achter - in de praktijk
@@ -1882,23 +1880,36 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                 return
 
             if not werkelijk or not werkelijk.get("exit_price"):
-                # Na drie pogingen opgeven en dat vastleggen.
+                # Opgeven op LEEFTIJD, niet op aantal pogingen.
                 #
-                # Eeuwig blijven proberen kost elke ronde een netwerkverzoek en
-                # houdt de trade als "schatting" in het rapport, ook wanneer de
-                # prijs gewoon niet meer te achterhalen is. Een eigen label
-                # maakt het verschil zichtbaar tussen "nog niet geprobeerd" en
-                # "niet te vinden".
-                pogingen = self._herzoek_pogingen.get(trade.broker_ticket, 0) + 1
-                self._herzoek_pogingen[trade.broker_ticket] = pogingen
-                if pogingen >= 3:
+                # De vorige regel gaf op na drie pogingen, oftewel ruim tien
+                # minuten. Maar het transactieoverzicht van de broker loopt
+                # uren achter - gemeten: nieuwste transactie 10:51 bij een
+                # opvraging om 14:22. Elke nieuwe trade werd dus drie keer
+                # tevergeefs gezocht en daarna definitief opgegeven, uren
+                # voordat de prijs beschikbaar kwam.
+                #
+                # Gevolg: zesentwintig van zestig trades hielden hun geschatte
+                # prijs, en die comprimeert naar nul. De gemiddelde winst zakte
+                # daardoor van 14,51 naar 10,61 - een meetfout die eruitzag als
+                # een verslechterende strategie.
+                #
+                # Twee dagen is ruim: langer dan de vertraging die ooit gemeten
+                # is, en kort genoeg om een trade niet eeuwig op te zoeken.
+                gesloten = _as_datetime(trade.close_time, None)
+                leeftijd = (
+                    (now - gesloten).total_seconds() / 86400
+                    if gesloten else 0.0
+                )
+                if leeftijd > 2.0:
                     trade.close_reason = "broker_gesloten_onvindbaar"
                     await self.hass.async_add_executor_job(
                         self.db.update_trade, trade
                     )
                     _LOGGER.info(
-                        "Uitstapprijs van %s blijft onvindbaar bij de broker; "
-                        "de geboekte prijs blijft staan.", trade.broker_ticket,
+                        "Uitstapprijs van %s is na %.1f dagen nog niet bij de "
+                        "broker te vinden; de geboekte prijs blijft staan.",
+                        trade.broker_ticket, leeftijd,
                     )
                 continue
 

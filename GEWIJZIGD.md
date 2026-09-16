@@ -1,52 +1,43 @@
-# Van 4.17.1 naar 4.23.1
+# Van 4.17.1 naar 4.23.2
 
-Geverifieerd op een verse kloon van je GitHub: **844 tests groen**.
+Geverifieerd op een verse kloon van je GitHub: **845 tests groen**.
 
-## Wat de diagnostiek blootlegde
+## De fout in 4.23.1
 
-    Geen transactie gevonden voor instapprijs 4279.75.
-    23 transacties bekeken, nieuwste 15-09T10:51, oudste 14-09T12:35.
+`onvindbaar` sprong van 3 naar 26 — vrijwel alle nieuwe trades.
 
-Twee dingen:
+Mijn regel gaf op na drie pogingen, oftewel ruim tien minuten. Maar het
+transactieoverzicht van de broker loopt uren achter; dat heb ik zelf gemeten:
+nieuwste transactie 10:51 bij een opvraging om 14:22.
 
-**De twee onvindbare trades sloten ná 10:51.** Die staan nog niet in het
-overzicht van de broker — dat loopt uren achter. Ze worden later gecorrigeerd;
-dat is goed gedrag.
+Elke nieuwe trade werd dus drie keer tevergeefs gezocht en daarna definitief
+opgegeven — uren voordat de prijs beschikbaar kwam.
 
-**Maar ernstiger: mijn herzoekopdracht was schadelijk.** Hij zette
-vierendertig trades terug op "geschat", terwijl het zoekvenster maar tot
-14-09 12:35 reikte. Alles wat daarvoor sloot was daarmee nooit meer te vinden —
-en die trades hádden een juiste uitstapprijs.
+**Gevolg voor je cijfers.** Die 26 hielden hun geschatte prijs, en die
+comprimeert naar nul:
 
-Correcte cijfers werden zo als schatting in het rapport gezet.
+| | bij 37 trades | bij 60 trades |
+|---|---|---|
+| gemiddelde winst | 14,51 | 10,61 |
+| gemiddeld verlies | -10,06 | -6,54 |
+
+Dat zag eruit als een verslechterende strategie en was een meetfout.
 
 ## De oplossing
 
-**Het zoekvenster ligt nu rond de sluittijd van elke trade**, niet rond het
-huidige moment. Zes uur ervoor tot twaalf uur erna. Daarmee blijft elke trade
-vindbaar, hoe oud ook.
-
-**En na drie mislukte pogingen wordt opgegeven**, met een eigen label
-`broker_gesloten_onvindbaar`. Eeuwig blijven proberen kost elke ronde een
-netwerkverzoek en houdt de trade als schatting in het rapport, ook wanneer de
-prijs niet meer te achterhalen is. De geboekte prijs blijft staan.
+Opgeven op **leeftijd** in plaats van op aantal pogingen: pas na twee dagen.
+Dat is langer dan de vertraging die ooit is gemeten, en kort genoeg om een
+trade niet eeuwig op te zoeken.
 
 ## Na installatie
 
     action: gold_scalper.recheck_exits
 
-Draai die opnieuw. Nu worden ook de oudere trades gevonden, en de
-vierendertig die ik onbedoeld naar "geschat" degradeerde krijgen hun juiste
-label terug.
+Draai die nog één keer. De 26 die te vroeg zijn opgegeven worden dan opnieuw
+opgezocht, en hun prijs staat nu wel bij de broker.
 
-Reken op een half uur: vijf per keer, elke paar minuten.
+## Niet meegeleverd
 
-## Wat dit betekent
-
-Dit is de vierde ronde aan deze reparatie. Elke ronde loste een echte fout op
-en legde de volgende bloot — en elke keer was de diagnostiek die ik erbij
-bouwde de reden dat we hem vonden.
-
-Het patroon dat overblijft: ik kan niet bij jouw brokeraccount, dus elke
-aanname over wat de broker teruggeeft moet blijken uit een logregel. Dat is
-langzamer dan gokken, maar het is de enige weg die eindigt.
+`dashboard_template.yaml` en `bestandscontrole.json` bestaan niet in deze repo —
+Gold Scalper heeft alleen een `dashboard/`-map binnen de integratie zelf. Die
+twee horen bij je EMS-project.

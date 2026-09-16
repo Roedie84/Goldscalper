@@ -399,8 +399,29 @@ def test_an_unfindable_exit_keeps_its_price():
     """
     body = _method("_correct_estimated_settlements")
     assert "broker_gesloten_onvindbaar" in body
-    assert "_herzoek_pogingen" in body
-    assert "pogingen >= 3" in body
+
+
+def test_giving_up_is_based_on_age_not_attempts():
+    """De vorige regel gaf op na drie pogingen, oftewel ruim tien minuten. Maar
+    het transactieoverzicht van de broker loopt uren achter - gemeten: nieuwste
+    transactie 10:51 bij een opvraging om 14:22.
+
+    Elke nieuwe trade werd dus drie keer tevergeefs gezocht en daarna
+    definitief opgegeven, uren voordat de prijs beschikbaar kwam.
+    Zesentwintig van zestig trades hielden daardoor hun geschatte prijs, en die
+    comprimeert naar nul: de gemiddelde winst zakte van 14,51 naar 10,61 - een
+    meetfout die eruitzag als een verslechterende strategie.
+    """
+    body = _method("_correct_estimated_settlements")
+    assert "leeftijd > 2.0" in body, "er wordt niet op leeftijd opgegeven"
+
+    # Alleen naar code kijken, niet naar commentaar: de vorige regel staat
+    # daar bewust in als toelichting.
+    code = "\n".join(
+        regel for regel in body.splitlines()
+        if not regel.strip().startswith("#")
+    )
+    assert "_herzoek_pogingen" not in code, "de pogingenteller staat er nog"
 
 
 def test_the_close_time_is_passed_to_the_lookup():
