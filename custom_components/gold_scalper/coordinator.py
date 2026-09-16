@@ -933,6 +933,11 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             "simulated": getattr(self.venue, "is_simulated", False),
             "assumed_spread": getattr(self.venue, "assumed_spread", None),
             "costs_disabled": getattr(self.venue, "costs_disabled", False),
+            # Voor het rapport: zonder deze twee kan de tabel geen bedragen in
+            # accountvaluta tonen, en dan is hij niet te vergelijken met het
+            # overzicht van de broker.
+            "account_currency": self.conversion.account,
+            "conversion_rate": self.conversion.rate,
         }
 
     def _fingerprint_material(self, config: dict) -> dict:

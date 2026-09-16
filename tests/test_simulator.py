@@ -36,10 +36,27 @@ def test_candles_are_internally_consistent(venue):
 
 
 def test_history_is_reproducible(venue):
-    """Een geschiedenis die per aanroep verandert maakt indicatoren onzin."""
+    """Een geschiedenis die per aanroep verandert maakt indicatoren onzin.
+
+    De reeks is geankerd aan het huidige moment, dus valt er een minuutgrens
+    tussen de twee aanroepen, dan schuift het venster één bar op. Die
+    overlapping vergelijken in plaats van de hele reeks: anders faalt de test
+    ongeveer één op de honderd keer om een reden die niets met
+    reproduceerbaarheid te maken heeft - en een wisselvallige test leer je
+    negeren.
+    """
     a = asyncio.run(venue.candles("XAU_USD", "1m", 300))
     b = asyncio.run(venue.candles("XAU_USD", "1m", 300))
-    assert a.close == b.close and a.timestamp == b.timestamp
+
+    gemeenschappelijk = set(a.timestamp) & set(b.timestamp)
+    assert len(gemeenschappelijk) > 250, "de reeksen overlappen nauwelijks"
+
+    per_stamp_a = dict(zip(a.timestamp, a.close))
+    per_stamp_b = dict(zip(b.timestamp, b.close))
+    for stamp in gemeenschappelijk:
+        assert per_stamp_a[stamp] == per_stamp_b[stamp], (
+            f"bar {stamp} verschilt tussen twee aanroepen"
+        )
 
 
 def test_different_seeds_give_different_markets():

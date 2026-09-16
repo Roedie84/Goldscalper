@@ -658,6 +658,28 @@ def build_report(
         f"<li><dt>{_esc(k)}</dt><dd>{v}</dd></li>" for k, v in metrics
     )
 
+    # Het bedrag in accountvaluta erbij.
+    #
+    # De tabel stond alleen in de valuta van het instrument, terwijl het
+    # overzicht van de broker in accountvaluta rekent. Dezelfde trade zag er
+    # daardoor uit als twee verschillende bedragen - bij een koers rond 0,87
+    # scheelt dat dertien procent, en dan lijkt een kloppende administratie
+    # fout.
+    # De koers staat in de opgeslagen configuratie van de run, niet in een
+    # eigen kolom. Zonder koers blijft de kolom leeg in plaats van een geschat
+    # bedrag te tonen: een bedrag dat eruitziet als een meting maar er geen is,
+    # is erger dan een leeg veld.
+    opzet = run.get("config_json")
+    if isinstance(opzet, str):
+        try:
+            opzet = json.loads(opzet)
+        except (TypeError, ValueError):
+            opzet = {}
+    opzet = opzet or {}
+
+    koers = opzet.get("conversion_rate")
+    rekenvaluta = opzet.get("account_currency") or "account"
+
     trade_rows = ""
     for t in reversed(trades[-60:]):
         cls = "pos" if (t.net_pnl or 0) >= 0 else "neg"
@@ -670,10 +692,11 @@ def build_report(
       <td class="num">{_fmt(t.gross_pnl)}</td>
       <td class="num">{_fmt(t.total_cost)}</td>
       <td class="num {cls}">{_fmt(t.net_pnl)}</td>
+      <td class="num {cls}">{_fmt_account(t.net_pnl, koers)}</td>
       <td>{_esc(t.close_reason)}</td>
     </tr>"""
     if not trade_rows:
-        trade_rows = '<tr><td colspan="9" class="empty">Nog geen gesloten trades.</td></tr>'
+        trade_rows = '<tr><td colspan="10" class="empty">Nog geen gesloten trades.</td></tr>'
 
     now = datetime.now(tz or timezone.utc)
     label = now.tzname() or "UTC"
@@ -796,7 +819,8 @@ def build_report(
   <div class="scroller"><table class="trades"><thead><tr>
     <th>Gesloten</th><th>Kant</th><th class="num">Lots</th><th class="num">In</th>
     <th class="num">Uit</th><th class="num">Bruto</th><th class="num">Kosten</th>
-    <th class="num">Netto</th><th>Reden</th>
+    <th class="num">Netto</th><th class="num">{_esc(rekenvaluta)}</th>
+    <th>Reden</th>
   </tr></thead><tbody>{trade_rows}</tbody></table></div>
 </section>
 
@@ -806,6 +830,18 @@ def build_report(
   live uitvoering valt daardoor structureel slechter uit dan dit rapport.
 </footer>
 </div></body></html>"""
+
+
+def _fmt_account(waarde, koers) -> str:
+    """Een bedrag omgerekend naar accountvaluta.
+
+    Zonder koers een liggend streepje in plaats van een geschat getal: een
+    bedrag dat eruitziet als een meting maar er geen is, is erger dan een leeg
+    veld.
+    """
+    if waarde is None or not koers:
+        return "&ndash;"
+    return f"{waarde * koers:+.2f}"
 
 
 def write_report(
