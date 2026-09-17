@@ -1,382 +1,434 @@
-# Gold Scalper
+<div align="center">
 
-Home Assistant-integratie die XAU/USD analyseert, in papermodus handelt en elke
-trade met volledige kostentoerekening vastlegt in een SQLite-database.
+# Energy Management System
 
-**Alles draait binnen Home Assistant.** Geen Windows, geen tweede machine, geen
-tweede proces. `manifest.json` heeft een lege `requirements`-lijst; er wordt
-alleen `aiohttp` gebruikt, dat HA al bevat.
+**Home Assistant-integratie die een thuisaccu aanstuurt op dynamische energieprijzen — en zichzelf bijleert.**
 
-**Live handel is vergrendeld tot de bewijsfase slaagt.**
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square)](https://hacs.xyz)
+[![Version](https://img.shields.io/badge/versie-5.2-blue.svg?style=flat-square)](CHANGELOG.md)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.6.0%2B-41BDF5.svg?style=flat-square)](https://www.home-assistant.io)
+[![Tests](https://img.shields.io/badge/tests-3955%20groen-brightgreen.svg?style=flat-square)](tests)
+[![License](https://img.shields.io/badge/licentie-MIT-lightgrey.svg?style=flat-square)](LICENSE)
+
+</div>
 
 ---
 
-## De rekensom die alles bepaalt
+> **In short (EN)** — A Home Assistant integration that controls a home
+> battery (Zendure SolarFlow and similar) on quarter-hourly dynamic
+> electricity prices. It decides when to charge, discharge, sell or hold,
+> using a self-learning consumption profile, a worst-case night reserve
+> and solar forecasts. Documentation is in Dutch because the integration
+> targets the Dutch market specifically: quarter-hourly pricing, the
+> `salderingsregeling`, and Dutch-language notifications.
 
-Bij XAU/USD betaal je per round trip de spread plus slippage. Bij goud rond de
-$3.300 is een spread van $0,25 gelijk aan 0,0076% van de notional. Klinkt
-verwaarloosbaar. Bij twee trades per minuut, acht uur per dag:
+---
 
-- 960 trades × 0,0076% = **7,3% van je notional per dag aan transactiekosten**
-- Over een handelsmaand: ruim 150%
+## Inhoud
 
-Je strategie moet dus gemiddeld meer dan 25 dollarcent per ounce netto pakken
-op élke trade, verliezers meegerekend, alleen om quitte te spelen. Goud beweegt
-in een actieve minuut ongeveer $1 tot $3.
+- [Wat doet het](#wat-doet-het)
+- [Kenmerken](#kenmerken)
+- [Vereisten](#vereisten)
+- [Installatie](#installatie)
+- [Configuratie](#configuratie)
+- [Dashboard](#dashboard)
+- [Hoe de beslislogica werkt](#hoe-de-beslislogica-werkt)
+- [Zelflerend gedrag](#zelflerend-gedrag)
+- [Meldingen](#meldingen)
+- [Diensten](#diensten)
+- [Diagnostiek en probleemoplossing](#diagnostiek-en-probleemoplossing)
+- [Ontwikkeling](#ontwikkeling)
+- [Licentie en aansprakelijkheid](#licentie-en-aansprakelijkheid)
 
-Zelfs een gelukte scalp van 50 cent ziet er zo uit:
+---
 
-```
-bruto (op mid-price)  +5,00 USD
-spread                -2,50 USD
-commissie             -0,70 USD
-──────────────────────────────
-netto                 +1,80 USD      64% ging op aan kosten
-```
+## Wat doet het
 
-Daarom belast de papersimulatie spread, slippage en commissie volledig door.
-Een simulator die op mid-price vult laat winst zien die niet bestaat, en dat is
-gevaarlijker dan geen simulator.
+Met een dynamisch energiecontract verschilt de stroomprijs per kwartier —
+soms met een factor vijf op één dag. Een thuisaccu kan daarvan
+profiteren, maar alleen als hij op de juiste momenten laadt en ontlaadt.
 
-### Wat de simulatie liet zien
+Deze integratie neemt die beslissing elke vijf minuten, op basis van:
 
-| Spread | Trades uit 2.940 evaluaties |
+- de prijzen van de komende uren, zoveel als je leverancier levert;
+- de zonvoorspelling, gecorrigeerd met wat jouw panelen werkelijk doen;
+- je eigen verbruikspatroon per uur van de week;
+- hoeveel energie er in de accu moet blijven om de nacht te overbruggen.
+
+Je wijst een prijssensor aan, een `select` voor de accumodus en een
+`number` voor het vermogen. De rest — welk kwartier duur genoeg is,
+hoeveel reserve er nodig is, wanneer laden beter kan wachten — rekent en
+leert de integratie zelf.
+
+**Getest tegen** een Zendure SolarFlow 2400 AC met drie AB3000X-modules,
+een SolarEdge-omvormer, Solcast-voorspelling en een Zonneplan-contract
+met kwartierprijzen. Andere combinaties zijn mogelijk maar niet getest.
+
+---
+
+## Kenmerken
+
+### Aansturing
+
+| | |
 |---|---|
-| 0,35 (AvaTrade-niveau) | **0** |
-| 0,12 (raw spread) | 35, netto nog steeds negatief |
+| **Dynamische prijsdrempel** | Geen vast aantal dure uren, maar een drempel die meebeweegt met de prijsspreiding van die dag — met een vangnet tegen één extreme uitschieter |
+| **Prijsprioriteit** | De duurste kwartieren gaan eerst, niet chronologisch |
+| **Nachtreserve** | Berekend op het *diepste* tekort onderweg, niet op het eindsaldo |
+| **Zonopvang uitstellen** | Laadt later op de dag als de ochtendzon meer opbrengt op het net dan de middagzon |
+| **Winter-guard** | Verkoopt niet op een dag waarop er van het net is geladen |
+| **Huishoudverbruik-vloer** | Ontlaadt nooit minder dan het huis vraagt tijdens een duur kwartier |
+| **Accukoeling** | Stuurt een ventilator aan op accutemperatuur, met hysterese |
 
-Bij 0,35 werd elke kandidaat afgewezen op `edge_below_cost`. Met een doel van
-1,5×ATR en de eis dat dat doel het dubbele van de kosten bedraagt, is een ATR
-van minimaal 0,52 USD nodig. De M1-ATR van goud ligt daar doorgaans onder.
+### Zelflerend
 
-**M1-scalpen op goud met enkele orders per minuut is rekenkundig niet haalbaar
-bij een brede spread.** De uitwegen: een smallere spread, een hoger tijdsframe
-(M15 heeft een ATR van ruwweg 2-3 USD), of de conclusie dat het niet werkt. Dat
-laatste is ook een geldige uitkomst van een bewijsfase.
+| | |
+|---|---|
+| **Verbruiksprofiel** | Per uur van de week, met live correctie die uitdooft over de horizon |
+| **Accurendement** | Per halve slag gemeten: laden en ontladen apart |
+| **Zonvoorspelling** | Leert de afwijking van je voorspeller per uur |
+| **PV-installatieprofiel** | Leidt oriëntatie en hellingshoek af uit heldere dagen |
+| **Apparaatherkenning (NILM)** | Herkent apparaten aan hun verbruikspatroon en meldt afwijkingen |
+| **Aanwezigheid** | Thuis, weg of slapend — uit bewegingssensoren, tv en verlichting |
+| **Waterverbruik** | Herkent waar het water heen ging, met correctiemogelijkheid |
+
+### Bewaking
+
+| | |
+|---|---|
+| **Zonstandcontrole** | Rekent de zonnestand na uit tijd en plaats en vergelijkt met de sensor |
+| **Ingangscontrole** | Meldt een sensor die bestaat maar het benodigde attribuut niet levert |
+| **Terugval-duur** | Meldt hoe lang een noodloop al draait |
+| **Plantoetsing** | Vergelijkt dagelijks wat het plan beloofde met wat het werd |
+| **Proefstand** | Vijf kandidaten die meerekenen maar niets sturen, met wat ze zouden opleveren |
+| **Meetkwaliteit** | Per grootheid: gemeten, geschat, of nog onvoldoende data |
+
+---
+
+## Vereisten
+
+### Verplicht
+
+Een **prijssensor** met een `forecast`-attribuut: een lijst met per entry
+een tijdstip en een prijsveld. Getest tegen de
+[Zonneplan ONE-integratie](https://github.com/fsaris/home-assistant-zonneplan-one),
+die zowel `price_tax_included` als `price_tax_excluded` per kwartier
+levert.
+
+> **Andere leverancier?** Nordpool, ENTSO-e en EnergyZero leveren vaak
+> uurprijzen en andere attribuutnamen. De intervallengte wordt
+> automatisch afgeleid, maar de naam van het prijsveld moet kloppen met
+> wat jouw sensor levert — controleer dat via **Ontwikkelaarshulpmiddelen
+> → Staten**.
+
+Daarnaast een `select`-entiteit voor de accumodus en een
+`number`-entiteit voor het handmatige vermogen.
+
+### Optioneel
+
+Alle overige sensoren zijn optioneel en schakelen elk iets bij. Zonder
+zonvoorspelling werkt de prijsaansturing gewoon; zonder
+capaciteitssensor vervalt alleen de capaciteitsbewuste telling. De
+integratie meldt zelf welke functies nog niet beschikbaar zijn en wat
+daarvoor nodig is.
 
 ---
 
 ## Installatie
 
-### 1. OANDA-account
+### Via HACS (aanbevolen)
 
-MetaTrader vereist Windows en AvaTrade biedt geen publieke REST-API, dus de
-uitvoering loopt via OANDA.
+1. HACS → drie puntjes rechtsboven → **Custom repositories**
+2. URL: `https://github.com/Roedie84/Energy-Management-System`,
+   categorie **Integration**
+3. Zoek **Energy Management System** en installeer
+4. Herstart Home Assistant
+5. **Instellingen → Apparaten & Services → Integratie toevoegen** →
+   *Energy Management System*
 
-1. Open een account — begin met **practice**, niet live.
-2. Accountportaal → My Services → Manage API Access → token genereren.
-3. Noteer je account-ID (formaat `001-004-1234567-001`).
+### Handmatig
 
-Token en account-ID gaan in je HA-configuratie op je eigen machine. Ze verlaten
-die machine niet en de diagnostics-export redigeert ze. Deel ze met niemand.
+Kopieer `custom_components/energy_management_system/` naar je
+`config/custom_components/`-map en herstart Home Assistant.
 
-### 2. Plaatsen
+### Dashboard koppelen
 
-```
-config/custom_components/gold_scalper/
-```
-
-Herstart HA, dan Instellingen → Apparaten en diensten → Gold Scalper.
-
-### 3. Papermodus
-
-Zet `switch.gold_scalper_handel_actief` aan. Analyseren, papierhandel en
-vastleggen kosten niets. Druk na een paar weken op **Keuringsrapport maken**.
-
----
-
-## Architectuur
-
-```
-Home Assistant (Linux / Pi / HA OS)
-├── coordinator          handelslus, elke 20 s
-├── strategy/            signalen, incrementele indicatoren
-├── broker/
-│   ├── adapter.py       abstracte uitvoeringslaag
-│   ├── oanda.py         REST, alleen aiohttp
-│   ├── paper.py         simulatie met volledige kosten
-│   ├── exits.py         break-even, trailing, tijdstops
-│   └── risk.py          noodremmen
-├── storage/             SQLite-ledger en prestatieanalyse
-├── modes.py             poort tussen papier en live
-├── lifecycle.py         afwikkelen en afstemmen
-└── dashboard/           HTML-keuringsrapport
-                             │
-                             └── HTTPS ──► OANDA v20
-```
-
-`broker/adapter.py` definieert wat elke venue moet kunnen. Alles daarboven kent
-alleen die interface; een andere REST-broker toevoegen raakt één bestand.
-
-Twee vertalingen zitten bewust alleen in de adapter:
-
-**Eenheden.** OANDA rekent XAU_USD in units van één ounce, MetaTrader in lots
-van honderd. Naar buiten toe praat elke venue in ounces, zodat er nergens een
-factor 100 kan wegvallen. Daar staat een aparte test op.
-
-**Richting.** Bij OANDA is een short een negatief aantal units, geen aparte
-ordersoort.
-
----
-
-## Modi
-
-| Modus | Data | Uitvoering | Vergrendeld? |
-|---|---|---|---|
-| `backtest` | historisch | gesimuleerd | nee |
-| `paper` | live markt | gesimuleerd, volledige kosten | nee |
-| `live` | live markt | **echte orders** | ja |
-
-### De poort naar live
-
-| Criterium | Eis |
-|---|---|
-| Trades | ≥ 500 |
-| Verstreken kalendertijd | ≥ 30 dagen |
-| Verschillende handelsdagen | ≥ 15 |
-| Prestatie-oordeel | geslaagd |
-| Winstverdeling | beste dag ≤ 50% van totaal |
-
-De duureis staat los van het aantal trades: duizend trades in twee dagen zeggen
-alleen iets over die twee dagen. De laatste eis vangt het geval af waarin één
-gelukkige dag de statistiek draagt.
-
-De poort is niet vanuit de UI te overrulen. Wie hem toch wil passeren past de
-broncode aan — dan staat het in je git-historie.
-
----
-
-## Onbeheerd draaien
-
-De bot draait zonder toezicht. Wat telt is niet hoe goed hij handelt op een
-goede dag, maar hoeveel schade hij aanricht op een slechte terwijl jij op je
-werk zit.
-
-| Limiet | Standaard | Gevolg |
-|---|---|---|
-| Dagverlies | 2% | **noodstop** |
-| Equity-ondergrens | 80% | **noodstop** |
-| Trades per dag | 100 | **noodstop** |
-| Geen tickdata | 30 s | **noodstop** |
-| Verliezers op rij | 5 | pauze 60 min |
-| Spread | boven limiet | trade geweigerd |
-| Positieduur | 900 s | geforceerd gesloten |
-
-Een noodstop hervat niet vanzelf, ook niet bij de dagwissel — automatisch
-hervatten betekent dat dezelfde storing zich in een lus kan herhalen. Gebruik
-`gold_scalper.resume` nadat je de oorzaak hebt vastgesteld.
-
-Deze limieten beschermen tegen weglopend gedrag, niet tegen een verliesgevende
-strategie. Daar is de bewijsfase voor.
-
----
-
-## Herstarten van Home Assistant
-
-**Laag 1 — server-side stops.** De stop-loss gaat mee met de order zelf
-(`stopLossOnFill`) en staat op OANDA's server. Hij overleeft een crash van HA,
-een netwerkstoring én het uitvallen van je hele machine. Dit is de
-belangrijkste bescherming.
-
-Wat de broker níet doet is trailing en break-even bijwerken; dat vereist een
-draaiende bot. Valt HA uit terwijl een positie in de winst staat, dan blijft de
-laatst geplaatste stop staan.
-
-**Laag 2 — afwikkelen vóór een geplande herstart.**
+Bij het opstarten wordt `energy_management_system_dashboard.yaml` naar je
+configuratiemap gekopieerd. Koppel dat bestand in `configuration.yaml`:
 
 ```yaml
-automation:
-  - alias: "Afwikkelen voor HA-update"
-    trigger:
-      - platform: state
-        entity_id: update.home_assistant_core_update
-        attribute: in_progress
-        to: true
-    action:
-      - service: gold_scalper.prepare_shutdown
-      - wait_template: >
-          {{ is_state('binary_sensor.gold_scalper_veilig_herstarten', 'on') }}
-        timeout: "00:05:00"
+lovelace:
+  dashboards:
+    ems-dashboard:
+      mode: yaml
+      filename: energy_management_system_dashboard.yaml
+      title: Energy Management System
+      icon: mdi:home-battery
+      show_in_sidebar: true
 ```
 
-De HA-shutdown-hook is hier ongeschikt voor: die krijgt beperkt tijd en een
-positie afwikkelen kan minuten duren. Bij het stop-event wordt alleen de
-administratie weggeschreven.
-
-**Laag 3 — afstemmen bij het opstarten.**
-
-| Situatie | Gevolg |
-|---|---|
-| Database en broker komen overeen | handel hervat |
-| Trade in database, gesloten bij broker | administratie bijgewerkt |
-| **Positie bij broker, onbekend in database** | **handel geblokkeerd** |
-
-Dat laatste geval is de gevaarlijke: een positie die niemand bewaakt. Een bot
-die niet weet welke posities hij heeft kan dubbel openen of een stop plaatsen
-op iets dat niet bestaat.
+Het dashboard gebruikt
+[Mushroom Cards](https://github.com/piitaya/lovelace-mushroom).
 
 ---
 
-## Uitstappen met winst
+## Configuratie
 
-| Mechanisme | Trigger | Effect |
+Alles wordt ingesteld via de gebruikersinterface — geen YAML nodig.
+
+### Verplicht
+
+| Veld | Betekenis |
+|---|---|
+| `price_sensor_entity` | Prijssensor met `forecast`-attribuut |
+| `price_attribute` | Welk prijsveld binnen elke entry (incl. of excl. belasting) |
+| `operation_select_entity` | De `select` die de accumodus zet |
+| `manual_power_number_entity` | De `number` voor het handmatige vermogen (positief = ontladen) |
+
+### Vermogens en drempels
+
+| Veld | Standaard | Betekenis |
 |---|---|---|
-| Break-even | ≥ 0,8×ATR | stop naar instap + 1,2× kosten |
-| Gedeeltelijk sluiten | ≥ 1,0×ATR | 50% dicht, rest loopt door |
-| Trailing | ≥ 1,5×ATR | volgt op 1,2×ATR, nooit terug |
-| Tijdstop | 240 s binnen ±0,3×ATR | sluiten |
-| Harde limiet | 900 s | sluiten |
+| `manual_discharge_power` | 1600 W | Basisvermogen tijdens een duur kwartier |
+| `manual_charge_power` | −2000 W | Vermogen bij netladen |
+| `negative_price_charge_power` | −2000 W | Vermogen bij een negatieve prijs |
+| `min_soc_percent` | 15% | Ondergrens waaronder niet meer geforceerd wordt ontladen |
+| `battery_round_trip_efficiency_percent` | 90% | Terugval tot er genoeg metingen zijn |
+| `low_solar_threshold_kwh` | 5,0 kWh | Terugval-drempel voor "weinig zon" |
+| `salderen_end_date` | 2026-12-31 | Wanneer de salderingsregeling vervalt |
 
-Voorbeeld, long op 3300,00 met ATR 0,40:
+### Sensoren voor extra nauwkeurigheid
 
-| sec | bid | winst | actie |
-|---|---|---|---|
-| 30 | 3300,35 | 0,87×ATR | stop naar 3300,47 — **kan niet meer verliezen** |
-| 60 | 3300,45 | 1,12×ATR | 50% dicht, +2,25 USD |
-| 90 | 3300,70 | 1,75×ATR | hold (trailing zou lager liggen) |
-| 150 | 3301,40 | 3,50×ATR | stop naar 3300,92 |
+| Veld | Schakelt bij |
+|---|---|
+| `available_energy_sensor_entity` | Dynamische reserve, uitstelbeslissing op energie |
+| `battery_soc_sensor_entity` | SoC-taper op het ontlaadvermogen, noodladen |
+| `consumption_power_sensor_entity` | Live verbruikscorrectie, grootverbruikerdetectie |
+| `battery_power_sensor_entity` | Correctie van de P1-meting, rendement leren |
+| `pv_power_sensor_entity` | Correctie van de P1-meting, exporttoewijzing |
+| `solar_today_forecast_sensor_entity` | Zonvoorspelling per half uur (Solcast) |
+| `sun_azimuth_sensor_entity` / `sun_elevation_sensor_entity` | Installatieprofiel, beschaduwing, zonstandcontrole |
+| `battery_total_capacity_sensor_entity` | Capaciteitsbewuste telling, slijtagekosten |
+| `battery_temperature_sensor_entity` + `battery_cooling_fan_switch_entity` | Accukoeling |
+| `dishwasher_start_in_entity` / `washing_machine_end_at_entity` | Gepland witgoedverbruik in de reserve |
 
-Twee details die vaak fout gaan: afstanden worden getoetst tegen de prijs waar
-je écht uitstapt (bid voor een long), niet de mid — anders schuift break-even
-een halve spread te vroeg. En de trailing stop beweegt nooit terug; zie de rij
-op 90 seconden.
+De volledige lijst staat in de configuratiestroom zelf, met uitleg per
+veld.
 
 ---
 
 ## Dashboard
 
-**Keuringsrapport** — zelfstandig HTML, geen CDN, geen scripts. Openen, mailen,
-archiveren; werkt over twee jaar nog.
+Vierentwintig pagina's: een landingspagina met drie kolommen, en
+subpagina's per onderwerp.
 
-De vormgeving volgt het keuringsrapport van een goudsmid. Goud keuren is
-vaststellen of het echt is, en fijnheid wordt uitgedrukt in duizendsten.
-
-**Rendementsfijnheid** = duizendsten van de gevangen marktbeweging die de
-kosten overleven. 64% kostenverlies is 360 fijn. Netto negatief is 0 — onder
-nul bestaat geen fijnheid, net als bij metaal.
-
-| Paneel | Waarom |
+| Pagina | Inhoud |
 |---|---|
-| Equitycurve **met kostenlijn** | ligt de kostenlijn erboven, dan verdient de broker en jij niet |
-| Resultaat per dag | draagt één dag alles, dan is er geen strategie |
-| Signaaltrechter | waarom er *niet* gehandeld werd, per reden |
-| MAE/MFE | winnaars dicht bij de stop = te krap; verliezers met veel MFE = te laat |
-
-**Lovelace** — `dashboard/lovelace.yaml`, noodbediening bovenaan.
-
----
-
-## Prestaties
-
-| | Voor | Na |
-|---|---|---|
-| Indicatoren per tick | 1.007 µs | 5,3 µs (188×) |
-| Databaseschrijven per rij | 135 µs | 8,4 µs (16×) |
-
-De incrementele indicatoren zijn numeriek identiek aan de batchversie; grootste
-afwijking 4,7e-9. `tests/test_streaming.py` dwingt dat af — snelheid die de
-cijfers verandert is geen optimalisatie maar een bug.
-
-Trades gaan bewust níet door de schrijfbuffer: dat is je bewijsmateriaal.
-
-De resterende latency zit in de HTTP-hop naar OANDA en de HA event loop, niet
-in deze code. Snelheid verandert je kostprijs per ounce trouwens nauwelijks;
-ze koopt hooguit iets minder slippage.
+| **Overzicht** | Status, live cijfers, modus, besturing, "waarom doe je dit nu" |
+| **Planning** | Kwartierplanning, komend schema, uitstelplan, plantoetsing |
+| **Kosten** | Vandaag/week/maand, prijstoets, vergelijking met de leverancier |
+| **Besparing** | Opbrengst, CO₂, cycli, zelfvoorziening |
+| **PV / zon** | Opwek, installatieprofiel, voorspelkwaliteit |
+| **Accu** | Celspreiding, temperatuur, uitbreidingsadvies |
+| **Rendement** | Laden en ontladen apart, verouderingsdrijvers |
+| **Aanwezigheid** | Wie er thuis is, met tijdlijn en dagtotalen |
+| **Meetkwaliteit** | Betrouwbaarheid per grootheid, wat nog niet bepaald is |
+| **Proefstand** | Kandidaten die meerekenen maar niets sturen |
+| **Visueel** | Plattegrond met energiestromen |
 
 ---
 
-## Entiteiten
+## Hoe de beslislogica werkt
 
-| Entiteit | Waarvoor |
+Elke vijf minuten wordt deze boom van boven naar beneden doorlopen; de
+eerste regel die van toepassing is bepaalt de actie:
+
+```
+Force manual aan?                        → niets doen, jij hebt controle
+Negatieve prijs?                         → hard laden, panelen afregelen
+Dit kwartier duur genoeg?
+  ├─ prijsprioriteit staat het toe?      → ontladen op manual
+  ├─ accu kritiek laag en weinig zon?    → noodladen
+  └─ anders                              → smart (accu beschermen)
+Weinig zon en nu het goedkoopste blok?   → netladen
+Accu kritiek laag en weinig zon?         → noodladen
+Vóór het goedkoopste blok, genoeg over?  → smart_discharging
+Anders                                   → smart
+```
+
+### De prijsdrempel
+
+Geen vast aantal kwartieren maar een drempel die meebeweegt: standaard de
+bovenste 20% van de prijsspreiding van die dag, bij weinig verwachte zon
+verscherpt naar 8%. Daarnaast een ruimere tweede laag (45%) die alleen
+wordt gebruikt als er ná reservering voor de echte piek nog capaciteit
+over is.
+
+**Vangnet tegen uitschieters:** één extreme piek rekt de spreiding op en
+tilt de drempel mee omhoog. Is de hoogste prijs meer dan tweemaal de
+mediaan, dan geldt ook een mediaanmaat en wint de ruimste van de twee.
+
+### De nachtreserve
+
+Berekend op het **diepste tekort onderweg** — meestal net voor
+zonsopkomst — en niet op het eindsaldo. Een grote verwachte zondag zou
+anders een reëel tekort ervóór verbergen.
+
+De marge daarop is zelfcorrigerend: elke dag waarop de accu onverwacht
+leeg raakte verhoogt hem, elke dag met structureel overschot verlaagt hem.
+
+### Vermogensbegrenzing
+
+Het ontlaadvermogen wordt per tick geschaald op de resterende reserve,
+maar zakt nooit onder het actuele huisverbruik — anders koop je tijdens
+een duur kwartier alsnog stroom in tegen piekprijs.
+
+---
+
+## Zelflerend gedrag
+
+| Wat | Hoe |
 |---|---|
-| `sensor.*_koers` / `_spread` / `_atr` | markttoestand |
-| `sensor.*_signaal` | score, componenten, afwijsreden |
-| `sensor.*_nettoresultaat` / `_kosten` | bruto en netto gescheiden |
-| `sensor.*_oordeel` | uitkomst bewijsfase |
-| `sensor.*_evaluaties` | signaaltrechter |
-| `sensor.*_risicobewaking` | noodremtoestand |
-| `binary_sensor.*_veilig_herstarten` | mag HA nu herstart worden |
-| `binary_sensor.*_live_vrijgegeven` | is de poort open |
-| `binary_sensor.*_noodstop` | noodstop actief |
-| `switch.*_handel_actief` | hoofdschakelaar |
+| **Verbruik per uur** | Mediaan over de laatste veertien waarnemingen per uur |
+| **Nachtverbruik** | Apart geleerd, want dat bepaalt de reserve |
+| **Accurendement** | Per halve slag: laden en ontladen apart, alleen stukken van minimaal 1,5 kWh |
+| **Zonafwijking** | Per uur, want een bias verschilt sterk over de dag |
+| **Bedtijd** | Uit de slaapsensor, voor de nachtherkenning |
+| **Apparaatverbruik** | Per herkend apparaat, met CUSUM-afwijkingsdetectie |
 
-Services: `prepare_shutdown`, `close_all`, `resume`, `generate_report`.
+Alle geleerde waarden overleven een herstart. Waar er nog te weinig
+metingen zijn wordt dat expliciet gemeld, in plaats van een geraden getal
+te tonen.
 
 ---
 
-## Database
+## Meldingen
 
-`config/gold_scalper.db`, vier tabellen: `runs`, `trades`, `signals`, `equity`.
+Ruim twintig soorten, elk apart aan of uit te zetten met een eigen
+dempingsvenster. **Alleen de zes oorspronkelijke staan standaard aan** —
+twintig meldingen die zichzelf aanzetten is een garantie dat je er binnen
+een week niets meer van leest.
 
-`gross_pnl` en `net_pnl` staan in aparte kolommen en `total_cost` is per
-definitie het verschil, zodat de kostenpost niet in een samenvattend getal kan
-verdwijnen. De `signals`-tabel legt élke evaluatie vast, ook de afgewezen —
-zonder die kun je achteraf niet zien of je filters te streng stonden.
+Meldingen kunnen in het **Achterhoeks** worden verstuurd, gespeld volgens
+de WALD-richtlijn van het Staring Instituut.
 
-```sql
-SELECT COUNT(*) trades,
-       ROUND(SUM(gross_pnl),2) bruto,
-       ROUND(SUM(total_cost),2) kosten,
-       ROUND(SUM(net_pnl),2)   netto
-FROM trades WHERE close_time IS NOT NULL;
-```
+Een uitgezette melding wordt nog wél in de geschiedenis vastgelegd —
+uitzetten is niet hetzelfde als weggooien.
 
 ---
 
-## Wat dit niet is
+## Diensten
 
-Er kijkt niemand mee. Wat draait is een Python-proces op jouw machine. Loopt
-het vast met een open positie terwijl jij er niet bent, dan merkt niemand dat
-op behalve de server-side stop en de noodremmen.
-
-Papermodus simuleert geen requotes, geen spreadverbreding rond nieuws en geen
-storing in je eigen keten. Live uitvoering valt daardoor structureel slechter
-uit dan het rapport laat zien.
-
-Technische indicatoranalyse is geen financieel advies en voorspelt koersen niet
-betrouwbaar.
+| Dienst | Waarvoor |
+|---|---|
+| `confirm_nilm_device` | Een herkend apparaat bevestigen |
+| `reject_nilm_device` | Een kandidaat afwijzen |
+| `unconfirm_nilm_device` | Een bevestiging terugdraaien |
+| `confirm_nilm_duplicate_pair` | Twee sensoren als hetzelfde apparaat markeren |
+| `dismiss_nilm_duplicate_pair` | Een duplicaatsuggestie wegklikken |
+| `accept_nilm_device_drift` | Een hoger verbruik als nieuw normaal ijken |
+| `confirm_water_source` | Corrigeren waar een waterverbruik heen ging |
 
 ---
 
-## Tests
+## Diagnostiek en probleemoplossing
+
+Bij problemen: **Instellingen → Apparaten & Services → Energy Management
+System → drie puntjes → Diagnostiek downloaden**. Dat bestand bevat de
+volledige toestand, inclusief waarom elke beslissing is genomen.
+
+Twee dashboardpagina's zijn specifiek daarvoor bedoeld:
+
+- **Meetkwaliteit** — wat is gemeten, wat is geschat, wat ontbreekt nog.
+  De lijst *"nog niet bepaald"* is gesplitst in **wachten op
+  waarnemingen** (er is niets mis) en **vraagt een handeling** (er
+  ontbreekt een sensor of instelling).
+- **Proefstand** — wat een nieuwe rekenregel zou hebben opgeleverd,
+  voordat hij iets mag sturen.
+
+### Veelvoorkomend
+
+<details>
+<summary><strong>De integratie doet niets</strong></summary>
+
+Controleer of `Learning only` uitstaat. In die stand rekent alles door
+maar wordt de accu niet aangestuurd — bedoeld om eerst te kijken of de
+beslissingen kloppen voordat je ze laat uitvoeren.
+</details>
+
+<details>
+<summary><strong>Een waarde blijft op "nog niet bepaald" staan</strong></summary>
+
+Kijk op de Meetkwaliteit-pagina in welke stapel hij staat. *Wachten*
+betekent dat er nog te weinig metingen zijn — sommige leerroutines
+hebben weken nodig. *Doen* betekent dat er iets ontbreekt, met erbij wát.
+</details>
+
+<details>
+<summary><strong>De prijzen kloppen niet</strong></summary>
+
+Op de Kosten-pagina staat een toets die de gemiddelde afnameprijs van je
+leverancier vergelijkt met de eigen kwartierprijzen. Valt die buiten het
+bereik, dan wordt er een ander prijsveld gelezen dan waarvoor je betaalt.
+</details>
+
+<details>
+<summary><strong>Het dashboard verandert niet na een update</strong></summary>
+
+Het bestand wordt bij elke start opnieuw gekopieerd, maar Home Assistant
+leest het alleen als je dashboard in YAML-modus staat. Controleer de
+versie onderaan het bestand en ververs de browser hard (Ctrl+F5).
+</details>
+
+<details>
+<summary><strong>De accu doet iets onverwachts</strong></summary>
+
+Op de landingspagina staat *"Waarom doe je dit nu?"* met de getallen die
+de beslissing daadwerkelijk namen — prijs, drempel, accustand, reserve.
+Die tekst wordt opgebouwd uit de gebruikte waarden en kan dus niet iets
+anders zeggen dan wat er gebeurde.
+</details>
+
+---
+
+## Ontwikkeling
 
 ```bash
-python -m pytest tests/ -q     # 97 tests
+python -m venv .venv && .venv/bin/pip install pytest homeassistant
+.venv/bin/python -m pytest
 ```
 
-Draait zonder Home Assistant geïnstalleerd: `tests/conftest.py` stubt de
-HA-imports, zodat de rekenkern overal verifieerbaar is.
+**2496 tests**, allemaal groen. De testsuite is niet alleen dekking maar
+ook documentatie: elke test legt vast *welke waarneming* aanleiding gaf
+tot een regel. Een falende test vertelt daardoor niet alleen dát er iets
+stuk is, maar waarom die regel er ooit kwam.
 
-### Tegen een echte Home Assistant
+Structurele bewaking die permanent meeloopt:
 
-De gewone suite gebruikt stubs: snel, maar principieel beperkt — een stub kan
-niet aantonen dat Home Assistant je schema's accepteert. Precies daar ging het
-mis met `unit_of_measurement=None`, dat pas in de UI opdook als
-"400: Bad Request".
+- elk veld dat toestand opbouwt moet bewaard zijn, door een sensor
+  teruggezet worden, of expliciet als vluchtig benoemd zijn **met reden**
+- elke coordinator-methode die een entiteit aanroept moet bestaan
+- geen `datetime.now()`, `utcnow()` of `date.today()` — alleen de
+  tijdzone van Home Assistant
+- geen dubbele doelen of onbereikbare pagina's in het dashboard
+- geen enkele pagina langer dan de leesbaarheidsgrens
 
-```bash
-python -m venv .ha && ./.ha/bin/pip install homeassistant pytest
-./.ha/bin/python -m pytest tests/test_real_home_assistant.py -q
-```
+Zie [`CHANGELOG.md`](CHANGELOG.md) voor alle wijzigingen en
+[`docs/ONTWIKKELING.md`](docs/ONTWIKKELING.md) voor de achtergrond per
+beslissing — waarom een regel er kwam, welke waarneming eraan voorafging.
+en welke aannames onderweg fout bleken.
 
-Die tests bouwen de config- en options-flow op met de echte selectors en
-valideren plausibele invoer. Zonder Home Assistant slaan ze zichzelf over.
+---
 
-### Statische controle
+## Licentie en aansprakelijkheid
 
-```bash
-pip install pyflakes
-python -m pytest tests/test_static_analysis.py -q
-```
+MIT — zie [`LICENSE`](LICENSE).
 
-Vangt ontbrekende imports, ongebruikte variabelen, kapotte f-strings,
-achtergebleven `print()`-aanroepen en kale `except:`-blokken.
-
-Deze module bestaat om een concrete storing: `import json` ontbrak in
-`coordinator.py` en de integratie faalde bij het opstarten met een `NameError`.
-Geen enkele unittest ving dat, omdat de betreffende functie alleen binnen een
-draaiende Home Assistant wordt uitgevoerd.
-
-Een ontbrekende import hoor je niet met unittests te zoeken maar met een
-parser: die vindt hem in milliseconden, over álle regels, ook de regels die
-geen test ooit aanraakt.
+> **Let op.** Deze integratie stuurt een thuisaccu aan met vermogens tot
+> 2000 W. Ze is gebouwd voor en getest op één specifieke opstelling.
+> Controleer de beslissingen zelf voordat je erop vertrouwt, en gebruik
+> de stand `Learning only` om eerst mee te kijken zonder dat er iets
+> geschakeld wordt.
+>
+> Dit project is niet verbonden aan Zendure, Zonneplan, SolarEdge of
+> Solcast.
