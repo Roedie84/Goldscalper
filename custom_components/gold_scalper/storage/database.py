@@ -99,6 +99,21 @@ CREATE TABLE IF NOT EXISTS trades (
     signal_score      REAL,
     signal_confidence REAL,
     regime            TEXT,
+    -- Indicatorwaarden op het instapmoment.
+    --
+    -- Deze werden berekend, gebruikt voor de beslissing en weggegooid. Zonder
+    -- ze is geen enkele correlatieanalyse mogelijk: er is niets om de uitkomst
+    -- tegen af te zetten. Een vraag als "welke marktomstandigheden zijn
+    -- winstgevend" is dan onbeantwoordbaar, niet vanwege te weinig trades maar
+    -- omdat de gegevens ontbreken.
+    --
+    -- Puur observatie: ze veranderen geen enkele beslissing.
+    entry_atr         REAL,
+    entry_adx         REAL,
+    entry_rsi         REAL,
+    entry_ema_dist    REAL,
+    entry_trend       REAL,
+    entry_momentum    REAL,
     open_reason       TEXT,
     -- Ticketnummers zijn niet numeriek. IG gebruikt sleutels als
     -- 'DIAAAAYCJETQ7A8'; alleen MetaTrader en OANDA werken met gehele
@@ -190,6 +205,13 @@ class Trade:
 
     signal_score: float | None = None
     signal_confidence: float | None = None
+    #: Indicatorwaarden op het instapmoment; zie het schema voor het waarom.
+    entry_atr: float | None = None
+    entry_adx: float | None = None
+    entry_rsi: float | None = None
+    entry_ema_dist: float | None = None
+    entry_trend: float | None = None
+    entry_momentum: float | None = None
     regime: str | None = None
     open_reason: str | None = None
     #: Ticketnummer bij de broker. Tekst, niet numeriek: IG gebruikt sleutels
@@ -252,6 +274,20 @@ class TradeDatabase:
             _LOGGER.info("Database bijgewerkt: mt5_ticket -> broker_ticket")
         elif "broker_ticket" not in trade_columns:
             self._conn.execute("ALTER TABLE trades ADD COLUMN broker_ticket TEXT")
+
+        # Indicatorwaarden op het instapmoment. Zonder deze kolommen is geen
+        # correlatieanalyse mogelijk: er is niets om de uitkomst tegen af te
+        # zetten. Ze komen er per stuk bij, zodat een gedeeltelijk bijgewerkte
+        # database niet blijft hangen.
+        for kolom in (
+            "entry_atr", "entry_adx", "entry_rsi",
+            "entry_ema_dist", "entry_trend", "entry_momentum",
+        ):
+            if kolom not in trade_columns:
+                self._conn.execute(
+                    f"ALTER TABLE trades ADD COLUMN {kolom} REAL"
+                )
+                _LOGGER.info("Database bijgewerkt: kolom '%s' toegevoegd", kolom)
 
         if "fingerprint" not in existing:
             self._conn.execute("ALTER TABLE runs ADD COLUMN fingerprint TEXT")

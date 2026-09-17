@@ -2422,7 +2422,23 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
             signal_score=signal.score,
+            signal_confidence=signal.confidence,
             regime=(signal.components or {}).get("regime"),
+            # Indicatorwaarden op het instapmoment vastleggen.
+            #
+            # Deze werden berekend, gebruikt voor de beslissing en weggegooid.
+            # Zonder ze is geen correlatieanalyse mogelijk: er is niets om de
+            # uitkomst tegen af te zetten, en dan is een vraag als "welke
+            # marktomstandigheden zijn winstgevend" onbeantwoordbaar - niet
+            # vanwege te weinig trades maar omdat de gegevens ontbreken.
+            #
+            # Puur observatie: ze veranderen geen enkele beslissing.
+            entry_atr=(signal.components or {}).get("atr"),
+            entry_adx=(signal.components or {}).get("adx"),
+            entry_rsi=(signal.components or {}).get("rsi_reversion"),
+            entry_ema_dist=(signal.components or {}).get("ema_dist"),
+            entry_trend=(signal.components or {}).get("trend"),
+            entry_momentum=(signal.components or {}).get("momentum"),
             broker_ticket=str(result.ticket) if result.ticket else None,
         )
         await self.hass.async_add_executor_job(self.db.insert_trade, trade)

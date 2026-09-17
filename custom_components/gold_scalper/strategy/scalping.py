@@ -478,6 +478,24 @@ def evaluate(
     # --- De kostenpoort ------------------------------------------------------
     a = atr(candles, 14)
     atr_value = (a[-1] or 0.0) * cfg.atr_correction
+
+    # Ruwe indicatorwaarden erbij, naast de genormaliseerde scores.
+    #
+    # De scores lopen van -1 tot 1 en zijn daarmee niet te vergelijken tussen
+    # markten of periodes. Voor een correlatieanalyse zijn de ruwe waarden
+    # nodig: een RSI van 28 zegt iets anders dan een score van -0,72, ook al
+    # komt het tweede uit het eerste.
+    #
+    # Zonder deze waarden is de vraag "welke marktomstandigheden zijn
+    # winstgevend" onbeantwoordbaar - er is niets om de uitkomst tegen af te
+    # zetten. Puur observatie: ze veranderen geen enkele beslissing.
+    components["atr"] = round(atr_value, 4)
+    if len(close) >= 60:
+        snel = sum(close[-20:]) / 20.0
+        langzaam = sum(close[-60:]) / 60.0
+        if langzaam:
+            components["ema_dist"] = round((snel - langzaam) / langzaam * 100, 4)
+
     if atr_value <= 0:
         return reject("no_atr", "ATR is nul; kan geen doelen bepalen")
 

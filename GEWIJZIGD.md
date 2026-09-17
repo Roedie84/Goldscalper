@@ -1,52 +1,36 @@
-# Van 4.17.1 naar 4.25.0
+# Versie 5.1.0
 
-Geverifieerd op een verse kloon van je GitHub: **855 tests groen**.
+Geverifieerd op een verse kloon van je GitHub: **860 tests groen**.
 
-## De waarden klopten al
+## Wat dit toevoegt
 
-Negen van je elf zichtbare trades kloppen tot op de cent met het overzicht van
-de broker. Het probleem was de **eenheid**: mijn tabel stond in de valuta van
-het instrument, de broker rekent in accountvaluta.
+**Zes indicatorwaarden per trade.** ATR, ADX, RSI, EMA-afstand, trendsterkte en
+momentum op het instapmoment.
 
-    -9.49 x 0.874 = -8.29   tegenover de -8.29 van de broker
+Die werden berekend, gebruikt voor de beslissing en weggegooid. Zonder ze is
+geen enkele correlatieanalyse mogelijk: er is niets om de uitkomst tegen af te
+zetten.
 
-Bij een koers rond 0,87 scheelt dat dertien procent, en dan lijkt een
-kloppende administratie fout.
+Van de zestien kenmerken die een edge-analyse vraagt, werden er zes niet
+bewaard — en dat waren precies deze. De vraag "welke marktomstandigheden zijn
+winstgevend" was daardoor onbeantwoordbaar, niet vanwege te weinig trades maar
+omdat de gegevens ontbraken.
 
-## Nieuw: een kolom in accountvaluta
+Bestaande databases krijgen de kolommen er automatisch bij; er gaat niets
+verloren.
 
-De tradetabel heeft er een kolom bij met het bedrag in de valuta van je
-rekening, naast het bedrag in instrumentvaluta. Nu is elke regel rechtstreeks
-te vergelijken.
+**Puur observatie.** Er verandert geen enkele beslissing, dus je bewijsfase
+loopt door. Er staat een test op die een toekomstige poging om hier een filter
+van te maken tegenhoudt.
 
-Zonder bekende koers blijft die kolom leeg in plaats van een geschat bedrag te
-tonen: een bedrag dat eruitziet als een meting maar er geen is, is erger dan
-een leeg veld.
+## Ook hierin
 
-## Ook in deze versie
+`signal_confidence` werd nergens vastgelegd terwijl het veld bestond. Nu wel.
 
-**Het sluitmoment komt van de broker.** Het eigen tijdstempel liep tot
-negentig minuten uit de pas, waardoor je rijen op tijdstip vergeleek en bij de
-verkeerde trade uitkwam.
+## Wat je hierna kunt
 
-**Omvang scheidt trades die op één cent liggen.** Twee longs op 4336,13 en
-4336,14 kregen dezelfde uitstapprijs; hun omvang van 1,69 tegen 1,75 ounce
-scheidt ze wel.
-
-**Het bedrag komt van de broker.** Zelf narekenen uit prijzen leverde steeds
-afwijkingen op door details die niet te controleren vielen.
-
-**Een wisselvallige test hersteld.** `test_history_is_reproducible` faalde
-ongeveer één op de honderd keer omdat de gesimuleerde reeks aan het huidige
-moment is geankerd en er een minuutgrens tussen twee aanroepen kon vallen. Een
-test die soms faalt leer je negeren.
-
-## Na installatie
-
-    action: gold_scalper.recheck_exits
-
-De trades krijgen dan hun juiste prijs, bedrag en sluittijd, en de nieuwe kolom
-laat ze naast het overzicht van de broker zien.
+Over een paar maanden is de edge-analyse uitvoerbaar. Nu nog niet: elf groepen
+uit 105 trades is tien trades per groep, en dat is ruis.
 
 ## Niet meegeleverd
 
