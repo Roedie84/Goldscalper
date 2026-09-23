@@ -900,3 +900,23 @@ def test_the_close_time_prefers_the_timestamp():
     venue = ig({"/history/transactions": transacties})
     deal = asyncio.run(venue.closed_deal("T1", 4345.09, "buy", None, 1.80))
     assert deal["closed_at"] == "2026-09-16T14:20:33"
+
+
+def test_a_missing_transaction_is_reported_once_per_ticket(caplog):
+    """Het overzicht van de broker loopt uren achter en de correctie probeert
+    het elke paar minuten opnieuw. Elke mislukte poging melden gaf zo'n
+    veertig identieke waarschuwingen per trade."""
+    import logging
+
+    transacties = ({"transactions": [
+        {"openLevel": "4333.97", "closeLevel": "4340.00", "size": "-1.0"},
+    ]}, 200)
+    venue = ig({"/history/transactions": transacties})
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(5):
+            asyncio.run(venue.closed_deal("T1", 4319.64, "sell"))
+    waarschuwingen = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "Geen transactie gevonden" in r.getMessage()
+    ]
+    assert len(waarschuwingen) == 1

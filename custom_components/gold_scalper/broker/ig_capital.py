@@ -129,6 +129,8 @@ class IgStyleVenue(ExecutionVenue):
             if c not in "\u200b\u200c\u200d\ufeff\u2060"
         )
         self._base = self.base_urls[environment]
+        #: Tickets waarvoor al gemeld is dat de transactie nog ontbreekt.
+        self._niet_gevonden_gemeld: set = set()
         self.environment = environment
         self.epic = epic
         self.supports_trading = trading_enabled
@@ -910,7 +912,18 @@ class IgStyleVenue(ExecutionVenue):
                 f"{n} (verschil {v:.2f}, gesloten {t.get('dateUtc')})"
                 for v, n, t in kandidaten[:3]
             ]
-            _LOGGER.warning(
+            # Eén keer per ticket als waarschuwing, daarna stil.
+            #
+            # Het overzicht van de broker loopt uren achter, en de correctie
+            # probeert het elke paar minuten opnieuw. Elke mislukte poging
+            # melden gaf zo'n veertig identieke regels per trade - ruis die de
+            # meldingen die er wél toe doen onleesbaar maakt.
+            log = (
+                _LOGGER.debug if ticket in self._niet_gevonden_gemeld
+                else _LOGGER.warning
+            )
+            self._niet_gevonden_gemeld.add(ticket)
+            log(
                 "Geen transactie gevonden voor instapprijs %.2f (ticket %s). "
                 "%d transacties bekeken, nieuwste %s, oudste %s. "
                 "Dichtstbijzijnde instapprijzen: %s",
