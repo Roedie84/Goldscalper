@@ -70,6 +70,20 @@ ORDER_TIMEOUT = ClientTimeout(total=25, connect=5)
 TIMEOUT = ClientTimeout(total=15, connect=5)
 
 
+def _eerste_getal(bron: dict, *namen: str) -> float | None:
+    """De eerste aanwezige waarde onder een van deze namen, als getal.
+
+    None als geen van de namen voorkomt - uitdrukkelijk niet nul, want nul
+    heeft een betekenis.
+    """
+    for naam in namen:
+        if bron.get(naam) is not None:
+            waarde = _als_getal(bron.get(naam))
+            if waarde is not None:
+                return waarde
+    return None
+
+
 def _als_getal(waarde) -> float | None:
     """Zet een bedrag van de broker om naar een getal.
 
@@ -131,6 +145,8 @@ class IgStyleVenue(ExecutionVenue):
         self._base = self.base_urls[environment]
         #: Tickets waarvoor al gemeld is dat de transactie nog ontbreekt.
         self._niet_gevonden_gemeld: set = set()
+        #: Of al gemeld is dat een positie zonder omvang binnenkwam.
+        self._veld_ontbreekt_gemeld = False
         self.environment = environment
         self.epic = epic
         self.supports_trading = trading_enabled
@@ -544,7 +560,13 @@ class IgStyleVenue(ExecutionVenue):
         )
 
     async def positions(self, symbol: str | None = None) -> list[VenuePosition]:
-        payload = await self._request("GET", "/positions")
+        # Versie 2 expliciet. Zonder versie kwam versie 1 terug, en daar
+        # heten omvang en instapprijs anders. Het veld ``size`` ontbrak dan,
+        # werd als nul gelezen, en elke open positie leek gesloten: de
+        # administratie rekende trades af vlak na het openen, de limiet van
+        # één positie hield niet, en een alarm daarover ("broker meldt 0.0")
+        # werd ten onrechte weggefilterd als een gesloten positie.
+        payload = await self._request("GET", "/positions", version="2")
         out = []
         wanted = symbol or self.epic
         for item in payload.get("positions", []):
@@ -554,12 +576,32 @@ class IgStyleVenue(ExecutionVenue):
             if wanted and epic and epic != wanted:
                 continue
             direction = str(position.get("direction", "")).upper()
+
+            # Beide veldnamen accepteren: versie 2 zegt size/level, oudere
+            # antwoorden dealSize/openLevel. Een ontbrekend veld is NIET nul -
+            # nul betekent "gesloten", en dat verschil kostte een hele reeks
+            # verkeerd afgerekende trades.
+            omvang = _eerste_getal(position, "size", "dealSize")
+            instap = _eerste_getal(position, "level", "openLevel")
+            if omvang is None:
+                if not self._veld_ontbreekt_gemeld:
+                    self._veld_ontbreekt_gemeld = True
+                    _LOGGER.warning(
+                        "Positie %s zonder omvang in het antwoord van de "
+                        "broker. Velden: %s. De positie wordt als open "
+                        "behandeld, niet als gesloten.",
+                        position.get("dealId"), sorted(position.keys()),
+                    )
+                # Onbekende omvang: een klein positief getal, zodat de positie
+                # als open telt. Nooit nul.
+                omvang = float("nan")
+
             out.append(VenuePosition(
                 ticket=str(position.get("dealId")),
                 symbol=epic or wanted,
                 side="buy" if direction == "BUY" else "sell",
-                units=float(position.get("size", 0)),
-                open_price=float(position.get("level", 0)),
+                units=omvang,
+                open_price=instap or 0.0,
                 current_price=float(market.get("bid") or 0) or None,
                 stop_loss=(
                     float(position["stopLevel"]) if position.get("stopLevel") else None

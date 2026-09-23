@@ -29,6 +29,8 @@ gaat. Dat is precies het soort fout dat je pas ontdekt als het geld al weg is.
 
 from __future__ import annotations
 
+import math
+
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -53,6 +55,35 @@ class VenueQuote:
     @property
     def spread(self) -> float:
         return self.ask - self.bid
+
+
+
+def size_says_closed(units) -> bool:
+    """Zegt deze omvang dat de positie gesloten is?
+
+    Alleen een echt getal van (vrijwel) nul betekent gesloten. Een ontbrekende
+    of onleesbare omvang betekent "onbekend", en onbekend is open.
+
+    Dit onderscheid ontbrak. Een ontbrekend veld werd als nul gelezen, en elke
+    open positie leek gesloten - trades werden afgerekend vlak na het openen,
+    en de limiet van één positie hield niet.
+    """
+    try:
+        waarde = float(units)
+    except (TypeError, ValueError):
+        return False
+    if math.isnan(waarde) or math.isinf(waarde):
+        return False
+    return abs(waarde) <= 0.005
+
+
+def size_is_known(units) -> bool:
+    """Is de omvang een bruikbaar getal om mee te vergelijken?"""
+    try:
+        waarde = float(units)
+    except (TypeError, ValueError):
+        return False
+    return not (math.isnan(waarde) or math.isinf(waarde))
 
 
 @dataclass(slots=True)

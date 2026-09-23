@@ -28,6 +28,8 @@ een aanvulling daarop, geen vervanging.
 
 from __future__ import annotations
 
+from .broker.adapter import size_says_closed
+
 import asyncio
 import logging
 from dataclasses import dataclass, field
@@ -160,7 +162,7 @@ class LifecycleController:
         # een getal naast een string levert altijd 'niet gevonden' op.
         broker_tickets = {
             str(p["ticket"]) for p in broker_positions
-            if float(p.get("volume") or p.get("units") or 0) > 0.005
+            if not size_says_closed(p.get("volume", p.get("units")))
         }
         db_tickets = {str(t) for t in database_open_tickets}
 
@@ -175,7 +177,7 @@ class LifecycleController:
         orphaned = [
             p for p in broker_positions
             if str(p["ticket"]) not in db_tickets
-            and float(p.get("volume") or p.get("units") or 0) > 0.005
+            and not size_says_closed(p.get("volume", p.get("units")))
         ]
         missing = sorted(db_tickets - broker_tickets)
 

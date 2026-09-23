@@ -920,3 +920,48 @@ def test_a_missing_transaction_is_reported_once_per_ticket(caplog):
         if r.levelno == logging.WARNING and "Geen transactie gevonden" in r.getMessage()
     ]
     assert len(waarschuwingen) == 1
+
+
+# ---------------- omvang van een positie ----------------
+
+def test_positions_are_requested_as_version_2():
+    """Zonder versie kwam versie 1 terug, waar omvang en instapprijs anders
+    heten. De omvang werd dan als nul gelezen."""
+    venue = ig({"/positions": ({"positions": []}, 200)})
+    asyncio.run(venue.positions())
+    call = next(c for c in venue._session.calls if c["url"].endswith("/positions"))
+    assert call["headers"].get("Version") == "2"
+
+
+def test_old_field_names_are_read_too():
+    venue = ig({"/positions": ({"positions": [{
+        "market": {"epic": "CS.D.CFEGOLD.CEA.IP", "bid": 4310.0},
+        "position": {"dealId": "D1", "direction": "SELL",
+                     "dealSize": 1.76, "openLevel": 4319.64},
+    }]}, 200)})
+    pos = asyncio.run(venue.positions("CS.D.CFEGOLD.CEA.IP"))[0]
+    assert pos.units == pytest.approx(1.76)
+    assert pos.open_price == pytest.approx(4319.64)
+
+
+def test_a_missing_size_is_never_read_as_closed():
+    """Nul betekent gesloten. Een ontbrekend veld is onbekend, en onbekend is
+    open - anders leek elke open positie gesloten zodra de broker het veld
+    anders noemde dan verwacht."""
+    from gold_scalper.broker.adapter import size_says_closed
+
+    venue = ig({"/positions": ({"positions": [{
+        "market": {"epic": "CS.D.CFEGOLD.CEA.IP"},
+        "position": {"dealId": "D1", "direction": "SELL", "level": 4319.64},
+    }]}, 200)})
+    pos = asyncio.run(venue.positions("CS.D.CFEGOLD.CEA.IP"))[0]
+    assert not size_says_closed(pos.units)
+
+
+@pytest.mark.parametrize("waarde,gesloten", [
+    (0.0, True), (0.001, True), (1.76, False),
+    (float("nan"), False), (None, False), ("", False),
+])
+def test_only_a_real_zero_means_closed(waarde, gesloten):
+    from gold_scalper.broker.adapter import size_says_closed
+    assert size_says_closed(waarde) is gesloten

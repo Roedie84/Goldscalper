@@ -447,3 +447,30 @@ def test_the_fingerprint_contains_the_currency(venue, tmp_path, monkeypatch):
         "units": 1.3, "costs_disabled": False,
     })
     assert materiaal.get("account_currency") == "EUR"
+
+
+def test_an_open_position_with_unknown_size_is_not_settled(venue, tmp_path,
+                                                           monkeypatch):
+    """Het scenario van 23 september: de broker gaf de omvang onder een andere
+    naam, die werd als nul gelezen, en de administratie rekende een open
+    short af vlak na het openen. De positie liep bij de broker nog ruim een
+    uur door."""
+    from gold_scalper.storage.database import Trade
+
+    coordinator, _ = _coordinator(venue, tmp_path, monkeypatch)
+    asyncio.run(venue.place_order("GOLD", "sell", 1.76, stop_loss=4410.0))
+    venue._positions[0].units = float("nan")          # omvang onbekend
+
+    coordinator.db.insert_trade(Trade(
+        run_id=coordinator.run_id, mode="demo", symbol="GOLD", side="sell",
+        volume=0.0176, open_time=NOW.isoformat(), open_price=4399.7,
+        open_mid=4400.0, open_spread=0.6, stop_loss=4410.0,
+        take_profit=4385.0, broker_ticket="T1",
+    ))
+
+    asyncio.run(coordinator._settle_vanished_positions(
+        asyncio.run(venue.quote()), NOW
+    ))
+    assert coordinator.db.open_trades(coordinator.run_id), (
+        "een open positie met onbekende omvang is afgerekend"
+    )

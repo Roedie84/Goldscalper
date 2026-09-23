@@ -614,24 +614,21 @@ def test_repeated_warnings_are_throttled():
     )
 
 
-def test_zero_size_positions_are_skipped_everywhere():
-    """Een positie van nul ounce is overal een gesloten positie.
+def test_one_rule_decides_whether_a_position_is_closed():
+    """Of een positie gesloten is, beslist één functie: `size_says_closed`.
 
-    De fix is drie keer los toegepast — in de vergelijkingslaag, in de
-    afwikkeling en in de levenscyclus — en de derde is een keer overgeslagen.
-    Gevolg: de vergelijkingslaag meldde 'gesloten' terwijl de levenscyclus in
-    noodstop ging.
+    Eerst stond dezelfde drempel op drie plekken los - en elke plek las een
+    ontbrekend veld als nul. Dat nul betekende "gesloten", dus elke open
+    positie leek gesloten zodra de broker het veld anders noemde dan verwacht.
     """
-    plekken = [
-        (PKG / "broker" / "reconcile_audit.py", "units <= SIZE_TOLERANCE"),
-        (PKG / "lifecycle.py", "> 0.005"),
-        (PKG / "coordinator.py", "> 0.005"),
-    ]
-    for path, merkteken in plekken:
+    for path in (
+        PKG / "broker" / "reconcile_audit.py",
+        PKG / "lifecycle.py",
+        PKG / "coordinator.py",
+    ):
         bron = path.read_text(encoding="utf-8")
-        assert merkteken in bron, (
-            f"{path.name} slaat nulposities niet over"
-        )
+        assert "size_says_closed" in bron, f"{path.name} volgt de regel niet"
+        assert "> 0.005" not in bron, f"{path.name} heeft nog een eigen drempel"
 
 
 def test_calls_pass_enough_arguments():

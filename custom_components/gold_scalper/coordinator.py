@@ -27,7 +27,9 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .analysis.signals import Candles
-from .broker.adapter import ExecutionVenue, VenueError, VenueQuote
+from .broker.adapter import (
+    ExecutionVenue, VenueError, VenueQuote, size_says_closed,
+)
 from .broker.execution_safety import BrokerLimits, SafeExecutor
 from .broker.currency import Conversion, derive_rate_from_position
 from .broker.reconcile_audit import compare_positions
@@ -2104,7 +2106,7 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # levend" beschouwen zou de trade eeuwig open houden in de database.
         live_tickets = {
             str(getattr(p, "ticket", "")) for p in live
-            if float(getattr(p, "units", 0) or 0) > 0.005
+            if not size_says_closed(getattr(p, "units", None))
         }
         open_trades = await self.hass.async_add_executor_job(
             self.db.open_trades, self.run_id

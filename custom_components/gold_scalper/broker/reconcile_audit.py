@@ -24,6 +24,8 @@ zonder stop. Dat is het enige scenario met in principe onbegrensd verlies.
 
 from __future__ import annotations
 
+from .adapter import size_is_known, size_says_closed
+
 import logging
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -93,7 +95,7 @@ def compare_positions(
         # verschilt" behandelen levert een kritieke bevinding op en legt de
         # handel stil, terwijl er niets aan de hand is: de trade hoort gewoon
         # te worden afgerekend.
-        if position.units <= SIZE_TOLERANCE:
+        if size_says_closed(position.units):
             audit.findings.append(Finding(
                 "informatie", "gesloten_bij_broker",
                 f"Positie {ticket} staat bij de broker op nul en is dus "
@@ -138,7 +140,8 @@ def compare_positions(
         from ..const import CONTRACT_SIZE
 
         expected_units = trade.volume * CONTRACT_SIZE
-        if abs(expected_units - position.units) > SIZE_TOLERANCE:
+        if size_is_known(position.units) and \
+                abs(expected_units - position.units) > SIZE_TOLERANCE:
             audit.findings.append(Finding(
                 "kritiek", "omvang_verschilt",
                 f"Positie {ticket}: broker meldt {position.units}, database "
