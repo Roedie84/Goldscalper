@@ -1,0 +1,1153 @@
+"""IG en Capital.com: twee brokers, één API-vorm.
+
+Capital.com heeft hun API gemodelleerd naar die van IG. Beide gebruiken een
+sessie die je opent met een API-sleutel plus inloggegevens, en die vervolgens
+twee headers teruggeeft - ``CST`` en ``X-SECURITY-TOKEN`` - die je bij elk
+volgend verzoek meestuurt. De endpointvormen komen grotendeels overeen.
+
+Daarom staat het gedeelde deel in ``IgStyleVenue`` en zijn de twee varianten
+dun. Waar ze verschillen, verschillen ze echt:
+
+**IG bevestigt orders in twee stappen.** Een order plaatsen levert een
+``dealReference`` op, geen positie. Je moet daarna ``/confirms/{ref}`` opvragen
+om te weten of hij is geaccepteerd en welk ``dealId`` eruit kwam. Dat lijkt
+omslachtig maar is juist gunstig: het geeft een spoor dat na een verbroken
+verbinding terug te vinden is.
+
+**Capital.com laat sessies verlopen na tien minuten inactiviteit.** Bij een
+verversingsinterval van twintig seconden speelt dat niet, maar na een pauze -
+gesloten markt, noodstop - moet er opnieuw ingelogd worden. Beide adapters
+loggen daarom automatisch opnieuw in bij een 401.
+
+**Capital.com wil het API-sleutelwachtwoord, niet je accountwachtwoord.** Bij
+het aanmaken van een sleutel stel je een apart wachtwoord in; dát hoort in het
+``password``-veld. Je inlogwachtwoord invullen levert een 401 op die er precies
+zo uitziet als verkeerde inloggegevens, en dan zoek je in de verkeerde richting.
+IG gebruikt wél gewoon je accountwachtwoord.
+
+Geen van beide is door mij tegen een echte verbinding getest. De parsing is
+gebouwd op hun publieke documentatie en getoetst tegen nagebootste antwoorden.
+Reken erop dat de eerste verbinding iets oplevert dat hier nog niet klopt; de
+foutmeldingen zijn daarom zo specifiek mogelijk gemaakt.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+
+from aiohttp import ClientError, ClientSession, ClientTimeout
+
+from ..analysis.signals import Candles
+from .adapter import (
+    AccountSnapshot,
+    ExecutionVenue,
+    OrderResult,
+    TradingDisabledError,
+    VenueError,
+    VenuePosition,
+    VenueQuote,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+#: Timeouts per soort verzoek. Eén waarde voor alles deugt niet: een koers en
+#: een order hebben een heel verschillende urgentie.
+#:
+#: **Koersen: kort.** Bij een pollinterval van tien seconden is een koers die
+#: na veertien seconden binnenkomt al verouderd voordat je hem gebruikt. Beter
+#: afbreken en de volgende cyclus afwachten dan de lus laten wachten op data
+#: die je toch niet meer wilt.
+QUOTE_TIMEOUT = ClientTimeout(total=6, connect=3)
+
+#: **Orders: langer.** Hier is afbreken juist gevaarlijk: je weet dan niet of
+#: de order is uitgevoerd. Liever wachten en een duidelijk antwoord krijgen.
+ORDER_TIMEOUT = ClientTimeout(total=25, connect=5)
+
+#: Alles daartussen: sessies, accountgegevens, historie.
+TIMEOUT = ClientTimeout(total=15, connect=5)
+
+
+def _als_getal(waarde) -> float | None:
+    """Zet een bedrag van de broker om naar een getal.
+
+    De broker zet er een valutateken voor, bijvoorbeeld "E11.77" voor euro's.
+    Blind float() erop laten falen zou de hele afwikkeling laten struikelen op
+    een opmaakdetail.
+    """
+    if waarde is None:
+        return None
+    if isinstance(waarde, (int, float)):
+        return float(waarde)
+    tekst = str(waarde).strip()
+    schoon = "".join(c for c in tekst if c.isdigit() or c in ".-")
+    try:
+        return float(schoon) if schoon not in ("", "-", ".") else None
+    except ValueError:
+        return None
+
+
+class IgStyleVenue(ExecutionVenue):
+    """Gedeelde laag voor IG en Capital.com."""
+
+    runs_in_process = True
+    is_simulated = False
+    has_real_spread = True
+
+    #: Per broker anders.
+    base_urls: dict[str, str] = {}
+    api_key_header = "X-CAP-API-KEY"
+    #: Vertaling van onze tijdsframes naar de resolutie van de broker.
+    resolutions: dict[str, str] = {}
+
+    def __init__(
+        self,
+        session: ClientSession,
+        api_key: str,
+        identifier: str,
+        password: str,
+        environment: str = "demo",
+        epic: str = "GOLD",
+        trading_enabled: bool = False,
+        max_units: float = 5.0,
+    ) -> None:
+        if environment not in self.base_urls:
+            raise ValueError(
+                f"Onbekende omgeving '{environment}'; kies uit {list(self.base_urls)}"
+            )
+        self._session = session
+        self._api_key = self._clean(api_key)
+        self._identifier = self._clean(identifier)
+        # Wachtwoorden mogen bewust spaties bevatten; alleen onzichtbare
+        # tekens eruit, niet trimmen.
+        self._password = "".join(
+            c for c in str(password)
+            if c not in "\u200b\u200c\u200d\ufeff\u2060"
+        )
+        self._base = self.base_urls[environment]
+        self.environment = environment
+        self.epic = epic
+        self.supports_trading = trading_enabled
+        self.max_units = max_units
+
+        self._cst: str | None = None
+        self._token: str | None = None
+        self._account_id: str | None = None
+        self._lock = asyncio.Lock()
+        #: Laatst bekende koers, om een gesloten markt te overbruggen zonder
+        #: de integratie te laten falen.
+        self._last_known_price: float | None = None
+        self._last_known_spread: float = 0.0
+
+    # -- sessie -------------------------------------------------------------- #
+
+    def _headers(self, version: str = "1") -> dict:
+        headers = {
+            self.api_key_header: self._api_key,
+            "Content-Type": "application/json; charset=UTF-8",
+            "Accept": "application/json; charset=UTF-8",
+            "Version": version,
+        }
+        if self._cst:
+            headers["CST"] = self._cst
+        if self._token:
+            headers["X-SECURITY-TOKEN"] = self._token
+        return headers
+
+    async def _login(self) -> None:
+        """Open een sessie en bewaar de twee tokens."""
+        # Vooraf controleren wat de broker anders met een cryptische code
+        # afwijst. Dit scheelt een ronde waarin je moet raden welk veld fout is.
+        if "@" in self._identifier:
+            raise VenueError(
+                f"'{self._identifier}' lijkt een e-mailadres. {self.name.upper()} "
+                "wil je gebruikersnaam (login), zonder apenstaartje. Bij een "
+                "demo-account is dat vaak je live-naam met een achtervoegsel; "
+                "log in op het demo-platform en kijk welke naam daar staat."
+            )
+        if not self._identifier:
+            raise VenueError("De gebruikersnaam is leeg.")
+        if not self._api_key:
+            raise VenueError("De API-sleutel is leeg.")
+
+        url = f"{self._base}/session"
+        body = {"identifier": self._identifier, "password": self._password}
+        try:
+            async with self._session.post(
+                url, json=body, headers=self._headers(), timeout=TIMEOUT
+            ) as response:
+                payload = await response.json(content_type=None)
+                if response.status == 401:
+                    raise VenueError(
+                        "Inloggen geweigerd. Controleer API-sleutel, gebruikersnaam "
+                        "en wachtwoord, en of ze bij deze omgeving horen "
+                        f"({self.environment})."
+                    )
+                if response.status >= 400:
+                    # Nooit de foutcode van de broker weggooien: die zegt
+                    # precies wat er mis is - vergrendeld account, sleutel
+                    # uitgeschakeld, verkeerde omgeving - terwijl een eigen
+                    # samenvatting je laat raden.
+                    raise VenueError(
+                        "Inloggen mislukte. "
+                        + self._describe_error(response.status, payload)
+                    )
+
+                self._cst = response.headers.get("CST")
+                self._token = response.headers.get("X-SECURITY-TOKEN")
+                if not self._cst or not self._token:
+                    raise VenueError(
+                        "De broker gaf geen CST- of X-SECURITY-TOKEN-header terug; "
+                        "zonder die twee is geen enkel vervolgverzoek mogelijk."
+                    )
+                self._account_id = self._extract_account_id(payload)
+        except VenueError:
+            raise
+        except ClientError as err:
+            raise VenueError(f"Netwerkfout bij inloggen: {type(err).__name__}: {err}") from err
+
+    def _extract_account_id(self, payload: dict) -> str | None:
+        return payload.get("currentAccountId") or payload.get("accountId")
+
+    def _close_path(self, ticket: str) -> str:
+        """Pad voor het sluiten van een positie.
+
+        Bij IG loopt dat via het OTC-endpoint zonder ticket in het pad; het
+        dealId zit in de body. Capital.com verwacht het ticket wél in het pad.
+        """
+        return self._order_path
+
+    async def _request(
+        self, method: str, path: str, version: str = "1",
+        timeout: ClientTimeout | None = None,
+        headers_extra: dict | None = None, **kwargs,
+    ):
+        """Verzoek met automatische herlogin bij een verlopen sessie."""
+        async with self._lock:
+            if not self._cst:
+                await self._login()
+
+        for attempt in (1, 2):
+            try:
+                headers = self._headers(version)
+                if headers_extra:
+                    headers.update(headers_extra)
+                async with self._session.request(
+                    method, f"{self._base}{path}",
+                    headers=headers,
+                    timeout=timeout or TIMEOUT, **kwargs,
+                ) as response:
+                    if response.status in (401, 403) and attempt == 1:
+                        # Sessie verlopen. Capital.com doet dat na tien minuten
+                        # inactiviteit; IG na langere tijd.
+                        _LOGGER.debug("Sessie verlopen; opnieuw inloggen")
+                        async with self._lock:
+                            await self._login()
+                        continue
+                    payload = await response.json(content_type=None)
+                    if response.status >= 400:
+                        raise VenueError(self._describe_error(response.status, payload))
+                    return payload
+            except VenueError:
+                raise
+            except TimeoutError as err:
+                # Zonder deze tak komt een timeout door als een kale
+                # asyncio-fout, zonder te vertellen welk verzoek het betrof of
+                # hoe lang hij heeft gewacht.
+                limit = (timeout or TIMEOUT).total
+                raise VenueError(
+                    f"{self.name.upper()} antwoordde niet binnen {limit}s op "
+                    f"{method} {path}. Bij koersen is dat geen ramp - de "
+                    "volgende cyclus probeert opnieuw - maar bij herhaling wijst "
+                    "het op een trage verbinding of drukte bij de broker."
+                ) from err
+            except ClientError as err:
+                raise VenueError(
+                    f"Netwerkfout richting broker: {type(err).__name__}: {err}"
+                ) from err
+        raise VenueError("Kon geen geldige sessie krijgen na opnieuw inloggen")
+
+    #: Foutcodes van de broker naar iets waar je wat aan hebt.
+    #:
+    #: De ruwe codes zijn onbruikbaar voor wie de API niet kent.
+    #: 'validation.pattern.invalid.authenticationRequest.identifier' zegt niet
+    #: dat je je e-mailadres hebt ingevuld terwijl IG een gebruikersnaam wil,
+    #: maar dat is bijna altijd wat er aan de hand is.
+    ERROR_HINTS = {
+        "validation.pattern.invalid.authenticationRequest.identifier": (
+            "De gebruikersnaam wordt afgewezen op vorm. IG wil je LOGIN, niet je "
+            "e-mailadres: geen apenstaartje, alleen letters en cijfers. Bij een "
+            "demo-account is dat vaak je live-gebruikersnaam met een achtervoegsel. "
+            "Log in op het demo-platform en kijk welke naam daar bovenaan staat."
+        ),
+        "validation.null-not-allowed.authenticationRequest.identifier": (
+            "De gebruikersnaam is leeg aangekomen."
+        ),
+        "validation.pattern.invalid.authenticationRequest.password": (
+            "Het wachtwoord wordt afgewezen op vorm; controleer op meegekopieerde "
+            "spaties of tekens."
+        ),
+        "error.security.invalid-details": (
+            "Gebruikersnaam of wachtwoord onjuist. Let op: het demo-account heeft "
+            "eigen inloggegevens, los van je live account."
+        ),
+        "invalid.details": "Gebruikersnaam of wachtwoord onjuist.",
+        "error.security.api-key-invalid": (
+            "De API-sleutel wordt niet herkend. Een sleutel geldt voor één "
+            "omgeving: een demo-sleutel werkt niet op live en omgekeerd."
+        ),
+        "error.security.api-key-disabled": "De API-sleutel staat op uitgeschakeld.",
+        "error.security.api-key-revoked": "De API-sleutel is ingetrokken.",
+        "error.security.account-locked": (
+            "Het account is tijdelijk vergrendeld na te veel mislukte pogingen. "
+            "Wacht een kwartier; log daarna eerst op het webplatform in om de "
+            "vergrendeling op te heffen."
+        ),
+        "error.security.too-many-failed-attempts": (
+            "Te veel mislukte inlogpogingen. Wacht een kwartier voordat je het "
+            "opnieuw probeert; verder proberen verlengt de blokkade."
+        ),
+        "error.security.api-key-missing": "Er is geen API-sleutel meegestuurd.",
+        "error.security.api-key-restricted": (
+            "De sleutel is beperkt, bijvoorbeeld tot bepaalde IP-adressen."
+        ),
+        "error.public-api.key-missing": "Er is geen API-sleutel meegestuurd.",
+        "error.security.oauth-token-invalid": "Sessietoken ongeldig.",
+        "endpoint.unavailable.for.api-key": (
+            "Dit endpoint is niet beschikbaar voor deze sleutel. Controleer of de "
+            "sleutel bij de gekozen omgeving hoort: een live-sleutel werkt niet "
+            "op demo en omgekeerd."
+        ),
+        "error.security.account-token-invalid": "Sessietoken ongeldig; opnieuw inloggen.",
+        "error.public-api.exceeded-account-allowance": (
+            "Rate limit bereikt. Wacht even; op demo liggen de limieten lager."
+        ),
+        "error.public-api.exceeded-api-key-allowance": "Rate limit van de sleutel bereikt.",
+        "error.public-api.exceeded-account-historical-data-allowance": (
+            "Het weekquotum voor historische koersen is op. IG rekent per "
+            "opgehaald datapunt; op demo is dat quotum krap. Wacht tot de "
+            "weekwissel of gebruik een hoger tijdsframe, dat kost minder punten."
+        ),
+        "error.price-history.io-error": "IG kon de koershistorie niet leveren.",
+        "error.public-api.failure.encryption.required": (
+            "Deze broker eist een versleuteld wachtwoord voor dit endpoint."
+        ),
+        "error.security.account-migrated": (
+            "Het account is gemigreerd; log eerst in op het webplatform."
+        ),
+        "error.security.client-token-invalid": "Sleutel of sessie ongeldig.",
+        "error.invalid.details": "Ongeldige inloggegevens.",
+    }
+
+    @classmethod
+    def _describe_error(cls, status: int, payload) -> str:
+        if isinstance(payload, dict):
+            code = payload.get("errorCode") or payload.get("error") or ""
+        else:
+            code = str(payload)[:200]
+        hint = cls.ERROR_HINTS.get(code, "")
+        if not hint:
+            # Onbekende code: geef in elk geval het patroon mee, dat helpt vaak
+            # al om te zien welk veld de broker afwijst.
+            for known, text in cls.ERROR_HINTS.items():
+                if known.split(".")[-1] and known.split(".")[-1] in code:
+                    hint = text
+                    break
+        return f"Broker gaf HTTP {status}: {code}. {hint}".strip()
+
+    @staticmethod
+    def _clean(value: str) -> str:
+        """Verwijder onzichtbare tekens die bij kopiëren meekomen.
+
+        Een niet-afbrekende ruimte of zero-width space is met het oog niet te
+        zien maar laat elke patroonvalidatie falen. Zonder deze opschoning zoek
+        je in de verkeerde richting, want de waarde ziet er goed uit.
+        """
+        invisible = "\u200b\u200c\u200d\ufeff\u00a0\u2060"
+        cleaned = "".join(c for c in str(value) if c not in invisible)
+        return cleaned.strip()
+
+    # -- marktdata ----------------------------------------------------------- #
+
+    #: Marktstatussen waarin er geen bied- en laatprijs is, maar er ook niets
+    #: mis is. IG publiceert dan simpelweg geen quote.
+    CLOSED_STATUSES = frozenset({
+        "CLOSED", "EDITS_ONLY", "OFFLINE", "SUSPENDED",
+        "AUCTION", "AUCTION_NO_EDIT", "ON_AUCTION", "ON_AUCTION_NO_EDITS",
+    })
+
+    async def quote(self, symbol: str | None = None) -> VenueQuote:
+        epic = symbol or self.epic
+        payload = await self._request(
+            "GET", f"/markets/{epic}", version="3", timeout=QUOTE_TIMEOUT
+        )
+        snapshot = payload.get("snapshot") or {}
+        status = str(snapshot.get("marketStatus", "TRADEABLE")).upper()
+
+        bid = snapshot.get("bid")
+        ask = snapshot.get("offer") or snapshot.get("ask")
+
+        if bid is None or ask is None:
+            # Bij een gesloten markt levert IG een snapshot zonder prijzen. Dat
+            # is geen storing: goud sluit dagelijks kort en het hele weekend.
+            # Hier een fout gooien zou de integratie 's avonds laten falen en
+            # 's ochtends handmatig herstel vereisen.
+            last = snapshot.get("netChange") is not None or status in self.CLOSED_STATUSES
+            if status in self.CLOSED_STATUSES or last:
+                fallback = self._last_known_price
+                if fallback is None:
+                    raise VenueError(
+                        f"De markt voor '{epic}' is gesloten ({status}) en er is nog "
+                        "geen eerdere koers bekend. Probeer het opnieuw zodra de "
+                        "handel opent."
+                    )
+                half = self._last_known_spread / 2.0
+                return VenueQuote(
+                    bid=round(fallback - half, 3), ask=round(fallback + half, 3),
+                    time=datetime.now(timezone.utc), tradeable=False,
+                )
+            raise VenueError(
+                f"Geen bied- of laatprijs voor '{epic}' terwijl de markt op "
+                f"'{status}' staat. Waarschijnlijk klopt de epic niet voor dit "
+                "account. Zoek de juiste met de zoekfunctie van de adapter."
+            )
+
+        self._last_known_price = (float(bid) + float(ask)) / 2.0
+        self._last_known_spread = float(ask) - float(bid)
+        return VenueQuote(
+            bid=float(bid), ask=float(ask),
+            time=datetime.now(timezone.utc),
+            tradeable=status not in self.CLOSED_STATUSES,
+        )
+
+    async def search_markets(self, term: str = "gold") -> list[dict]:
+        """Zoek instrumenten bij de broker.
+
+        Bestaat omdat epics niet te raden zijn en per account kunnen
+        verschillen. In plaats van codes uit een documentatiepagina over te
+        typen kun je zo vragen wat jóuw account werkelijk kent.
+        """
+        payload = await self._request(
+            "GET", "/markets", version="1", params={"searchTerm": term}
+        )
+        out = []
+        for market in payload.get("markets", []):
+            out.append({
+                "epic": market.get("epic"),
+                "name": market.get("instrumentName"),
+                "type": market.get("instrumentType"),
+                "status": market.get("marketStatus"),
+                "bid": market.get("bid"),
+                "offer": market.get("offer"),
+                "expiry": market.get("expiry"),
+            })
+        return out
+
+    async def candles(self, symbol: str, timeframe: str, count: int) -> Candles:
+        if timeframe not in self.resolutions:
+            raise VenueError(
+                f"Tijdsframe '{timeframe}' niet beschikbaar; kies uit "
+                f"{list(self.resolutions)}"
+            )
+        epic = symbol or self.epic
+        payload = await self._request(
+            "GET", f"/prices/{epic}", version="3",
+            params={
+                "resolution": self.resolutions[timeframe],
+                "max": min(count, 1000),
+                # Zonder pageSize pagineert IG met een standaard van 20 stuks,
+                # ongeacht wat je bij max opgeeft. Nul zet paginering uit en
+                # levert de volledige reeks in één antwoord. Zonder deze
+                # parameter kreeg de analyse er nooit meer dan twintig, en die
+                # heeft er minstens zestig nodig.
+                "pageSize": 0,
+            },
+        )
+        rows = []
+        for price in payload.get("prices", []):
+            try:
+                moment = self._parse_time(price.get("snapshotTimeUTC") or price["snapshotTime"])
+                # Mid uit bied en laat: de analyse mag geen halve spread
+                # vertekening oplopen.
+                o = self._mid(price["openPrice"])
+                h = self._mid(price["highPrice"])
+                l = self._mid(price["lowPrice"])
+                c = self._mid(price["closePrice"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if None in (o, h, l, c):
+                continue
+            volume = float(price.get("lastTradedVolume") or 0)
+            rows.append([int(moment.timestamp()), o, h, l, c, volume])
+
+        if not rows:
+            raise VenueError(
+                f"Geen bruikbare candles voor '{epic}' op {timeframe}. Buiten "
+                "handelsuren levert de broker soms een lege reeks."
+            )
+        rows.sort(key=lambda r: r[0])
+        return Candles(
+            timestamp=[r[0] for r in rows], open=[r[1] for r in rows],
+            high=[r[2] for r in rows], low=[r[3] for r in rows],
+            close=[r[4] for r in rows], volume=[r[5] for r in rows],
+        )
+
+    @staticmethod
+    def _mid(level) -> float | None:
+        """Beide brokers geven per candle een bid- en ask-waarde."""
+        if isinstance(level, dict):
+            bid, ask = level.get("bid"), level.get("ask") or level.get("offer")
+            if bid is None or ask is None:
+                return float(bid or ask) if (bid or ask) else None
+            return (float(bid) + float(ask)) / 2.0
+        return float(level) if level is not None else None
+
+    @staticmethod
+    def _parse_time(value: str) -> datetime:
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+            try:
+                return datetime.strptime(value[:26], fmt).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+        raise ValueError(f"Onbekend tijdformaat: {value}")
+
+    # -- account en posities -------------------------------------------------- #
+
+    async def account(self) -> AccountSnapshot:
+        payload = await self._request("GET", "/accounts")
+        accounts = payload.get("accounts") or []
+        if not accounts:
+            raise VenueError("De broker gaf geen accounts terug")
+        chosen = next(
+            (a for a in accounts if a.get("accountId") == self._account_id), accounts[0]
+        )
+        balance = chosen.get("balance") or {}
+        return AccountSnapshot(
+            balance=float(balance.get("balance", 0)),
+            equity=float(balance.get("balance", 0)) + float(balance.get("profitLoss", 0)),
+            margin_used=float(balance.get("deposit", 0)),
+            margin_available=float(balance.get("available", 0)),
+            currency=chosen.get("currency", "EUR"),
+            open_position_count=0,
+        )
+
+    async def positions(self, symbol: str | None = None) -> list[VenuePosition]:
+        payload = await self._request("GET", "/positions")
+        out = []
+        wanted = symbol or self.epic
+        for item in payload.get("positions", []):
+            position = item.get("position") or {}
+            market = item.get("market") or {}
+            epic = market.get("epic")
+            if wanted and epic and epic != wanted:
+                continue
+            direction = str(position.get("direction", "")).upper()
+            out.append(VenuePosition(
+                ticket=str(position.get("dealId")),
+                symbol=epic or wanted,
+                side="buy" if direction == "BUY" else "sell",
+                units=float(position.get("size", 0)),
+                open_price=float(position.get("level", 0)),
+                current_price=float(market.get("bid") or 0) or None,
+                stop_loss=(
+                    float(position["stopLevel"]) if position.get("stopLevel") else None
+                ),
+                take_profit=(
+                    float(position["limitLevel"]) if position.get("limitLevel") else None
+                ),
+                unrealised_pnl=(
+                    float(position["upl"]) if position.get("upl") is not None else None
+                ),
+                comment=position.get("dealReference"),
+            ))
+        return out
+
+    # -- handelen ------------------------------------------------------------- #
+
+    def _guard(self, units: float) -> None:
+        if not self.supports_trading:
+            raise TradingDisabledError(
+                "Handel staat uit voor deze venue. Schakel dit bewust in, en pas "
+                "nadat de bewijsfase is geslaagd."
+            )
+        if units <= 0 or units > self.max_units:
+            raise VenueError(
+                f"Ordergrootte {units} buiten het toegestane bereik (0, {self.max_units}]."
+            )
+
+    async def place_order(
+        self, symbol, side, units, stop_loss=None, take_profit=None, comment="",
+    ) -> OrderResult:
+        if side not in ("buy", "sell"):
+            raise VenueError(f"Ongeldige richting: {side}")
+        self._guard(units)
+
+        epic = symbol or self.epic
+        quote = await self.quote(epic)
+        if not quote.tradeable:
+            return OrderResult(success=False, error="Markt is niet verhandelbaar")
+        requested = quote.ask if side == "buy" else quote.bid
+
+        body = self._order_body(epic, side, units, stop_loss, take_profit, comment)
+        sent = time.perf_counter()
+        payload = await self._request(
+            "POST", self._order_path, version="2", json=body,
+            timeout=ORDER_TIMEOUT,
+        )
+        latency = (time.perf_counter() - sent) * 1000
+
+        return await self._confirm(payload, requested, latency, comment)
+
+    def _order_body(self, epic, side, units, stop_loss, take_profit, comment) -> dict:
+        body = {
+            "epic": epic,
+            "direction": side.upper(),
+            "size": units,
+            "orderType": "MARKET",
+            "guaranteedStop": False,
+            "forceOpen": True,
+            "currencyCode": "USD",
+        }
+        if stop_loss is not None:
+            body["stopLevel"] = round(stop_loss, 2)
+        if take_profit is not None:
+            body["limitLevel"] = round(take_profit, 2)
+        return body
+
+    _order_path = "/positions"
+
+    async def _confirm(
+        self, payload: dict, requested: float, latency: float, comment: str
+    ) -> OrderResult:
+        """Standaard: de broker bevestigt direct. IG overschrijft dit."""
+        reference = payload.get("dealReference")
+        return OrderResult(
+            success=bool(reference), ticket=reference,
+            requested_price=requested, latency_ms=round(latency, 2),
+            error=None if reference else "Geen dealReference ontvangen",
+        )
+
+    async def close(self, ticket: str, units: float | None = None) -> OrderResult:
+        """Sluit een positie, geheel of gedeeltelijk.
+
+        ``units`` werd eerder geaccepteerd en genegeerd. Elke "deelsluiting"
+        sloot daarmee de héle positie, terwijl de administratie de helft
+        boekte - het tegenovergestelde van wat de functie belooft, en een
+        verschil dat je pas ontdekt als je de brokerinterface naast je
+        rapportage legt.
+
+        Wordt ``units`` niet opgegeven, dan wordt de huidige omvang opgehaald;
+        IG eist dat veld. Zonder omvang meesturen zou de aanvraag falen of, bij
+        een toekomstige API-versie, alles sluiten.
+        """
+        if not self.supports_trading:
+            raise TradingDisabledError("Handel staat uit voor deze venue.")
+
+        size = units
+        direction = None
+        for position in await self.positions():
+            if str(position.ticket) == str(ticket):
+                if size is None:
+                    size = position.units
+                # Sluiten gebeurt met de tegengestelde richting.
+                direction = "SELL" if position.side == "buy" else "BUY"
+                if units is not None and units > position.units:
+                    raise VenueError(
+                        f"Kan {units} sluiten van een positie van "
+                        f"{position.units}; dat is meer dan er openstaat."
+                    )
+                break
+
+        if size is None or direction is None:
+            raise VenueError(
+                f"Positie {ticket} niet gevonden bij de broker; sluiten "
+                "afgebroken in plaats van blind een aanvraag te sturen."
+            )
+
+        # POST met de header ``_method: DELETE`` in plaats van een echte
+        # DELETE. Dat is wat IG voorschrijft, en met reden: een DELETE met
+        # inhoud wordt onderweg door proxies en tussenlagen gestript. Raakt de
+        # body kwijt, dan weet de broker niet hoeveel je wilt sluiten - en dan
+        # sluit hij niets, of alles.
+        payload = await self._request(
+            "POST", self._close_path(ticket), version="1",
+            json={
+                "dealId": str(ticket),
+                "direction": direction,
+                "size": round(size, 2),
+                "orderType": "MARKET",
+            },
+            headers_extra={"_method": "DELETE"},
+            timeout=ORDER_TIMEOUT,
+        )
+        reference = payload.get("dealReference")
+        return OrderResult(success=bool(reference), ticket=ticket, units=size)
+
+    #: Of de veldnamen van het transactieoverzicht al zijn gelogd.
+    _velden_gelogd: bool = False
+
+    async def closed_deal(
+        self, ticket: str, open_price: float | None = None,
+        side: str | None = None, around: datetime | None = None,
+        units: float | None = None,
+    ) -> dict | None:
+        """Zoek de werkelijke uitstapprijs van een gesloten positie.
+
+        Bestaat omdat afrekenen op de ontdekkingskoers niet werkt. De
+        beheerlus merkt pas na een cyclus dat een positie weg is, en in die
+        tijd is de koers verder gelopen. Bij shorts die op hun doel sloten
+        leverde dat verschillen van tien dollar per trade op: de eigen
+        administratie meldde een verlies van 4,83 waar de broker een winst van
+        28,58 euro boekte.
+
+        Het activiteitenoverzicht van de broker kent de prijs waarop werkelijk
+        is afgerekend. Dat is de enige betrouwbare bron; alles anders is een
+        schatting die er precies naast zit wanneer het het meest uitmaakt.
+
+        Geeft None als de transactie niet gevonden wordt. Dan valt de
+        afwikkeling terug op de schatting, maar dan wél gemarkeerd.
+        """
+        # Met een datumbereik, anders levert de broker er één.
+        #
+        # Zonder ``from`` en ``to`` geeft dit endpoint een heel smal venster
+        # terug: in de praktijk precies één transactie, de meest recente. Alle
+        # andere posities vonden dus nooit een match, en de veldnamen - die
+        # gewoon klopten - kregen de schuld.
+        #
+        # Vierentwintig uur terugkijken is ruim: de lus wikkelt binnen enkele
+        # cycli af, en meer transacties ophalen kost hier niets omdat dit
+        # endpoint niet tegen het datapuntenquotum telt.
+        # Het venster rond de sluittijd van de trade leggen.
+        #
+        # Een vast venster van vierentwintig uur maakt oudere trades
+        # onvindbaar. Dat bleek pijnlijk: een herzoekopdracht zette
+        # vierendertig trades terug op "geschat", waarna alles wat buiten het
+        # venster viel nooit meer gevonden kon worden - en correcte cijfers
+        # bleven als schatting in het rapport staan.
+        #
+        # Met een venster rond het sluitmoment blijft elke trade vindbaar,
+        # hoe oud ook. De marge naar voren dekt de vertraging waarmee de
+        # broker zijn overzicht vult; die liep in de praktijk op tot enkele
+        # uren.
+        nu = datetime.now(timezone.utc)
+        midden = around or nu
+        van = midden - timedelta(hours=6)
+        tot = min(midden + timedelta(hours=12), nu)
+        if tot <= van:
+            tot = nu
+
+        payload = await self._request(
+            "GET", "/history/transactions", version="2",
+            params={
+                "type": "ALL_DEAL",
+                "from": van.strftime("%Y-%m-%dT%H:%M:%S"),
+                "to": tot.strftime("%Y-%m-%dT%H:%M:%S"),
+                "pageSize": 200,
+            },
+        )
+
+        transacties = payload.get("transactions") or []
+
+        # Loggen wat er werkelijk terugkomt, niet raden.
+        #
+        # Twee pogingen om de uitstapprijs te matchen zijn mislukt: eerst op
+        # het dealId tegen het veld ``reference``, daarna op de instapprijs
+        # tegen ``openLevel``. Beide keren viel de afwikkeling terug op een
+        # schatting, en beide keren was de oorzaak een aanname over veldnamen
+        # die ik niet kon controleren.
+        #
+        # Eén regel met de werkelijke sleutels maakt dat gokken onnodig.
+        if transacties and not self._velden_gelogd:
+            self._velden_gelogd = True
+            _LOGGER.warning(
+                "Transactieoverzicht van de broker: %d transacties. Velden van "
+                "de eerste: %s. Eerste transactie: %s",
+                len(transacties), sorted(transacties[0].keys()),
+                {k: v for k, v in transacties[0].items() if k != "instrumentName"},
+            )
+        elif not transacties:
+            _LOGGER.warning(
+                "Het transactieoverzicht van de broker is leeg over de "
+                "afgelopen vierentwintig uur. Zonder die gegevens is de "
+                "werkelijke uitstapprijs niet te achterhalen en blijft elke "
+                "afwikkeling een schatting."
+            )
+        elif len(transacties) < 3:
+            # Eén of twee transacties over een etmaal wijst erop dat het
+            # datumbereik niet aankomt - precies de fout die dit moest
+            # oplossen.
+            _LOGGER.warning(
+                "Slechts %d transactie(s) over de afgelopen vierentwintig uur. "
+                "Dat is minder dan er trades zijn geweest; het datumbereik in "
+                "het verzoek komt vermoedelijk niet aan.", len(transacties),
+            )
+
+        # Alle kandidaten wegen, niet de eerste pakken.
+        #
+        # Twee transacties kunnen vrijwel dezelfde instapprijs hebben: op
+        # 15 september stond er een short op 4287.29 naast een long op
+        # 4287.31. Binnen de tolerantie van vijf cent zijn die niet te
+        # onderscheiden, en de eerste pakken koppelde de short aan de
+        # uitstapprijs van de long - een winst van ruim vijftien euro werd zo
+        # een verlies van veertien cent.
+        #
+        # De RICHTING sluit dat uit: de ene grootte is negatief, de andere
+        # positief. Samen met de prijs is dat eenduidig.
+        kandidaten = []
+        for tx in transacties:
+            openings = None
+            for naam in ("openLevel", "open_level", "openingLevel", "level"):
+                openings = _als_getal(tx.get(naam))
+                if openings:
+                    break
+
+            verwijzing = " ".join(
+                str(tx.get(k) or "")
+                for k in ("reference", "dealId", "deal_id", "dealReference")
+            )
+
+            niveau = None
+            for naam in ("closeLevel", "close_level", "closingLevel", "level"):
+                niveau = _als_getal(tx.get(naam))
+                if niveau:
+                    break
+            if niveau is None:
+                continue
+
+            # Richting uit het teken van de grootte. Negatief is een verkoop.
+            omvang = _als_getal(tx.get("size"))
+            richting_broker = None
+            if omvang is not None and omvang != 0:
+                richting_broker = "sell" if omvang < 0 else "buy"
+
+            if side is not None and richting_broker is not None:
+                if richting_broker != side:
+                    continue
+
+            if open_price is not None and openings is not None:
+                afstand = abs(openings - open_price)
+                if afstand >= 0.05:
+                    continue
+
+                # Omvang meewegen om trades te scheiden die op één cent van
+                # elkaar liggen.
+                #
+                # Op 16 september stonden er twee longs met instapprijzen
+                # 4336.13 en 4336.14 - één cent verschil, dus met prijs en
+                # richting niet te onderscheiden. Beide kregen dezelfde
+                # uitstapprijs, waarvan er één verkeerd was.
+                #
+                # Hun omvang was 1.69 en 1.75 ounce. Dat verschil van zes
+                # honderdsten is ruim meetbaar en scheidt ze wel.
+                omvang_afstand = 0.0
+                if units is not None and omvang is not None:
+                    omvang_afstand = abs(abs(omvang) - abs(units))
+                    if omvang_afstand > 0.25:
+                        continue
+
+                # Prijs en omvang samen wegen. De prijs zwaarder, want die is
+                # nauwkeuriger; de omvang als scheidsrechter bij een gelijke
+                # prijs.
+                kandidaten.append(
+                    (afstand + omvang_afstand * 0.1, "instapprijs", niveau, tx)
+                )
+                continue
+
+            if verwijzing and (
+                str(ticket) in verwijzing or verwijzing in str(ticket)
+            ):
+                kandidaten.append((0.0, "ticket", niveau, tx))
+
+        if kandidaten:
+            # De dichtstbijzijnde. Bij gelijke afstand maakt het niet uit.
+            kandidaten.sort(key=lambda k: k[0])
+            _, hoe, niveau, tx = kandidaten[0]
+            return {
+                "exit_price": float(niveau),
+                "matched_on": hoe,
+                "candidates": len(kandidaten),
+                "profit_account": next(
+                    (
+                        _als_getal(tx.get(k)) for k in
+                        ("profitAndLoss", "profit_and_loss", "profit", "pnl")
+                        if tx.get(k) is not None
+                    ),
+                    None,
+                ),
+                "currency": tx.get("currency"),
+                "size": _als_getal(tx.get("size")),
+                # dateUtc eerst: die bevat het tijdstip. Het veld ``date``
+                # heeft alleen de dag, en dat is als sluitmoment onbruikbaar.
+                "closed_at": tx.get("dateUtc") or tx.get("date"),
+            }
+
+        # Niets gevonden: laat zien wat er gezocht werd en wat er lag.
+        #
+        # Twee eerdere pogingen faalden op een aanname die ik niet kon
+        # controleren. Deze regel maakt dat onmogelijk: hij noemt de gezochte
+        # prijs en de dichtstbijzijnde kandidaten, zodat direct zichtbaar is of
+        # het om een afrondingsverschil gaat, om een ontbrekende transactie, of
+        # om iets anders.
+        if open_price is not None and transacties:
+            kandidaten = []
+            for tx in transacties:
+                niveau = _als_getal(tx.get("openLevel"))
+                if niveau is None:
+                    continue
+                kandidaten.append((abs(niveau - open_price), niveau, tx))
+            kandidaten.sort()
+            dichtst = [
+                f"{n} (verschil {v:.2f}, gesloten {t.get('dateUtc')})"
+                for v, n, t in kandidaten[:3]
+            ]
+            _LOGGER.warning(
+                "Geen transactie gevonden voor instapprijs %.2f (ticket %s). "
+                "%d transacties bekeken, nieuwste %s, oudste %s. "
+                "Dichtstbijzijnde instapprijzen: %s",
+                open_price, ticket, len(transacties),
+                transacties[0].get("dateUtc"),
+                transacties[-1].get("dateUtc"),
+                "; ".join(dichtst) or "geen enkele met openLevel",
+            )
+        return None
+
+    async def modify_stop(
+        self, ticket: str, stop_loss: float, take_profit: float | None = None
+    ) -> OrderResult:
+        """Verplaats de stop, met behoud van het doel.
+
+        Het PUT-endpoint vervangt de *hele* set niveaus. Alleen ``stopLevel``
+        meesturen wist daarmee je take-profit - zichtbaar doordat de limiet in
+        de brokerinterface even een waarde toont en daarna weer leeg is.
+
+        Erger nog in combinatie met de doelverificatie: die plaatst hem dan
+        opnieuw, waarna de volgende stopverplaatsing hem weer wist. Een lus die
+        bij elke break-even en elke trailing stop een extra API-aanroep kost.
+
+        Wordt ``take_profit`` niet meegegeven, dan wordt het huidige niveau
+        eerst opgehaald. Dat kost een verzoek, maar minder dan het doel
+        kwijtraken.
+        """
+        if not self.supports_trading:
+            raise TradingDisabledError("Handel staat uit voor deze venue.")
+
+        if take_profit is None:
+            try:
+                for position in await self.positions():
+                    if str(position.ticket) == str(ticket):
+                        take_profit = position.take_profit
+                        break
+            except VenueError as err:
+                _LOGGER.debug("Kon het huidige doel niet ophalen: %s", err)
+
+        body: dict = {"stopLevel": round(stop_loss, 2)}
+        if take_profit is not None:
+            body["limitLevel"] = round(take_profit, 2)
+
+        payload = await self._request(
+            "PUT", f"{self._order_path}/{ticket}", version="2",
+            json=body, timeout=ORDER_TIMEOUT,
+        )
+        return OrderResult(
+            success=bool(payload.get("dealReference")), ticket=ticket,
+            error=None if payload.get("dealReference") else "Stop niet aangepast",
+        )
+
+    async def modify_target(
+        self, ticket: str, take_profit: float, stop_loss: float | None = None
+    ) -> OrderResult:
+        """Verplaats het doel, met behoud van de stop.
+
+        Spiegelbeeld van modify_stop: het endpoint vervangt beide niveaus, dus
+        alleen het doel meesturen zou de stop wissen. En een positie zonder
+        stop is het enige scenario met in principe onbegrensd verlies.
+
+        Bij IG heet het doelveld ``limitLevel``.
+        """
+        if not self.supports_trading:
+            raise TradingDisabledError("Handel staat uit voor deze venue.")
+
+        if stop_loss is None:
+            try:
+                for position in await self.positions():
+                    if str(position.ticket) == str(ticket):
+                        stop_loss = position.stop_loss
+                        break
+            except VenueError as err:
+                _LOGGER.debug("Kon de huidige stop niet ophalen: %s", err)
+
+        body: dict = {"limitLevel": round(take_profit, 2)}
+        if stop_loss is not None:
+            body["stopLevel"] = round(stop_loss, 2)
+
+        payload = await self._request(
+            "PUT", f"{self._order_path}/{ticket}", version="2",
+            json=body, timeout=ORDER_TIMEOUT,
+        )
+        return OrderResult(
+            success=bool(payload.get("dealReference")), ticket=ticket,
+            error=None if payload.get("dealReference") else "Doel niet aangepast",
+        )
+
+    async def health(self) -> dict:
+        base = await super().health()
+        base["environment"] = self.environment
+        base["epic"] = self.epic
+        base["trading_enabled"] = self.supports_trading
+        return base
+
+    def describe(self) -> dict:
+        base = super().describe()
+        base.update({
+            "environment": self.environment, "epic": self.epic,
+            "real_prices": True, "real_spread": True, "simulated": False,
+        })
+        return base
+
+
+class IgVenue(IgStyleVenue):
+    """IG Group. Order plaatsen is twee stappen: referentie, dan bevestiging."""
+
+    name = "ig"
+    api_key_header = "X-IG-API-KEY"
+    base_urls = {
+        "demo": "https://demo-api.ig.com/gateway/deal",
+        "live": "https://api.ig.com/gateway/deal",
+    }
+    resolutions = {
+        "1m": "MINUTE", "5m": "MINUTE_5", "15m": "MINUTE_15",
+        "30m": "MINUTE_30", "1h": "HOUR", "4h": "HOUR_4", "1d": "DAY",
+    }
+    _order_path = "/positions/otc"
+
+    def _extract_account_id(self, payload: dict) -> str | None:
+        return payload.get("currentAccountId")
+
+    async def _confirm(
+        self, payload: dict, requested: float, latency: float, comment: str
+    ) -> OrderResult:
+        """Haal de bevestiging op bij ``/confirms/{dealReference}``.
+
+        IG accepteert een order niet direct: je krijgt een referentie en moet
+        daarna vragen wat ermee gebeurd is. Dat is extra werk, maar het levert
+        een spoor op dat na een verbroken verbinding terug te vinden is - en
+        dat is precies wat je nodig hebt om geen tweede order te versturen.
+        """
+        reference = payload.get("dealReference")
+        if not reference:
+            return OrderResult(
+                success=False, requested_price=requested,
+                latency_ms=round(latency, 2), error="Geen dealReference ontvangen",
+            )
+
+        # Kort wachten: de bevestiging is niet altijd meteen beschikbaar.
+        for delay in (0.0, 0.3, 0.7):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                confirm = await self._request("GET", f"/confirms/{reference}")
+            except VenueError:
+                continue
+            status = str(confirm.get("dealStatus", "")).upper()
+            if status == "ACCEPTED":
+                level = confirm.get("level")
+                return OrderResult(
+                    success=True,
+                    ticket=str(confirm.get("dealId") or reference),
+                    fill_price=float(level) if level else None,
+                    requested_price=requested,
+                    units=float(confirm.get("size") or 0) or None,
+                    latency_ms=round(latency, 2),
+                )
+            if status == "REJECTED":
+                return OrderResult(
+                    success=False, requested_price=requested,
+                    latency_ms=round(latency, 2),
+                    error=f"Order afgewezen: {confirm.get('reason', 'onbekende reden')}",
+                )
+
+        return OrderResult(
+            success=False, ticket=reference, requested_price=requested,
+            latency_ms=round(latency, 2),
+            error=(
+                f"Geen bevestiging voor {reference}. De order kan alsnog uitgevoerd "
+                "zijn; posities worden nagekeken voordat er iets nieuws gebeurt."
+            ),
+        )
+
+    def _order_body(self, epic, side, units, stop_loss, take_profit, comment) -> dict:
+        body = super()._order_body(epic, side, units, stop_loss, take_profit, comment)
+        body["expiry"] = "-"
+        # IG accepteert een eigen referentie; hierop rust de bescherming tegen
+        # dubbele orders na een verbroken verbinding.
+        if comment:
+            body["dealReference"] = "".join(
+                c for c in comment if c.isalnum() or c in "-_"
+            )[:30]
+        return body
+
+
+class CapitalVenue(IgStyleVenue):
+    """Capital.com. Zelfde vorm als IG, met twee afwijkingen in het sluiten."""
+
+    """Capital.com. Zelfde vorm als IG, maar bevestigt direct."""
+
+    name = "capital"
+    api_key_header = "X-CAP-API-KEY"
+    base_urls = {
+        "demo": "https://demo-api-capital.backend-capital.com/api/v1",
+        "live": "https://api-capital.backend-capital.com/api/v1",
+    }
+    resolutions = {
+        "1m": "MINUTE", "5m": "MINUTE_5", "15m": "MINUTE_15",
+        "30m": "MINUTE_30", "1h": "HOUR", "4h": "HOUR_4", "1d": "DAY",
+    }
+    _order_path = "/positions"
+
+    def _close_path(self, ticket: str) -> str:
+        """Capital.com verwacht het ticket in het pad, IG in de body."""
+        return f"{self._order_path}/{ticket}"
+
+    async def close(self, ticket: str, units: float | None = None) -> OrderResult:
+        """Capital.com sluit met een gewone DELETE zonder body.
+
+        Gedeeltelijk sluiten kent hun API niet op dit endpoint. Dat stil
+        negeren zou hetzelfde probleem geven als bij IG - de administratie
+        boekt de helft, de broker sluit alles - dus wordt het geweigerd.
+        """
+        if not self.supports_trading:
+            raise TradingDisabledError("Handel staat uit voor deze venue.")
+
+        if units is not None:
+            for position in await self.positions():
+                if str(position.ticket) == str(ticket):
+                    if abs(position.units - units) > 0.001:
+                        raise VenueError(
+                            "Capital.com kan een positie niet gedeeltelijk "
+                            f"sluiten. Gevraagd: {units} van {position.units}."
+                        )
+                    break
+
+        payload = await self._request(
+            "DELETE", self._close_path(ticket), version="1",
+            timeout=ORDER_TIMEOUT,
+        )
+        return OrderResult(
+            success=bool(payload.get("dealReference")), ticket=ticket
+        )
+
+    def _order_body(self, epic, side, units, stop_loss, take_profit, comment) -> dict:
+        # Capital.com kent 'expiry' en 'currencyCode' niet op deze manier.
+        body = {
+            "epic": epic,
+            "direction": side.upper(),
+            "size": units,
+            "guaranteedStop": False,
+        }
+        if stop_loss is not None:
+            body["stopLevel"] = round(stop_loss, 2)
+        if take_profit is not None:
+            body["profitLevel"] = round(take_profit, 2)
+        return body

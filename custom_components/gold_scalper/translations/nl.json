@@ -1,0 +1,177 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Gold Scalper: kies je databron",
+        "description": "Begin met de simulator als je nog geen account hebt. Die draait volledig lokaal en laat zien of alles werkt.",
+        "data": {
+          "venue": "Databron"
+        }
+      },
+      "simulator": {
+        "title": "Simulator instellen",
+        "description": "{note}",
+        "data": {
+          "symbol": "Instrument",
+          "timeframe": "Tijdsframe",
+          "sim_spread": "Spread (USD per ounce)",
+          "sim_seed": "Zaad"
+        }
+      },
+      "oanda": {
+        "title": "OANDA verbinden",
+        "description": "Haal je token op via het accountportaal: My Services, Manage API Access.",
+        "data": {
+          "token": "API-token",
+          "account_id": "Account-ID",
+          "environment": "Omgeving",
+          "symbol": "Instrument",
+          "timeframe": "Tijdsframe",
+          "mode": "Modus"
+        }
+      },
+      "public": {
+        "title": "Echte goudkoersen, papierhandel",
+        "description": "{note}",
+        "data": {
+          "symbol": "Instrument",
+          "timeframe": "Tijdsframe",
+          "assumed_spread": "Aangenomen spread (0 = kosten uit)"
+        }
+      },
+      "reconfigure": {
+        "title": "Andere databron kiezen",
+        "description": "Wissel van databron zonder de integratie te verwijderen. Je tradedatabase blijft behouden.",
+        "data": {
+          "venue": "Databron"
+        }
+      },
+      "stooq": {
+        "title": "Stooq: goudkoersen per dag",
+        "description": "{note}",
+        "data": {
+          "symbol": "Instrument",
+          "timeframe": "Tijdsframe",
+          "assumed_spread": "Aangenomen spread (0 = kosten uit)"
+        }
+      },
+      "broker": {
+        "title": "Broker verbinden",
+        "description": "{note}",
+        "data": {
+          "api_key": "API-sleutel",
+          "identifier": "Gebruikersnaam of e-mailadres",
+          "password": "Wachtwoord (Capital.com: het API-sleutelwachtwoord)",
+          "environment": "Omgeving",
+          "epic": "Instrument (epic)",
+          "timeframe": "Tijdsframe",
+          "build_from_quotes": "Bars opbouwen uit live koersen (geen historie opvragen)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Kan de databron niet bereiken.",
+      "invalid_token": "Het API-token wordt geweigerd.",
+      "invalid_account": "Account-ID onbekend, of het hoort bij de andere omgeving (practice tegenover live).",
+      "insufficient_history": "Te weinig historie voor een zinnige analyse; minimaal 60 candles nodig.",
+      "fetch_failed": "De databron gaf een fout. Details staan onder het formulier en in het logboek. Klopt de epic niet, dan staat daar een lijst met instrumenten die jouw account wél kent."
+    },
+    "abort": {
+      "already_configured": "Dit instrument is al ingesteld voor dit account.",
+      "reconfigure_successful": "Databron gewijzigd."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Gold Scalper afstellen",
+        "description": "Strategie- en risico-instellingen.\n\n{atr_hint}",
+        "data": {
+          "mode": "Modus",
+          "update_seconds": "Verversingsinterval",
+          "units": "Positiegrootte (ounce)",
+          "max_units": "Maximale positiegrootte",
+          "starting_balance": "Startbalans papermodus",
+          "max_spread": "Absolute spreadlimiet (vangnet)",
+          "min_edge_multiple": "Vereiste marge boven de kosten",
+          "entry_threshold": "Instapdrempel",
+          "trading_start_hour": "Venster vanaf (UTC, alleen als beperking aan staat)",
+          "trading_end_hour": "Venster tot (UTC, alleen als beperking aan staat)",
+          "max_daily_loss_pct": "Maximaal dagverlies",
+          "equity_floor_pct": "Equity-ondergrens",
+          "max_trades_per_day": "Maximaal trades per dag",
+          "max_consecutive_losses": "Verliezers op rij voor pauze",
+          "show_panel": "Toon 'Gold Scalper' in de zijbalk",
+          "regime_switching": "Kies per marktregime (aanbevolen)",
+          "enforce_trading_hours": "Beperk tot een vast tijdvenster",
+          "build_from_quotes": "Bars opbouwen uit live koersen (geen historie opvragen)",
+          "max_spread_atr_ratio": "Maximale spread als deel van de ATR",
+          "notify_service": "Meldingen sturen naar (notify-dienst van je telefoon)",
+          "notify_hourly": "Elk uur een samenvatting",
+          "notify_skip_quiet": "Uurbericht overslaan als er niets gebeurde",
+          "notify_critical": "Noodstop als kritieke melding (komt door stille stand heen)",
+          "take_profit_atr": "Doel als veelvoud van de ATR",
+          "stop_loss_atr": "Stop als veelvoud van de ATR",
+          "take_profit_usd": "Doel als vast bedrag (0 = ATR gebruiken)",
+          "stop_loss_usd": "Stop als vast bedrag (0 = ATR gebruiken)",
+          "max_resumes_per_day": "Hervattingen per dag na een noodstop (0 = geen)",
+          "risk_based_sizing": "Grootte uit risico berekenen (i.p.v. vaste ounces)",
+          "risk_per_trade_pct": "Risico per trade in % van het vermogen",
+          "scale_with_confidence": "Meer inzetten bij een sterker signaal",
+          "pyramid_enabled": "Bijkopen bij bevestiging (pyramiden)",
+          "pyramid_trigger_atr": "Bijkopen vanaf winst in ATR",
+          "pyramid_max_additions": "Maximaal aantal toevoegingen",
+          "use_schedule": "Handelstijden controleren tegen een eigen rooster",
+          "close_buffer_minutes": "Geen nieuwe posities zoveel minuten voor sluiting"
+        }
+      }
+    },
+    "error": {
+      "hours_inverted": "Het beginuur moet vóór het einduur liggen.",
+      "units_above_cap": "De positiegrootte ligt boven het ingestelde maximum."
+    }
+  },
+  "services": {
+    "prepare_shutdown": {
+      "name": "Afwikkelen voor herstart",
+      "description": "Stopt met openen en wikkelt lopende posities af."
+    },
+    "close_all": {
+      "name": "Alles sluiten",
+      "description": "Sluit alle open posities direct."
+    },
+    "resume": {
+      "name": "Hervatten",
+      "description": "Heft een noodstop op na handmatige controle."
+    },
+    "generate_report": {
+      "name": "Keuringsrapport maken",
+      "description": "Schrijft een HTML-rapport naar je configuratiemap."
+    }
+  },
+  "selector": {
+    "venue": {
+      "options": {
+        "public_data": "Yahoo: goudkoersen per minuut (geen account)",
+        "stooq": "Stooq: goudkoersen per dag (geen account)",
+        "simulator": "Simulator: verzonnen koersen (geen account)",
+        "ig": "IG (account nodig, kan echt handelen)",
+        "capital": "Capital.com (account nodig, kan echt handelen)",
+        "oanda": "OANDA (account nodig, EU-toegang onzeker)"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "Status"
+      },
+      "learning": {
+        "name": "Geleerd"
+      },
+      "periods": {
+        "name": "Resultaat per periode"
+      }
+    }
+  }
+}

@@ -1,0 +1,588 @@
+"""Scalpingstrategie voor XAU/USD op M1.
+
+De 48-indicatorenbrij uit de crypto-versie is hier bewust níet gebruikt. Op een
+tijdsframe van een minuut zijn EMA200, Ichimoku en Hurst-exponenten
+betekenisloos ruis: ze zijn ontworpen voor swings van dagen. Wat op deze
+schaal wél informatie draagt is een klein aantal dingen — richting van de
+korte trend, mate van uitrekking ten opzichte van het gemiddelde, en vooral de
+actuele spread.
+
+De belangrijkste component van deze strategie is geen indicator maar een
+kostenpoort. Elk signaal wordt getoetst aan de vraag: is de verwachte beweging
+groter dan wat deze trade aan spread, commissie en slippage gaat kosten? Zo
+niet, dan wordt er niet gehandeld, hoe overtuigend het signaal er ook uitziet.
+Bij goud filtert die poort in de praktijk het overgrote deel van de signalen
+weg, en dat is de bedoeling.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+
+from ..analysis.core import ema, linreg_slope, rma, safe_div, stdev, true_range
+from ..analysis.momentum import rsi
+from ..analysis.signals import Candles
+from ..analysis.trend import adx
+from ..analysis.volatility import atr, bollinger
+from .structure import read_structure
+
+_LOGGER = logging.getLogger(__name__)
+
+STRATEGY_VERSION = "scalp-0.2.0"
+
+CONTRACT_SIZE = 100.0
+
+
+@dataclass(slots=True)
+class ScalpConfig:
+    """Instellingen. De defaults zijn conservatief, niet geoptimaliseerd.
+
+    Er is bewust geen parameteroptimalisatie ingebouwd. Op een dataset van een
+    paar duizend trades vindt een optimizer altijd een combinatie die er
+    prachtig uitziet en die volledig overfit is. Als je wilt afstellen, doe dat
+    op basis van de bewijsfase-resultaten en met een aparte validatieperiode.
+    """
+
+    #: Maximale spread als fractie van de ATR.
+    #:
+    #: Een absolute grens is betekenisloos zonder de volatiliteit erbij. Bij
+    #: goud op 3300 met een ATR van 1,65 is een spread van 0,30 hetzelfde
+    #: verhaal als 0,77 bij goud op 4642 met een ATR van 4,22 - in beide
+    #: gevallen ongeveer een zesde van de gemiddelde beweging.
+    #:
+    #: Dit werd zichtbaar toen de eerste echte brokerdata binnenkwam: 1098
+    #: evaluaties op rij geweigerd omdat de vaste grens van 0,30 onder IG's
+    #: werkelijke spread van 0,60 lag, terwijl de kostenpoort er ruim
+    #: doorheen kwam.
+    max_spread_atr_ratio: float = 0.35
+    #: Absolute bovengrens als vangnet, in USD per ounce. Vangt het geval af
+    #: waarin de ATR zelf onbetrouwbaar is.
+    max_spread: float = 3.00
+    #: Verwachte beweging moet dit veelvoud van de kosten zijn.
+    min_edge_multiple: float = 2.0
+    #: Doelwinst en stop als veelvoud van de ATR.
+    take_profit_atr: float = 1.5
+    stop_loss_atr: float = 1.0
+
+    #: Vaste doel- en stopafstand in USD per ounce, in plaats van een veelvoud
+    #: van de ATR. Nul betekent: de ATR-multiplier gebruiken.
+    #:
+    #: Vaste afstanden passen zich niet aan de markt aan, en dat snijdt twee
+    #: kanten op. Bij een rustige markt (ATR 2) is een doel van 10 vrijwel
+    #: onbereikbaar en doe je niets. Bij een onrustige markt (ATR 12) is een
+    #: stop van 5 binnen een halve bar geraakt en word je er stelselmatig
+    #: uitgeschud.
+    #:
+    #: De ATR-variant schaalt mee: hetzelfde percentage van de beweging, of
+    #: goud nu 2 of 12 dollar per bar aflegt. Vaste bedragen zijn daarom
+    #: alleen zinvol als je een reden hebt die losstaat van de volatiliteit -
+    #: bijvoorbeeld een vast bedrag dat je per trade wilt riskeren.
+    take_profit_usd: float = 0.0
+    stop_loss_usd: float = 0.0
+    #: Maximale positieduur in seconden; scalps die blijven hangen zijn verliezers.
+    max_hold_seconds: int = 300
+    #: Positiegrootte in lots.
+    volume: float = 0.01
+    #: Maximaal aantal gelijktijdige posities.
+    max_positions: int = 1
+    #: Minimale afstand tussen twee entries, in seconden.
+    cooldown_seconds: int = 60
+    #: Beperk de handel tot een vast tijdvenster.
+    #:
+    #: Standaard uit: als de markt open is, mag er gehandeld worden. Het
+    #: tijdvenster was een *proxy* voor iets dat elders directer gemeten wordt -
+    #: buiten de Londen/New York-overlap is de spread breder en de beweging
+    #: kleiner, en dat filteren ``max_spread`` en de volatiliteitscontrole al.
+    #:
+    #: Let op de uitzondering: bij een databron zonder echte bied- en laatprijs
+    #: is de spread een vaste aanname, en dan filtert ``max_spread`` niets. In
+    #: dat geval is dit tijdvenster de enige bescherming tegen dunne uren, en
+    #: waarschuwt de strategie daarvoor.
+    enforce_trading_hours: bool = False
+    #: Handelsvenster in UTC-uren, alleen actief als hierboven aan staat.
+    trading_hours_utc: tuple[int, int] = (7, 20)
+    #: Is de spread gemeten bij een broker, of een aanname?
+    #:
+    #: Bij een aanname is ``max_spread`` een vergelijking met een constante en
+    #: gaat hij dus nooit af: hij filtert niets. Zonder tijdvenster is er dan
+    #: geen enkele rem op handelen in dunne uren, terwijl spreads daar in
+    #: werkelijkheid juist uitlopen. De volatiliteitscontrole wordt dan
+    #: strenger gezet als vervanging.
+    real_spread: bool = True
+    #: Ondergrens voor de volatiliteit, als fractie van de mediane ATR.
+    #:
+    #: Stond hard in de code. Een filter dat je niet kunt uitzetten is ook niet
+    #: los te toetsen: elke test van een ander onderdeel liep er ongemerkt op
+    #: stuk zodra de marktreeks toevallig rustig was, en dan meet je iets
+    #: anders dan je denkt.
+    quiet_floor: float = 0.6
+    #: Weeg marktstructuur mee: hogere toppen en bodems tegenover lagere.
+    #:
+    #: De overige componenten zijn allemaal gemiddelden - EMA's, een
+    #: regressiehelling, Bollinger, RSI. Die zeggen iets over richting maar
+    #: niets over structuur. Gemeten op simulatiedata verschillen structuur en
+    #: ADX in 41% van de gevallen van oordeel, dus het is een aanvullend
+    #: signaal en geen herverpakking.
+    use_structure: bool = True
+    structure_weight: float = 0.30
+    #: Aantal candles aan weerszijden dat een pivot moet bevestigen. Hoger is
+    #: betrouwbaarder maar later.
+    pivot_strength: int = 2
+    #: Correctie op de gemeten ATR.
+    #:
+    #: Bij bars die uit periodieke koersen zijn opgebouwd vallen high en low te
+    #: krap uit, waardoor de ATR wordt onderschat. Onbehandeld maakt dat de
+    #: kostenpoort te streng: hij denkt dat een beweging de kosten niet dekt
+    #: terwijl dat wel zo is.
+    atr_correction: float = 1.0
+    #: Drempel voor de samengestelde scalpscore.
+    entry_threshold: float = 0.45
+    #: Kies per marktregime tussen trendvolgend en contrair, in plaats van
+    #: beide op te tellen.
+    #:
+    #: De oorspronkelijke opzet telde de trendcomponent en de mean-reversion
+    #: component bij elkaar op. Die twee correleren -0,78: de een zegt 'volg de
+    #: beweging', de ander 'ga ertegenin'. Opgeteld heffen ze elkaar grotendeels
+    #: op, waardoor de samengestelde score zelden een drempel haalde. Dat was
+    #: geen selectiviteit maar besluiteloosheid.
+    #:
+    #: Met deze schakelaar bepaalt de ADX welke van de twee leidend is. Dat
+    #: levert bij dezelfde drempel ongeveer vijf keer zoveel kandidaten op.
+    #: Meer kandidaten is niet automatisch beter - de kostenpoort filtert nog
+    #: steeds - maar het is wél een strategie die een standpunt inneemt.
+    regime_switching: bool = True
+    #: ADX-waarde waarboven de markt als trendend geldt.
+    adx_trend_threshold: float = 25.0
+    #: Commissie per lot per zijde; moet matchen met je BrokerCosts.
+    commission_per_lot_per_side: float = 3.50
+    #: Geschatte slippage per zijde in USD per ounce.
+    expected_slippage: float = 0.02
+
+
+@dataclass(slots=True)
+class ScalpSignal:
+    """Uitkomst van één evaluatie."""
+
+    direction: int  # 1 = long, -1 = short, 0 = geen actie
+    score: float
+    confidence: float
+    should_trade: bool
+    reject_reason: str | None
+    reason: str
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    expected_move: float = 0.0
+    expected_cost: float = 0.0
+    components: dict[str, float] = field(default_factory=dict)
+
+
+def _micro_trend(close: list[float]) -> tuple[float, str]:
+    """Richting van de korte trend via EMA(9) tegen EMA(21) plus helling."""
+    fast, slow = ema(close, 9), ema(close, 21)
+    if fast[-1] is None or slow[-1] is None:
+        return 0.0, "onvoldoende data voor microtrend"
+    gap_pct = safe_div(fast[-1] - slow[-1], slow[-1]) * 100.0
+    slope, r2 = linreg_slope(close, 15)
+    slope_component = 0.0 if slope is None else max(-1.0, min(1.0, slope * 8.0)) * (r2 or 0)
+    gap_component = max(-1.0, min(1.0, gap_pct * 60.0))
+    score = 0.6 * gap_component + 0.4 * slope_component
+    return score, f"EMA9/21 gap {gap_pct:+.4f}%, helling {slope or 0:+.4f}%/candle"
+
+
+def _stretch(close: list[float]) -> tuple[float, str]:
+    """Mean reversion: hoe ver staat de koers van de korte VWAP-proxy af.
+
+    Op M1 is goud grotendeels mean-reverting rond het 20-periode gemiddelde,
+    behalve tijdens nieuws. Dit component is dus contrair aan uitrekking.
+    """
+    upper, middle, lower, pct_b, _ = bollinger(close, 20, 2.0)
+    if pct_b[-1] is None:
+        return 0.0, "onvoldoende data voor stretch"
+    b = pct_b[-1]
+    score = max(-1.0, min(1.0, (0.5 - b) * 2.4))
+    return score, f"%B {b:.2f}"
+
+
+def _rsi_reversion(close: list[float]) -> tuple[float, str]:
+    """RSI als *contraire* maat: hoog betekent overdreven, dus verwacht daling.
+
+    Heette eerder ``_momentum``, en die naam heeft schade aangericht. Momentum
+    bevestigt een beweging; deze functie spreekt hem tegen. Onder de verkeerde
+    naam werd hij in de trendmodus met dertig procent gewicht meegeteld, waar
+    hij dus tegen de trend in duwde.
+
+    Gemeten over vijf onafhankelijke markten leverde de strategie daardoor 33%
+    winnaars op waar de omgekeerde richting er 50 tot 59% haalde - slechter dan
+    willekeurig instappen.
+    """
+    r = rsi(close, 7)
+    if r[-1] is None:
+        return 0.0, "onvoldoende data voor RSI"
+    # RSI(7): extremen zijn op korte tijdsframes veel gewoner dan op hogere,
+    # dus de drempels liggen ruimer dan de klassieke 30/70.
+    value = r[-1]
+    if value <= 20:
+        score = 0.8
+    elif value >= 80:
+        score = -0.8
+    else:
+        score = (50.0 - value) / 40.0
+    return max(-1.0, min(1.0, score)), f"RSI(7) {value:.1f} (contrair)"
+
+
+def _rsi_momentum(close: list[float]) -> tuple[float, str]:
+    """RSI als *bevestigende* maat: hoog betekent kracht, dus verwacht meer.
+
+    Dit is wat de trendmodus nodig heeft. Het is precies het spiegelbeeld van
+    de contraire variant, en welke van de twee klopt hangt af van het regime -
+    daarom is er een regimeschakelaar.
+    """
+    score, note = _rsi_reversion(close)
+    return -score, note.replace("contrair", "bevestigend")
+
+
+def _volatility_regime(
+    candles: Candles, quiet_floor: float = 0.6
+) -> tuple[float, str]:
+    """Is er genoeg beweging om iets te verdienen, en niet zoveel dat het chaos is.
+
+    ``quiet_floor`` wordt verhoogd als de spread een aanname is in plaats van
+    een meting én er geen tijdvenster geldt. Dan is dit de enige rem op
+    handelen in dunne uren.
+    """
+    a = atr(candles, 14)
+    if a[-1] is None:
+        return 0.0, "geen ATR"
+    recent = [v for v in a[-60:] if v is not None]
+    if not recent:
+        return 0.0, "geen ATR-historie"
+    median = sorted(recent)[len(recent) // 2]
+    ratio = safe_div(a[-1], median, 1.0)
+    if ratio < quiet_floor:
+        return -0.5, f"volatiliteit {ratio:.2f}× mediaan: te stil om de spread terug te verdienen"
+    if ratio > 2.5:
+        return -0.8, f"volatiliteit {ratio:.2f}× mediaan: waarschijnlijk nieuws, spread onbetrouwbaar"
+    return 0.3, f"volatiliteit {ratio:.2f}× mediaan: bruikbaar"
+
+
+def evaluate(
+    candles: Candles,
+    bid: float,
+    ask: float,
+    cfg: ScalpConfig,
+    hour_utc: int,
+    open_position_count: int = 0,
+    seconds_since_last_entry: float = 1e9,
+    #: Richting van de lopende positie: 1 long, -1 short, 0 onbekend.
+    #:
+    #: Nodig om een geweigerd signaal te kunnen uitsplitsen. Zonder dit zie je
+    #: alleen "positielimiet" en niet of de strategie ondertussen van richting
+    #: veranderde - en dat verschil bepaalt of je vastzit in iets waarvan je
+    #: systeem het tegenovergestelde denkt.
+    open_position_side: int = 0,
+) -> ScalpSignal:
+    """Beoordeel of er nu een scalp te maken is.
+
+    De volgorde is bewust: eerst de harde poorten (spread, tijd, cooldown),
+    dan pas de indicatoren. Een prachtig signaal bij een spread van 0,80 is
+    geen kans maar een val.
+    """
+    spread = ask - bid
+    components: dict[str, float] = {}
+
+    def reject(
+        reason: str, text: str, score: float = 0.0, direction: int = 0
+    ) -> ScalpSignal:
+        """Weiger, maar behoud de score als die al berekend is.
+
+        Een weigering met score nul verbergt of het signaal sterk was. Bij
+        'positie open in de andere richting' is juist die sterkte het punt:
+        -0,08 is toevallige ruis, -0,72 betekent dat je vastzit in iets waarvan
+        je systeem het tegenovergestelde denkt.
+        """
+        return ScalpSignal(
+            direction=direction, score=score, confidence=0.0, should_trade=False,
+            reject_reason=reason, reason=text, components=components,
+        )
+
+    if len(candles) < 60:
+        return reject("insufficient_data", f"Slechts {len(candles)} candles beschikbaar")
+
+    if spread > cfg.max_spread:
+        return reject(
+            "spread_too_wide",
+            f"Spread {spread:.3f} boven de absolute limiet {cfg.max_spread:.3f}",
+        )
+
+    if cfg.enforce_trading_hours:
+        start, end = cfg.trading_hours_utc
+        if not (start <= hour_utc < end):
+            return reject(
+                "outside_hours",
+                f"Uur {hour_utc}:00 UTC valt buiten het venster {start}:00-{end}:00",
+            )
+
+    if open_position_count >= cfg.max_positions:
+        # Bewust hier niet meteen weigeren, maar dat onthouden en de score toch
+        # berekenen. Anders zie je in de signaaltrechter alleen "positielimiet"
+        # en niet óf de strategie ondertussen van richting veranderde. Dat
+        # verschil is het waard: vastzitten in een long terwijl je systeem
+        # short denkt, is iets anders dan een herhaald signaal in dezelfde
+        # richting.
+        position_blocked = True
+    else:
+        position_blocked = False
+
+    if not position_blocked and seconds_since_last_entry < cfg.cooldown_seconds:
+        return reject(
+            "cooldown",
+            f"Nog {cfg.cooldown_seconds - seconds_since_last_entry:.0f}s cooldown",
+        )
+
+    # --- Indicatorcomponenten ------------------------------------------------
+    close = candles.close
+    trend_score, trend_note = _micro_trend(close)
+    stretch_score, stretch_note = _stretch(close)
+    # In een trend bevestigt de RSI, in een range spreekt hij tegen. Dezelfde
+    # indicator, tegengesteld teken - en welke klopt hangt af van het regime.
+    reversion_score, reversion_note = _rsi_reversion(close)
+    # Zonder gemeten spread én zonder tijdvenster is dit de enige bescherming
+    # tegen dunne uren; dan mag de drempel niet op de standaardwaarde blijven.
+    quiet_floor = cfg.quiet_floor
+    if not cfg.real_spread and not cfg.enforce_trading_hours:
+        quiet_floor = 0.85
+    vol_score, vol_note = _volatility_regime(candles, quiet_floor)
+
+    components.update({
+        "trend": round(trend_score, 3),
+        "stretch": round(stretch_score, 3),
+        # De contraire lezing; het teken dat de score gebruikt hangt af van het
+        # regime en wordt hieronder toegevoegd als "momentum".
+        "rsi_reversion": round(reversion_score, 3),
+        "volatility": round(vol_score, 3),
+    })
+
+    if vol_score < 0:
+        return reject("volatility_regime", vol_note)
+
+    structure_read = None
+    if cfg.use_structure:
+        structure_read = read_structure(candles, cfg.pivot_strength)
+        components["structure"] = round(structure_read.score, 3)
+        components["structure_state"] = structure_read.structure.value
+
+    if cfg.regime_switching:
+        # Laat de ADX bepalen welk verhaal geldt. In een trendende markt is
+        # 'ga tegen de beweging in' een slecht idee, en in een zijwaartse markt
+        # is 'volg de beweging' dat evenzeer.
+        adx_line, _, _ = adx(candles, 14)
+        adx_value = adx_line[-1] if adx_line and adx_line[-1] is not None else 0.0
+        trending = adx_value >= cfg.adx_trend_threshold
+        components["adx"] = round(adx_value, 1)
+        components["regime"] = "trend" if trending else "range"
+        if trending:
+            # Trend volgen: de RSI moet de beweging bevestigen, niet
+            # tegenspreken. Hier stond de contraire variant, waardoor de
+            # score in een trend tegen de trend in werd geduwd.
+            mom_score = -reversion_score
+            mom_note = reversion_note.replace("contrair", "bevestigend")
+            score = 0.70 * trend_score + 0.30 * mom_score
+            leading, supporting = trend_score, mom_score
+        else:
+            # Zijwaarts. De contraire RSI leek hier logisch - hij wijst dezelfde
+            # kant op als de stretch - maar gemeten haalt hij 38% waar de
+            # bevestigende variant er 50% haalt, over vierhonderd waarnemingen.
+            #
+            # Twee indicatoren die hetzelfde zeggen voegen bovendien niets toe;
+            # ze verdubbelen alleen het gewicht van één idee. De bevestigende
+            # lezing is onafhankelijk van de stretch, en dat is wat een tweede
+            # component moet zijn.
+            mom_score = -reversion_score
+            mom_note = reversion_note.replace("contrair", "bevestigend")
+            score = 0.70 * stretch_score + 0.30 * mom_score
+            leading, supporting = stretch_score, mom_score
+        # Vertrouwen op basis van of de steunende component meebeweegt met de
+        # leidende, in plaats van op de mate waarin twee tegengestelde
+        # componenten toevallig samenvallen.
+        confidence = max(0.0, min(1.0, 1.0 - abs(leading - supporting) / 2.0))
+    else:
+        # Optellen van trend en mean reversion. Bewaard voor vergelijking;
+        # zie de toelichting bij ``regime_switching``.
+        mom_score = reversion_score
+        mom_note = reversion_note
+        score = 0.40 * trend_score + 0.35 * stretch_score + 0.25 * mom_score
+        agreement = 1.0 - (
+            abs(trend_score - stretch_score) + abs(trend_score - mom_score)
+        ) / 4.0
+        confidence = max(0.0, min(1.0, agreement))
+
+    components["momentum"] = round(mom_score, 3)
+
+    if structure_read is not None and structure_read.score:
+        # Meewegen, niet overrulen. Structuur is trager dan de overige
+        # componenten: pivots worden pas bevestigd als er candles aan beide
+        # kanten liggen. Er zwaarder op leunen zou het signaal vertragen.
+        score = (
+            score * (1.0 - cfg.structure_weight)
+            + structure_read.score * cfg.structure_weight
+        )
+
+    direction = 1 if score > 0 else -1
+
+    if position_blocked:
+        # Nu is de richting bekend, dus de weigering kan uitgesplitst worden.
+        if abs(score) < cfg.entry_threshold:
+            return reject(
+                "max_positions_geen_signaal",
+                f"Positie open en score {score:+.3f} onder de drempel; "
+                "er zou toch niets gebeuren",
+                score, direction,
+            )
+        if not open_position_side:
+            # Richting onbekend: dan is "zelfde richting" een aanname die je
+            # niet kunt doen. Liever eerlijk zeggen dat het niet vast te
+            # stellen is dan een label dat toevallig klopt.
+            return reject(
+                "max_positions_richting_onbekend",
+                f"Positie open, richting onbekend; signaal {score:+.3f}.",
+                score, direction,
+            )
+        if direction != open_position_side:
+            return reject(
+                "max_positions_tegengesteld",
+                f"Positie open in de andere richting, maar het signaal wijst "
+                f"{'long' if direction == 1 else 'short'} met score {score:+.3f}. "
+                "De lopende positie wordt niet omgedraaid.",
+                score, direction,
+            )
+        return reject(
+            "max_positions_zelfde_richting",
+            f"Positie al open in dezelfde richting; signaal {score:+.3f} "
+            "bevestigt alleen wat er al loopt.",
+            score, direction,
+        )
+
+    # Een break tegen de heersende structuur in is een waarschuwing, geen
+    # signaal: hij kan een omslag inluiden maar even goed een uitschieter zijn.
+    # Vertrouwen verlagen is eerlijker dan de trade weigeren of forceren.
+    if structure_read is not None and structure_read.character_change:
+        confidence *= 0.6
+
+    if abs(score) < cfg.entry_threshold:
+        return reject(
+            "score_below_threshold",
+            f"Score {score:+.3f} onder drempel {cfg.entry_threshold:.2f}",
+        )
+
+    # --- De kostenpoort ------------------------------------------------------
+    a = atr(candles, 14)
+    atr_value = (a[-1] or 0.0) * cfg.atr_correction
+
+    # Ruwe indicatorwaarden erbij, naast de genormaliseerde scores.
+    #
+    # De scores lopen van -1 tot 1 en zijn daarmee niet te vergelijken tussen
+    # markten of periodes. Voor een correlatieanalyse zijn de ruwe waarden
+    # nodig: een RSI van 28 zegt iets anders dan een score van -0,72, ook al
+    # komt het tweede uit het eerste.
+    #
+    # Zonder deze waarden is de vraag "welke marktomstandigheden zijn
+    # winstgevend" onbeantwoordbaar - er is niets om de uitkomst tegen af te
+    # zetten. Puur observatie: ze veranderen geen enkele beslissing.
+    components["atr"] = round(atr_value, 4)
+    if len(close) >= 60:
+        snel = sum(close[-20:]) / 20.0
+        langzaam = sum(close[-60:]) / 60.0
+        if langzaam:
+            components["ema_dist"] = round((snel - langzaam) / langzaam * 100, 4)
+
+    if atr_value <= 0:
+        return reject("no_atr", "ATR is nul; kan geen doelen bepalen")
+
+    # Spread afwegen tegen de beweging in plaats van tegen een vast getal.
+    spread_ratio = spread / atr_value
+    components["spread_atr_ratio"] = round(spread_ratio, 3)
+    if spread_ratio > cfg.max_spread_atr_ratio:
+        return reject(
+            "spread_too_wide",
+            f"Spread {spread:.3f} is {spread_ratio:.0%} van de ATR ({atr_value:.2f}); "
+            f"de grens ligt op {cfg.max_spread_atr_ratio:.0%}. Bij deze verhouding "
+            "eet de spread te veel van de beweging op."
+        )
+
+    # Vaste afstand wint als hij is ingesteld; anders schaalt hij met de ATR.
+    expected_move = (
+        cfg.take_profit_usd if cfg.take_profit_usd > 0
+        else atr_value * cfg.take_profit_atr
+    )
+    stop_distance = (
+        cfg.stop_loss_usd if cfg.stop_loss_usd > 0
+        else atr_value * cfg.stop_loss_atr
+    )
+    components["target_usd"] = round(expected_move, 3)
+    components["stop_usd"] = round(stop_distance, 3)
+    # Kosten per ounce: spread (één keer per round trip) + slippage (beide
+    # zijden) + commissie omgerekend naar per ounce.
+    commission_per_oz = (cfg.commission_per_lot_per_side * 2) / CONTRACT_SIZE
+    expected_cost = spread + (cfg.expected_slippage * 2) + commission_per_oz
+
+    if expected_move < expected_cost * cfg.min_edge_multiple:
+        return ScalpSignal(
+            direction=0,
+            score=score,
+            confidence=confidence,
+            should_trade=False,
+            reject_reason="edge_below_cost",
+            reason=(
+                f"Verwachte beweging {expected_move:.3f} USD/oz haalt de drempel niet: "
+                f"kosten zijn {expected_cost:.3f} en er is minimaal "
+                f"{expected_cost * cfg.min_edge_multiple:.3f} nodig"
+            ),
+            expected_move=expected_move,
+            expected_cost=expected_cost,
+            components=components,
+        )
+
+    if direction == 1:
+        entry = ask
+        stop = entry - stop_distance
+        target = entry + expected_move
+    else:
+        entry = bid
+        stop = entry + stop_distance
+        target = entry - expected_move
+
+    # Als de structuur een duidelijker ongeldigheidsniveau aanwijst dan de ATR,
+    # dat gebruiken: een stop net voorbij de laatste bodem is een niveau waar
+    # de aanname aantoonbaar niet meer klopt, in plaats van een afstand die uit
+    # een gemiddelde volgt.
+    if structure_read is not None and structure_read.invalidation is not None:
+        level = structure_read.invalidation
+        buffer = atr_value * 0.15
+        if direction == 1 and level < entry:
+            candidate = level - buffer
+            if candidate > stop:      # strakker, maar nog steeds onder de instap
+                stop = candidate
+        elif direction == -1 and level > entry:
+            candidate = level + buffer
+            if candidate < stop:
+                stop = candidate
+
+    return ScalpSignal(
+        direction=direction,
+        score=score,
+        confidence=confidence,
+        should_trade=True,
+        reject_reason=None,
+        reason=(
+            f"{'Long' if direction == 1 else 'Short'} bij score {score:+.3f}. "
+            f"{trend_note}; {stretch_note}; {mom_note}; {vol_note}"
+            + (f"; structuur: {structure_read.note}" if structure_read else "")
+            + f". Doel {expected_move:.3f} USD/oz tegen kosten {expected_cost:.3f}"
+        ),
+        stop_loss=round(stop, 3),
+        take_profit=round(target, 3),
+        expected_move=expected_move,
+        expected_cost=expected_cost,
+        components=components,
+    )
