@@ -15,6 +15,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    SERVICE_INDICATOR_LAB,
     SERVICE_RECHECK_EXITS,
     SERVICE_NEW_RUN,
     CONF_SHOW_PANEL, DOMAIN, PLATFORMS, REPORT_FILENAME, SERVICE_BACKTEST,
@@ -369,6 +370,47 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_RESET_DAY, _zeg_wat_er_misging("reset_day")(reset_day),
     )
+    async def indicator_lab(call: ServiceCall) -> None:
+        """Toets elke indicator op het barsarchief.
+
+        Ontdekken en bevestigen zijn gescheiden, en de lat stijgt met het
+        aantal indicatoren. Wie twintig indicatoren op dezelfde data toetst,
+        vindt er anders altijd een paar die door toeval lijken te werken.
+        """
+        from .analysis.indicator_lab import run_lab
+
+        for coordinator in _coordinators():
+            if coordinator.archive is None:
+                raise HomeAssistantError("Het archief is niet geopend.")
+            try:
+                candles = await hass.async_add_executor_job(
+                    coordinator.archive.load,
+                    coordinator.symbol, coordinator.timeframe,
+                )
+            except (ValueError, RuntimeError) as err:
+                raise HomeAssistantError(
+                    f"Geen bars in het archief: {err}"
+                ) from err
+
+            rapport = await hass.async_add_executor_job(
+                functools.partial(
+                    run_lab, candles,
+                    doel=coordinator.strategy_cfg.take_profit_atr,
+                    stop=coordinator.strategy_cfg.stop_loss_atr,
+                    kosten=call.data.get("kosten", 0.75),
+                )
+            )
+            coordinator.lab = rapport.as_dict()
+            _LOGGER.warning("Indicatorlab: %s", rapport.conclusie)
+            hass.bus.async_fire(f"{DOMAIN}_indicator_lab", coordinator.lab)
+            await coordinator.async_request_refresh()
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_INDICATOR_LAB,
+        _zeg_wat_er_misging("indicator_lab")(indicator_lab),
+        schema=vol.Schema({vol.Optional("kosten"): vol.Coerce(float)}),
+    )
+
     hass.services.async_register(
         DOMAIN, SERVICE_BACKTEST, _zeg_wat_er_misging("backtest")(backtest),
         # Elk veld uit services.yaml moet hier staan. Ontbreekt er een, dan

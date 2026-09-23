@@ -114,6 +114,12 @@ CREATE TABLE IF NOT EXISTS trades (
     entry_ema_dist    REAL,
     entry_trend       REAL,
     entry_momentum    REAL,
+    -- Klantsentiment bij de instap, en twee indicatoren die in een
+    -- simulatie net boven de nullijn uitkwamen. Uitsluitend vastgelegd om
+    -- later te kunnen toetsen, niet om op te handelen.
+    entry_sentiment_long REAL,
+    entry_williams_r  REAL,
+    entry_cci         REAL,
     open_reason       TEXT,
     -- Ticketnummers zijn niet numeriek. IG gebruikt sleutels als
     -- 'DIAAAAYCJETQ7A8'; alleen MetaTrader en OANDA werken met gehele
@@ -212,6 +218,9 @@ class Trade:
     entry_ema_dist: float | None = None
     entry_trend: float | None = None
     entry_momentum: float | None = None
+    entry_sentiment_long: float | None = None
+    entry_williams_r: float | None = None
+    entry_cci: float | None = None
     regime: str | None = None
     open_reason: str | None = None
     #: Ticketnummer bij de broker. Tekst, niet numeriek: IG gebruikt sleutels
@@ -282,6 +291,7 @@ class TradeDatabase:
         for kolom in (
             "entry_atr", "entry_adx", "entry_rsi",
             "entry_ema_dist", "entry_trend", "entry_momentum",
+            "entry_sentiment_long", "entry_williams_r", "entry_cci",
         ):
             if kolom not in trade_columns:
                 self._conn.execute(

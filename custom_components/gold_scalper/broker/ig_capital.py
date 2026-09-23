@@ -90,6 +90,8 @@ def _als_getal(waarde) -> float | None:
 
 
 class IgStyleVenue(ExecutionVenue):
+    #: Marktnummer voor het klantsentiment; komt mee met de koersopvraging.
+    _market_id: str | None = None
     """Gedeelde laag voor IG en Capital.com."""
 
     runs_in_process = True
@@ -385,6 +387,12 @@ class IgStyleVenue(ExecutionVenue):
         )
         snapshot = payload.get("snapshot") or {}
         status = str(snapshot.get("marketStatus", "TRADEABLE")).upper()
+
+        # Het marktnummer onthouden voor het sentiment. Dat staat in dezelfde
+        # koersopvraging, dus het kost geen extra verzoek.
+        markt = (payload.get("instrument") or {}).get("marketId")
+        if markt:
+            self._market_id = str(markt)
 
         bid = snapshot.get("bid")
         ask = snapshot.get("offer") or snapshot.get("ask")
@@ -1008,6 +1016,37 @@ class IgStyleVenue(ExecutionVenue):
 
 
 class IgVenue(IgStyleVenue):
+    async def client_sentiment(self) -> dict | None:
+        """Welk deel van de klanten van deze broker staat long en short.
+
+        Geeft alleen de huidige stand: de broker bewaart geen historie van
+        dit getal. Terugtoetsen kan dus niet; wie wil weten of het iets
+        voorspelt, moet vanaf nu verzamelen.
+
+        Wat er over bekend is, valt tegen. Twaalf jaar uurdata van een andere
+        broker over 28 valutaparen liet zien dat retailpositionering de koers
+        niet voorspelt - de informatie stroomt de andere kant op. Een effect
+        bij extreme standen is niet uitgesloten, en dat is wat hier gemeten
+        wordt.
+
+        Geeft None zolang het marktnummer onbekend is of de broker niets
+        teruggeeft; een ontbrekende meting hoort geen getal te worden.
+        """
+        if not self._market_id:
+            return None
+        try:
+            data = await self._request(
+                "GET", f"/clientsentiment/{self._market_id}", version="1",
+            )
+        except VenueError as err:
+            _LOGGER.debug("Sentiment niet op te halen: %s", err)
+            return None
+        lang = _als_getal(data.get("longPositionPercentage"))
+        kort = _als_getal(data.get("shortPositionPercentage"))
+        if lang is None or kort is None:
+            return None
+        return {"long": lang, "short": kort, "market_id": self._market_id}
+
     """IG Group. Order plaatsen is twee stappen: referentie, dan bevestiging."""
 
     name = "ig"

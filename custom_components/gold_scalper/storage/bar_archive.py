@@ -65,6 +65,20 @@ CREATE TABLE IF NOT EXISTS bars (
 
 CREATE INDEX IF NOT EXISTS idx_bars_lookup
     ON bars(symbol, timeframe, timestamp);
+
+-- Klantsentiment per afgesloten bar.
+--
+-- De broker bewaart geen historie van dit getal. Wie wil weten of het iets
+-- voorspelt, moet het zelf verzamelen - en elke dag die niet wordt vastgelegd
+-- is voorgoed weg. Een eigen tabel, omdat sentiment niet bij elke bar
+-- beschikbaar is en een lege kolom in de barstabel dat zou verhullen.
+CREATE TABLE IF NOT EXISTS sentiment (
+    symbol     TEXT    NOT NULL,
+    timestamp  INTEGER NOT NULL,
+    long_pct   REAL    NOT NULL,
+    short_pct  REAL    NOT NULL,
+    PRIMARY KEY (symbol, timestamp)
+);
 """
 
 
@@ -251,6 +265,51 @@ class BarArchive:
              "bars": int(r["n"])}
             for r in rijen
         ]
+
+    # -- sentiment ---------------------------------------------------------- #
+
+    def store_sentiment(
+        self, symbol: str, timestamp: int, long_pct: float, short_pct: float,
+    ) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO sentiment "
+            "(symbol, timestamp, long_pct, short_pct) VALUES (?,?,?,?)",
+            (symbol, int(timestamp), float(long_pct), float(short_pct)),
+        )
+        self.conn.commit()
+
+    def sentiment_stats(self, symbol: str, extreme: float = 75.0) -> dict:
+        """Hoeveel is er verzameld, en hoeveel daarvan is extreem?
+
+        De vooraf vastgelegde toets vraagt minstens tweehonderd extreme
+        waarnemingen. Dit getal laat zien hoe ver dat nog is.
+        """
+        rij = self.conn.execute(
+            "SELECT COUNT(*) AS n, "
+            "SUM(CASE WHEN long_pct >= ? OR short_pct >= ? THEN 1 ELSE 0 END) "
+            "AS extreem, MIN(timestamp) AS eerste, MAX(timestamp) AS laatste, "
+            "AVG(long_pct) AS gem_long "
+            "FROM sentiment WHERE symbol=?",
+            (extreme, extreme, symbol),
+        ).fetchone()
+        n = int(rij["n"] or 0)
+        extreem = int(rij["extreem"] or 0)
+        return {
+            "waarnemingen": n,
+            "extreem": extreem,
+            "drempel_pct": extreme,
+            "nodig_voor_toets": 200,
+            "voortgang": round(min(1.0, extreem / 200), 3),
+            "gemiddeld_long": round(rij["gem_long"], 1) if n else None,
+            "eerste": (
+                datetime.fromtimestamp(rij["eerste"], timezone.utc).isoformat()
+                if rij["eerste"] else None
+            ),
+            "laatste": (
+                datetime.fromtimestamp(rij["laatste"], timezone.utc).isoformat()
+                if rij["laatste"] else None
+            ),
+        }
 
     def prune(self, keep_days: int = 1095) -> int:
         """Ruim bars op die ouder zijn dan drie jaar.

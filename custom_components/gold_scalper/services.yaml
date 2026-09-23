@@ -117,3 +117,19 @@ recheck_exits:
     opnieuw bij de broker wordt opgehaald. Nodig na een versie die de verkeerde transactie
     kon koppelen: twee posities met bijna dezelfde instapprijs maar tegengestelde
     richting waren niet te scheiden.'
+indicator_lab:
+  name: Indicatorlab
+  description: 'Toetst ruim twintig indicatoren op het barsarchief: wat had elk opgeleverd
+    als je erop had gehandeld? De eerste 70% van de bars bepaalt drempels en richting,
+    de laatste 30% bevestigt zonder aanpassing. De vereiste t-waarde stijgt met het
+    aantal indicatoren, omdat veel proberen anders altijd een toevalstreffer oplevert.'
+  fields:
+    kosten:
+      name: Kosten per ounce
+      description: Heen en terug, per ounce. Standaard 0,75 uit de gemeten live-kosten.
+      selector:
+        number:
+          min: 0
+          max: 5
+          step: 0.05
+          mode: box

@@ -93,6 +93,16 @@ async def async_get_config_entry_diagnostics(
         # positiegrootte in de juiste eenheid wordt berekend, en dat scheelt
         # bij een euro-account met een dollarinstrument zo'n acht procent.
         "conversion": coordinator.conversion.as_dict(),
+        "indicator_lab": coordinator.lab,
+        # Klantsentiment: de laatste stand en hoe ver de verzameling is richting
+        # de tweehonderd extreme waarnemingen die de toets vraagt.
+        "sentiment": {
+            "laatste": coordinator.sentiment,
+            "verzameling": (
+                coordinator.archive.sentiment_stats(coordinator.symbol)
+                if coordinator.archive is not None else None
+            ),
+        },
         "validation": coordinator.validation,
         # Hoeveel trades op een geschatte uitstapprijs zijn afgerekend. Elke
         # daarvan is een cijfer dat eruitziet als een meting maar er geen is.

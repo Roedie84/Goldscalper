@@ -496,6 +496,23 @@ def evaluate(
         if langzaam:
             components["ema_dist"] = round((snel - langzaam) / langzaam * 100, 4)
 
+    # Twee indicatoren die in een simulatie net boven de nullijn uitkwamen:
+    # Williams %R met 47,7% tegen 44,2%, CCI met 45,7%. Dat is dun, en omdat
+    # het de beste van vier was ook verdacht. Ze worden daarom alleen
+    # vastgelegd, zodat ze later op echte data getoetst kunnen worden - niet
+    # meegewogen in de beslissing.
+    try:
+        from ..analysis.momentum import cci, williams_r
+
+        wr = williams_r(candles, 14)
+        if wr and wr[-1] is not None:
+            components["williams_r"] = round(float(wr[-1]), 2)
+        cc = cci(candles, 20)
+        if cc and cc[-1] is not None:
+            components["cci"] = round(float(cc[-1]), 2)
+    except Exception:  # noqa: BLE001 - een meting mag een signaal nooit breken
+        pass
+
     if atr_value <= 0:
         return reject("no_atr", "ATR is nul; kan geen doelen bepalen")
 

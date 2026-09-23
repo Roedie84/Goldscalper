@@ -308,6 +308,10 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         self.archive: BarArchive | None = None
         #: Uitkomst van de vergelijking tussen backtest en live-resultaat.
         self.validation: dict = {}
+        #: Laatst gemeten klantsentiment bij de broker.
+        self.sentiment: dict = {}
+        #: Laatste uitslag van het indicatorlab.
+        self.lab: dict = {}
         #: Bevindingen die al gemeld zijn, om herhaling te onderdrukken.
         self._audit_gemeld: set = set()
         #: Aantal trades dat op een geschatte uitstapprijs is afgerekend.
@@ -1630,15 +1634,8 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
         # Een afgesloten bar meteen bewaren. Er gaat geen extra verzoek naar de
         # broker: dit is de bar die er toch al was, en zonder dit archief werd
         # hij bij de volgende herstart weggegooid.
-        if closed and self.archive is not None:
-            try:
-                await self.hass.async_add_executor_job(
-                    self.archive.store, self.symbol, self.timeframe,
-                    self._aggregator.candles(2),
-                    "quotes" if self._build_from_quotes else "broker",
-                )
-            except Exception as err:  # noqa: BLE001 - archiveren mag nooit de lus slopen
-                _LOGGER.debug("Bar niet gearchiveerd: %s", err)
+        if closed:
+            await self._on_bars_closed(self._aggregator.candles(2), "quotes")
         if not closed:
             return
 
@@ -1662,6 +1659,44 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             )
             self._candles = fresh
         self._last_bar_ts = fresh.timestamp[-1]
+
+    async def _on_bars_closed(self, candles, bron: str) -> None:
+        """Verwerk afgesloten bars: archiveren en sentiment vastleggen.
+
+        Eerst gebeurde het archiveren alleen in het pad voor zelfgebouwde
+        bars. Wie de historie van de broker gebruikt - nauwkeuriger en direct
+        beschikbaar - kreeg een archief dat stilstond. Nu komen beide paden
+        hier samen.
+
+        Niets hiervan mag de handelslus slopen: dit is meting, geen beslissing.
+        """
+        if self.archive is None or candles is None or not len(candles):
+            return
+        try:
+            await self.hass.async_add_executor_job(
+                self.archive.store, self.symbol, self.timeframe, candles, bron,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Bar niet gearchiveerd: %s", err)
+
+        haal = getattr(self.venue, "client_sentiment", None)
+        if haal is None:
+            return
+        try:
+            stand = await haal()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Sentiment niet opgehaald: %s", err)
+            return
+        if not stand:
+            return
+        self.sentiment = stand
+        try:
+            await self.hass.async_add_executor_job(
+                self.archive.store_sentiment, self.symbol,
+                int(candles.timestamp[-1]), stand["long"], stand["short"],
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Sentiment niet bewaard: %s", err)
 
     async def _maybe_update_candles(self) -> None:
         """Haal nieuwe candles op als er een bar afgesloten kan zijn."""
@@ -1701,6 +1736,11 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             self._append_candle(fresh, i)
             if self._candles is None:
                 break
+
+        if self._new_bars_this_cycle:
+            # Historie van de broker ook bewaren: nauwkeuriger dan
+            # zelfgebouwde bars, en tot nu toe verloren.
+            await self._on_bars_closed(fresh, "broker")
 
     async def _manage_open_positions(self, quote: VenueQuote, now: datetime) -> None:
         """Break-even, gedeeltelijk sluiten, trailing en tijdstops."""
@@ -2447,6 +2487,9 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             entry_ema_dist=(signal.components or {}).get("ema_dist"),
             entry_trend=(signal.components or {}).get("trend"),
             entry_momentum=(signal.components or {}).get("momentum"),
+            entry_sentiment_long=(self.sentiment or {}).get("long"),
+            entry_williams_r=(signal.components or {}).get("williams_r"),
+            entry_cci=(signal.components or {}).get("cci"),
             broker_ticket=str(result.ticket) if result.ticket else None,
         )
         await self.hass.async_add_executor_job(self.db.insert_trade, trade)
