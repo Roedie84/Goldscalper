@@ -1812,10 +1812,19 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
                     # niveaus, dus zonder deze waarde wist elke stopverplaatsing
                     # je take-profit. Meegeven scheelt bovendien een extra
                     # verzoek om hem eerst op te halen.
-                    await self.venue.modify_stop(
+                    resultaat = await self.venue.modify_stop(
                         ticket, action.new_stop,
                         take_profit=getattr(position, "take_profit", None),
                     )
+                    # De nieuwe stop ook in de eigen administratie zetten.
+                    #
+                    # Zolang het exitbeheer niet werkte - de posities waren
+                    # onzichtbaar - viel dit niet op. Nu het wel werkt, meldde
+                    # de brokercontrole bij elke verplaatsing een verschil, en
+                    # leidde de afwikkeling de sluitreden af van een stop die
+                    # al lang niet meer gold.
+                    if getattr(resultaat, "success", False):
+                        await self._sync_trade_stop(ticket, action.new_stop)
                 elif action.kind == "modify_stop":
                     position.stop_loss = action.new_stop
                 elif action.kind == "partial_close":
@@ -1888,6 +1897,21 @@ class GoldScalperCoordinator(DataUpdateCoordinator[dict]):
             self._last_entry_ts = now.timestamp()
         except (ModeLockedError, VenueError) as err:
             _LOGGER.error("Openen mislukt: %s", err)
+
+    async def _sync_trade_stop(self, ticket, nieuwe_stop: float) -> None:
+        """Zet een bij de broker verplaatste stop ook in de database."""
+        if self.run_id is None:
+            return
+        open_trades = await self.hass.async_add_executor_job(
+            self.db.open_trades, self.run_id
+        )
+        for trade in open_trades:
+            if str(trade.broker_ticket) == str(ticket):
+                trade.stop_loss = round(float(nieuwe_stop), 5)
+                await self.hass.async_add_executor_job(
+                    self.db.update_trade, trade
+                )
+                return
 
     async def _correct_estimated_settlements(self, now: datetime) -> None:
         """Werk eerder geschatte afwikkelingen bij zodra de prijs beschikbaar is.

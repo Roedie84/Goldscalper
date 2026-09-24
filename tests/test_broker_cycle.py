@@ -474,3 +474,33 @@ def test_an_open_position_with_unknown_size_is_not_settled(venue, tmp_path,
     assert coordinator.db.open_trades(coordinator.run_id), (
         "een open positie met onbekende omvang is afgerekend"
     )
+
+
+def test_a_moved_stop_is_written_back(venue, tmp_path, monkeypatch):
+    """Zolang de posities onzichtbaar waren, werkte het exitbeheer niet en
+    viel dit niet op. Nu wel: de brokercontrole meldde bij elke verplaatsing
+    een verschil, en de afwikkeling las de sluitreden af van een verouderde
+    stop."""
+    from gold_scalper.storage.database import Trade
+
+    coordinator, _ = _coordinator(venue, tmp_path, monkeypatch)
+    coordinator.db.insert_trade(Trade(
+        run_id=coordinator.run_id, mode="demo", symbol="GOLD", side="sell",
+        volume=0.0269, open_time=NOW.isoformat(), open_price=4290.0,
+        open_mid=4290.3, open_spread=0.6, stop_loss=4294.27,
+        take_profit=4283.6, broker_ticket="T7",
+    ))
+    asyncio.run(coordinator._sync_trade_stop("T7", 4290.3))
+    assert coordinator.db.open_trades(coordinator.run_id)[0].stop_loss == \
+        pytest.approx(4290.3)
+
+
+def test_the_stop_is_only_synced_after_success():
+    """Een mislukte verplaatsing mag de administratie niet aanpassen: dan
+    stond er een stop in de database die bij de broker nooit is gezet."""
+    from pathlib import Path
+
+    bron = (Path(__file__).resolve().parent.parent / "custom_components"
+            / "gold_scalper" / "coordinator.py").read_text(encoding="utf-8")
+    blok = bron.split("resultaat = await self.venue.modify_stop(")[1][:900]
+    assert 'getattr(resultaat, "success", False)' in blok
